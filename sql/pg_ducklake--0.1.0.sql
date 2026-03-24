@@ -338,6 +338,34 @@ SET search_path = pg_catalog, pg_temp
 AS '$libdir/pg_duckdb', 'duckdb_only_function'
 LANGUAGE C;
 
+-- passthrough (schema + table)
+CREATE FUNCTION ducklake.time_travel(schema_name text, table_name text, version bigint)
+RETURNS SETOF duckdb.row
+SET search_path = pg_catalog, pg_temp
+AS '$libdir/pg_duckdb', 'duckdb_only_function'
+LANGUAGE C;
+
+-- passthrough (schema + table)
+CREATE FUNCTION ducklake.time_travel(schema_name text, table_name text, "timestamp" timestamptz)
+RETURNS SETOF duckdb.row
+SET search_path = pg_catalog, pg_temp
+AS '$libdir/pg_duckdb', 'duckdb_only_function'
+LANGUAGE C;
+
+-- rewrite -> time_travel(text, text, bigint)
+CREATE FUNCTION ducklake.time_travel(scope regclass, version bigint)
+RETURNS SETOF duckdb.row
+SET search_path = pg_catalog, pg_temp
+AS 'MODULE_PATHNAME', 'ducklake_function_mapping'
+LANGUAGE C;
+
+-- rewrite -> time_travel(text, text, timestamptz)
+CREATE FUNCTION ducklake.time_travel(scope regclass, "timestamp" timestamptz)
+RETURNS SETOF duckdb.row
+SET search_path = pg_catalog, pg_temp
+AS 'MODULE_PATHNAME', 'ducklake_function_mapping'
+LANGUAGE C;
+
 -- Change Feed -------------------------------------------------------
 
 -- passthrough

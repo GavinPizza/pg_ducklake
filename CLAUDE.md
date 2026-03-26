@@ -117,6 +117,11 @@ Tests live in `test/regression/` (SQL regression) and `test/isolation/` (concurr
 
 See `coding-rules` skill for the full docs tree and style guide.
 
+## Gotchas
+
+- **FATAL macro conflict**: PostgreSQL's `elog.h` defines `FATAL`, which clobbers DuckDB's `ExceptionType::FATAL`. Include order is critical: DuckDB/DuckLake headers must parse *before* `postgres.h`. See `coding-rules` skill for the full include-order rules.
+- **Subtree structure**: `third_party/pg_duckdb` and `third_party/ducklake` are git subtrees (source committed directly). Only `third_party/pg_duckdb/third_party/duckdb` is a submodule. CI auto-syncs subtree changes back to `relytcloud/pg_duckdb:pgducklake` and `relytcloud/ducklake:pg_ducklake`.
+
 ## Miscellaneous
 
 - When exploring multiple files, run in parallel whenever possible, instead of processing them sequentially.

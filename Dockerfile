@@ -25,15 +25,14 @@ RUN chown -R postgres:postgres . /usr/lib/postgresql /usr/share/postgresql /out
 USER postgres
 
 COPY --chown=postgres:postgres Makefile Makefile.global ./
-COPY --chown=postgres:postgres .git/modules/third_party/pg_duckdb/HEAD .git/modules/third_party/pg_duckdb/HEAD
-COPY --chown=postgres:postgres .git/modules/third_party/pg_duckdb/modules/third_party/duckdb/HEAD .git/modules/third_party/pg_duckdb/modules/third_party/duckdb/HEAD
-COPY --chown=postgres:postgres .git/modules/third_party/ducklake/HEAD .git/modules/third_party/ducklake/HEAD
+# Satisfy Makefile's $(DUCKDB_HEAD) sentinel so Make skips `git submodule update`
+COPY --chown=postgres:postgres .git/modules/third_party/pg_duckdb/third_party/duckdb/HEAD .git/modules/third_party/pg_duckdb/third_party/duckdb/HEAD
 COPY --chown=postgres:postgres third_party third_party
 
-# workaround for missing submodule in pg_duckdb build
-RUN rm -rf third_party/pg_duckdb/.git && \
-    mkdir -p third_party/pg_duckdb/.git/modules/third_party/duckdb && \
-    cp .git/modules/third_party/pg_duckdb/modules/third_party/duckdb/HEAD \
+# pg_duckdb's own Makefile checks .git/modules/third_party/duckdb/HEAD relative to its
+# directory. Create the sentinel so it skips `git submodule update` inside Docker.
+RUN mkdir -p third_party/pg_duckdb/.git/modules/third_party/duckdb && \
+    cp .git/modules/third_party/pg_duckdb/third_party/duckdb/HEAD \
       third_party/pg_duckdb/.git/modules/third_party/duckdb/HEAD
 
 RUN --mount=type=cache,target=/ccache/,uid=999,gid=999 \

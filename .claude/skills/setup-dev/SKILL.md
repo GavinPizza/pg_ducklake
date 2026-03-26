@@ -136,19 +136,45 @@ grep -qF 'pg-*/' "$exclude_file" 2>/dev/null || echo 'pg-*/' >> "$exclude_file"
 
 ---
 
-## Step 4: Submodules
+## Step 4: Submodules and subtrees
 
-### Main worktree (standard clone)
+### pg_duckdb (subtree) and duckdb (submodule)
+
+`third_party/pg_duckdb` is a git subtree -- its source is committed
+directly in the repo. No initialization needed. To pull upstream
+changes:
 
 ```bash
-git submodule update --init --recursive --depth=1
+git subtree pull --prefix=third_party/pg_duckdb \
+    https://github.com/relytcloud/pg_duckdb.git pgducklake --squash
 ```
 
-This is all that is needed. The Makefile also auto-inits submodules on
-`make install`, but explicit init is faster and gives clearer errors.
+Changes pushed to `main` that touch `third_party/pg_duckdb/` are
+automatically synced to `relytcloud/pg_duckdb:pgducklake` by CI.
 
-**Time**: 5-10 min on first run (duckdb submodule is large even with
-shallow clone).
+The DuckDB source at `third_party/pg_duckdb/third_party/duckdb` is
+the only submodule. Initialize it:
+
+```bash
+git submodule update --init --depth=1 third_party/pg_duckdb/third_party/duckdb
+```
+
+**Time**: 5-10 min on first run (duckdb is large even with shallow
+clone).
+
+### ducklake (subtree)
+
+`third_party/ducklake` is a git subtree -- its source is committed
+directly in the repo. No initialization needed. To pull upstream
+changes:
+
+```bash
+git subtree pull --prefix=third_party/ducklake \
+    https://github.com/relytcloud/ducklake.git main --squash
+```
+
+Changes pushed to `main` that touch `third_party/ducklake/` are
+automatically synced to `relytcloud/ducklake:pg_ducklake` by CI.
 
 ### Submodule worktrees (automated via hooks)
 
@@ -223,7 +249,7 @@ and the SQL files into the PG extension directory.
 
 **Wrong submodule commit** -- reset to what the branch expects:
 ```bash
-git submodule update third_party/pg_duckdb third_party/ducklake
+git submodule update third_party/pg_duckdb
 ```
 
 **PG configure fails** -- missing build deps:

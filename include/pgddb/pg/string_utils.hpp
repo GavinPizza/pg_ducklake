@@ -21,9 +21,9 @@ StringHasPrefix(const char *str, const char *prefix) {
 	return strncmp(str, prefix, prefix_length) == 0;
 }
 
-namespace pgduckdb {
+namespace pgddb {
 inline bool
 IsDuckdbSchemaName(const char *s) {
 	return StringHasPrefix(s, "ddb$");
 }
-} // namespace pgduckdb
+} // namespace pgddb

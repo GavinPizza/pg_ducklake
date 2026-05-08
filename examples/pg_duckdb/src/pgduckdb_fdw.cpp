@@ -24,7 +24,7 @@ extern "C" {
 #include "pgduckdb/vendor/pg_list.hpp"
 }
 
-#include "pgduckdb/pg/string_utils.hpp"
+#include "pgddb/pg/string_utils.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_fdw.hpp"
 #include "pgduckdb/pgduckdb_secrets_helper.hpp"

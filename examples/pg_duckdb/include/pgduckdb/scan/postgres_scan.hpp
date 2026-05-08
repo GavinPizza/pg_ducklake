@@ -2,7 +2,7 @@
 
 #include "duckdb.hpp"
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 #include "pgduckdb/utility/allocator.hpp"
 
 #include "pgduckdb/scan/postgres_table_reader.hpp"

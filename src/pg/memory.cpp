@@ -6,7 +6,7 @@ extern "C" {
 #include "utils/palloc.h"
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 MemoryContext
 MemoryContextCreate(MemoryContext parent, const char *name) {
@@ -29,4 +29,4 @@ MemoryContextDelete(MemoryContext context) {
 	PostgresFunctionGuard(::MemoryContextDelete, context);
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

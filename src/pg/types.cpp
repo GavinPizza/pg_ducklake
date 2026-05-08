@@ -1,4 +1,4 @@
-#include "pgduckdb/pg/types.hpp"
+#include "pgddb/pg/types.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 extern "C" {
 #include "postgres.h"
@@ -10,7 +10,7 @@ extern "C" {
 #include "executor/tuptable.h"
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 bool
 IsArrayType(Oid type_oid) {
@@ -93,4 +93,4 @@ VarbitToString(Datum pg_bitstring) {
 	return PostgresFunctionGuard(VarbitToString_C, pg_bitstring);
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

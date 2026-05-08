@@ -2,7 +2,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
-#include "pgduckdb/pg/string_utils.hpp"
+#include "pgddb/pg/string_utils.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
 

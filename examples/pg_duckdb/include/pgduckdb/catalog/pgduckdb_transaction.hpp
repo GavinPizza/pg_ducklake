@@ -4,7 +4,7 @@
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/transaction/transaction.hpp"
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
 #include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 

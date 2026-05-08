@@ -7,7 +7,7 @@
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/vendor/pg_explain.hpp"
-#include "pgduckdb/pg/explain.hpp"
+#include "pgddb/pg/explain.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -371,8 +371,8 @@ Duckdb_ExplainCustomScan_Cpp(CustomScanState *node, ExplainState *es) {
 	 * the intended output. Since EXPLAIN EXECUTE is pretty rare for people to
 	 * run, we consider this fine for now.
 	 */
-	duckdb_explain_analyze = pgduckdb::pg::IsExplainAnalyze(es);
-	duckdb_explain_format = pgduckdb::pg::DuckdbExplainFormat(es);
+	duckdb_explain_analyze = pgddb::pg::IsExplainAnalyze(es);
+	duckdb_explain_format = pgddb::pg::DuckdbExplainFormat(es);
 
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)node;
 	ExecuteQuery(duckdb_scan_state);
@@ -404,7 +404,7 @@ Duckdb_ExplainCustomScan_Cpp(CustomScanState *node, ExplainState *es) {
 		appendStringInfoString(es->str, "\"DuckDB Execution Plan\": ");
 		formatDuckDbPlanForPG(value.c_str(), es);
 	} else
-		pgduckdb::pg::ExplainPropertyText("DuckDB Execution Plan", explain_output.str().c_str(), es);
+		pgddb::pg::ExplainPropertyText("DuckDB Execution Plan", explain_output.str().c_str(), es);
 }
 
 static inline void

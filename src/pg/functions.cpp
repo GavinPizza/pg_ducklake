@@ -1,4 +1,4 @@
-#include "pgduckdb/pg/functions.hpp"
+#include "pgddb/pg/functions.hpp"
 #include "duckdb/common/exception.hpp"
 
 #include "pgduckdb/pgduckdb_utils.hpp"
@@ -9,7 +9,7 @@ extern "C" {
 #include "utils/builtins.h"
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 std::string
 GetArgString(PG_FUNCTION_ARGS, int argno) {
@@ -49,4 +49,4 @@ DatumToString(Datum datum) {
 	return std::string(PostgresFunctionGuard(DatumToCstring, datum));
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

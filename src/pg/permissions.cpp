@@ -5,7 +5,7 @@ extern "C" {
 #include "utils/acl.h"         // is_member_of_role
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 bool
 AllowRawFileAccess() {
@@ -13,4 +13,4 @@ AllowRawFileAccess() {
 	       is_member_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES);
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

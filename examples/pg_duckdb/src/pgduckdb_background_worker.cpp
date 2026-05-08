@@ -18,9 +18,9 @@
 #include "pgduckdb/pgduckdb_fdw.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
-#include "pgduckdb/pg/relations.hpp"
+#include "pgddb/pg/relations.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
-#include "pgduckdb/pg/string_utils.hpp"
+#include "pgddb/pg/string_utils.hpp"
 #include <string>
 #include <unordered_map>
 #include <sys/file.h>

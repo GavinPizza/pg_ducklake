@@ -1,4 +1,4 @@
-#include "pgduckdb/pg/explain.hpp"
+#include "pgddb/pg/explain.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 
 extern "C" {
@@ -12,7 +12,7 @@ extern "C" {
 #endif
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 void
 ExplainPropertyText(const char *qlabel, const char *value, ExplainState *es) {
 	PostgresFunctionGuard(::ExplainPropertyText, qlabel, value, es);
@@ -30,4 +30,4 @@ bool
 IsExplainAnalyze(ExplainState *es) {
 	return es->analyze;
 }
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

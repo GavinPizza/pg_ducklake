@@ -12,8 +12,8 @@
 #include "pgduckdb/scan/postgres_table_reader.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
-#include "pgduckdb/pg/memory.hpp"
-#include "pgduckdb/pg/relations.hpp"
+#include "pgddb/pg/memory.hpp"
+#include "pgddb/pg/relations.hpp"
 #include "pgduckdb/pgduckdb_guc.hpp"
 
 #include "pgduckdb/pgduckdb_process_lock.hpp"
@@ -332,7 +332,7 @@ void
 PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInitInput &input) {
 	/* SELECT COUNT(*) FROM */
 	if (input.column_ids.size() == 1 && input.column_ids[0] == UINT64_MAX) {
-		scan_query << "SELECT COUNT(*) FROM " << pgduckdb::GenerateQualifiedRelationName(rel);
+		scan_query << "SELECT COUNT(*) FROM " << pgddb::GenerateQualifiedRelationName(rel);
 		count_tuples_only = true;
 		return;
 	}
@@ -391,11 +391,11 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 			scan_query << ", ";
 		}
 		first = false;
-		auto attr = GetAttr(table_tuple_desc, attr_num - 1);
-		scan_query << pgduckdb::QuoteIdentifier(GetAttName(attr));
+		auto attr = pgddb::GetAttr(table_tuple_desc, attr_num - 1);
+		scan_query << pgddb::QuoteIdentifier(pgddb::GetAttName(attr));
 	}
 
-	scan_query << " FROM " << GenerateQualifiedRelationName(rel);
+	scan_query << " FROM " << pgddb::GenerateQualifiedRelationName(rel);
 
 	duckdb::vector<duckdb::string> query_filters;
 	for (auto const &[attr_num, duckdb_scanned_index] : columns_to_scan) {
@@ -404,8 +404,8 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 			continue;
 		}
 		duckdb::string column_query_filters;
-		auto attr = GetAttr(table_tuple_desc, attr_num - 1);
-		auto col = pgduckdb::QuoteIdentifier(GetAttName(attr));
+		auto attr = pgddb::GetAttr(table_tuple_desc, attr_num - 1);
+		auto col = pgddb::QuoteIdentifier(pgddb::GetAttName(attr));
 		if (ExtractQueryFilters(filter, col, column_query_filters, false)) {
 			query_filters.emplace_back(column_query_filters);
 		}
@@ -419,14 +419,14 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 
 PostgresScanGlobalState::PostgresScanGlobalState(Snapshot _snapshot, Relation _rel,
                                                  const duckdb::TableFunctionInitInput &input)
-    : snapshot(_snapshot), rel(_rel), table_tuple_desc(RelationGetDescr(rel)), count_tuples_only(false),
+    : snapshot(_snapshot), rel(_rel), table_tuple_desc(pgddb::RelationGetDescr(rel)), count_tuples_only(false),
       output_columns(), total_row_count(0), registered_local_states(0), scan_query(),
       table_reader_global_state(nullptr), duckdb_scan_memory_ctx(nullptr), max_threads(1) {
 	ConstructTableScanQuery(input);
 	table_reader_global_state = duckdb::make_shared_ptr<PostgresTableReader>();
 	table_reader_global_state->Init(scan_query.str().c_str(), count_tuples_only);
 	// Dedicated Postgres memory context for temporary allocations during type conversion in scans.
-	duckdb_scan_memory_ctx = pg::MemoryContextCreate(CurrentMemoryContext, "DuckdbScanContext");
+	duckdb_scan_memory_ctx = pgddb::pg::MemoryContextCreate(CurrentMemoryContext, "DuckdbScanContext");
 
 	// Parallelism in scanning has two layers:
 	//   1. The Postgres table_reader may launch parallel worker processes to scan the table.
@@ -526,7 +526,7 @@ duckdb::InsertionOrderPreservingMap<duckdb::string>
 PostgresScanTableFunction::ToString(duckdb::TableFunctionToStringInput &input) {
 	auto &bind_data = input.bind_data->Cast<PostgresScanFunctionData>();
 	duckdb::InsertionOrderPreservingMap<duckdb::string> result;
-	result["Table"] = GetRelationName(bind_data.rel);
+	result["Table"] = pgddb::GetRelationName(bind_data.rel);
 	return result;
 }
 
@@ -559,19 +559,19 @@ SetOutputCardinality(duckdb::DataChunk &output, PostgresScanLocalState &local_st
 static bool
 ScanSingleTuple(duckdb::DataChunk &output, PostgresScanLocalState &local_state) {
 	TupleTableSlot *slot = local_state.global_state->table_reader_global_state->GetNextTuple();
-	if (pgduckdb::TupleIsNull(slot)) {
+	if (pgddb::TupleIsNull(slot)) {
 		return false;
 	}
 
-	SlotGetAllAttrs(slot);
+	pgddb::SlotGetAllAttrs(slot);
 	// This memory context is used as a scratchpad space for any allocation required to add the tuple
 	// into the chunk, such as decoding jsonb columns to their json string representation. We need to
 	// only use this memory context here, and not for the full loop, because GetNextTuple() needs the
 	// actual tuple to survive until the next call to GetNextTuple(), to be able to do index scans.
 	// Cf. issue 796 and 802
-	MemoryContext old_context = pg::MemoryContextSwitchTo(local_state.global_state->duckdb_scan_memory_ctx);
+	MemoryContext old_context = pgddb::pg::MemoryContextSwitchTo(local_state.global_state->duckdb_scan_memory_ctx);
 	InsertTupleIntoChunk(output, local_state, slot);
-	pg::MemoryContextSwitchTo(old_context);
+	pgddb::pg::MemoryContextSwitchTo(old_context);
 	return true;
 }
 
@@ -614,7 +614,7 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 			}
 
 			if (!is_parallel_scan) {
-				pg::MemoryContextReset(local_state.global_state->duckdb_scan_memory_ctx);
+				pgddb::pg::MemoryContextReset(local_state.global_state->duckdb_scan_memory_ctx);
 				D_ASSERT(num_batches == 1);
 				break;
 			}
@@ -624,8 +624,8 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 		D_ASSERT(is_parallel_scan);
 		for (size_t i = 0; i < valid_slots; i++) {
 			MinimalTuple minmal_tuple = reinterpret_cast<MinimalTuple>(local_state.minimal_tuple_buffer[i].data());
-			local_state.slots[i] = ExecStoreMinimalTupleUnsafe(minmal_tuple, local_state.slots[i], false);
-			SlotGetAllAttrs(local_state.slots[i]);
+			local_state.slots[i] = pgddb::ExecStoreMinimalTupleUnsafe(minmal_tuple, local_state.slots[i], false);
+			pgddb::SlotGetAllAttrs(local_state.slots[i]);
 		}
 		InsertTuplesIntoChunk(output, local_state, local_state.slots, valid_slots);
 	}

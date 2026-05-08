@@ -1,7 +1,7 @@
 #include "pgduckdb/catalog/pgduckdb_transaction_manager.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "pgduckdb/catalog/pgduckdb_transaction.hpp"
-#include "pgduckdb/pg/snapshots.hpp"
+#include "pgddb/pg/snapshots.hpp"
 #include "pgduckdb/pgduckdb_process_lock.hpp"
 
 #include "duckdb/main/attached_database.hpp"

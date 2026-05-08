@@ -6,7 +6,7 @@ extern "C" {
 #include "access/xlog.h" // XactLastRecEnd
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 CommandId
 GetCurrentCommandId(bool used = false) {
@@ -48,4 +48,4 @@ UnregisterSubXactCallback(SubXactCallback callback, void *arg) {
 	return PostgresFunctionGuard(::UnregisterSubXactCallback, callback, arg);
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

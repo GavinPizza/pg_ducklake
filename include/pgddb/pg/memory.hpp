@@ -1,12 +1,12 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 MemoryContext MemoryContextCreate(MemoryContext parent, const char *name);
 MemoryContext MemoryContextSwitchTo(MemoryContext target);
 void MemoryContextReset(MemoryContext context);
 void MemoryContextDelete(MemoryContext context);
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

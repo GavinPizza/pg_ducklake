@@ -5,7 +5,7 @@
 #include "pgduckdb/pgduckdb_ddl.hpp"
 #include "pgduckdb/pgduckdb_hooks.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
-#include "pgduckdb/pg/string_utils.hpp"
+#include "pgddb/pg/string_utils.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -142,7 +142,7 @@ NeedsToBeMotherDuckView(ViewStmt *stmt, char *schema_name) {
 		return true;
 	}
 
-	if (pgduckdb::IsDuckdbSchemaName(schema_name)) {
+	if (pgddb::IsDuckdbSchemaName(schema_name)) {
 		return true;
 	}
 
@@ -448,7 +448,7 @@ DuckdbHandleDDLPre(PlannedStmt *pstmt, const char *query_string) {
 		/* Default to duckdb AM for ddb$ schemas and disallow other AMs */
 		Oid schema_oid = RangeVarGetCreationNamespace(stmt->relation);
 		char *schema_name = get_namespace_name(schema_oid);
-		if (pgduckdb::IsDuckdbSchemaName(schema_name)) {
+		if (pgddb::IsDuckdbSchemaName(schema_name)) {
 			if (!stmt->accessMethod) {
 				stmt->accessMethod = pstrdup("duckdb");
 			} else if (strcmp(stmt->accessMethod, "duckdb") != 0) {
@@ -475,7 +475,7 @@ DuckdbHandleDDLPre(PlannedStmt *pstmt, const char *query_string) {
 		/* Default to duckdb AM for ddb$ schemas and disallow other AMs */
 		Oid schema_oid = RangeVarGetCreationNamespace(stmt->into->rel);
 		char *schema_name = get_namespace_name(schema_oid);
-		if (pgduckdb::IsDuckdbSchemaName(schema_name)) {
+		if (pgddb::IsDuckdbSchemaName(schema_name)) {
 			if (!stmt->into->accessMethod) {
 				stmt->into->accessMethod = pstrdup("duckdb");
 			} else if (strcmp(stmt->into->accessMethod, "duckdb") != 0) {
@@ -609,11 +609,11 @@ DuckdbHandleDDLPre(PlannedStmt *pstmt, const char *query_string) {
 	} else if (IsA(parsetree, CreateSchemaStmt) && !pgduckdb::doing_motherduck_sync) {
 		auto stmt = castNode(CreateSchemaStmt, parsetree);
 		if (stmt->schemaname) {
-			if (pgduckdb::IsDuckdbSchemaName(stmt->schemaname)) {
+			if (pgddb::IsDuckdbSchemaName(stmt->schemaname)) {
 				elog(ERROR, "Creating ddb$ schemas is currently not supported");
 			}
 		} else if (stmt->authrole && stmt->authrole->roletype == ROLESPEC_CSTRING) {
-			if (pgduckdb::IsDuckdbSchemaName(stmt->authrole->rolename)) {
+			if (pgddb::IsDuckdbSchemaName(stmt->authrole->rolename)) {
 				elog(ERROR, "Creating ddb$ schemas is currently not supported");
 			}
 		}
@@ -623,10 +623,10 @@ DuckdbHandleDDLPre(PlannedStmt *pstmt, const char *query_string) {
 	} else if (IsA(parsetree, RenameStmt)) {
 		auto stmt = castNode(RenameStmt, parsetree);
 		if (stmt->renameType == OBJECT_SCHEMA) {
-			if (pgduckdb::IsDuckdbSchemaName(stmt->subname)) {
+			if (pgddb::IsDuckdbSchemaName(stmt->subname)) {
 				elog(ERROR, "Changing the name of a ddb$ schema is currently not supported");
 			}
-			if (pgduckdb::IsDuckdbSchemaName(stmt->newname)) {
+			if (pgddb::IsDuckdbSchemaName(stmt->newname)) {
 				elog(ERROR, "Changing a schema to a ddb$ schema is currently not supported");
 			}
 		} else if (stmt->renameType == OBJECT_TABLE ||

@@ -3,7 +3,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
 #include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 

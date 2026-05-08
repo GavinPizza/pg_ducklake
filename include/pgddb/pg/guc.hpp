@@ -1,7 +1,7 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 extern const char *GetConfigOption(const char *name, bool missing_ok = false, bool restrict_privileged = true);
 }

@@ -3,7 +3,7 @@
 #include "pgduckdb/catalog/pgduckdb_transaction.hpp"
 #include "pgduckdb/catalog/pgduckdb_table.hpp"
 #include "pgduckdb/scan/postgres_scan.hpp"
-#include "pgduckdb/pg/relations.hpp"
+#include "pgddb/pg/relations.hpp"
 
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -38,9 +38,9 @@ SchemaItems::GetTable(const duckdb::string &entry_name) {
 		return it->second.get();
 	}
 
-	Oid rel_oid = GetRelidFromSchemaAndTable(name.c_str(), entry_name.c_str());
+	Oid rel_oid = pgddb::GetRelidFromSchemaAndTable(name.c_str(), entry_name.c_str());
 
-	if (!IsValidOid(rel_oid)) {
+	if (!pgddb::IsValidOid(rel_oid)) {
 		return nullptr; // Table could not be found
 	}
 
@@ -50,7 +50,7 @@ SchemaItems::GetTable(const duckdb::string &entry_name) {
 	info.table = entry_name;
 	PostgresTable::SetTableInfo(info, rel);
 
-	auto cardinality = EstimateRelSize(rel);
+	auto cardinality = pgddb::EstimateRelSize(rel);
 	tables.emplace(entry_name, duckdb::make_uniq<PostgresTable>(schema->catalog, *schema, info, rel, cardinality,
 	                                                            schema->snapshot));
 	return tables[entry_name].get();

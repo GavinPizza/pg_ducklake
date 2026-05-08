@@ -1,9 +1,9 @@
 #include "duckdb.hpp"
-#include "pgduckdb/pg/string_utils.hpp"
+#include "pgddb/pg/string_utils.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
-#include "pgduckdb/pg/relations.hpp"
-#include "pgduckdb/pg/locale.hpp"
+#include "pgddb/pg/relations.hpp"
+#include "pgddb/pg/locale.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -500,7 +500,7 @@ pgduckdb_db_and_schema(const char *postgres_schema_name, const char *duckdb_tabl
 		                 "SERVER motherduck OPTIONS (token '<your token>');")));
 	}
 
-	if (!pgduckdb::IsDuckdbSchemaName(postgres_schema_name)) {
+	if (!pgddb::IsDuckdbSchemaName(postgres_schema_name)) {
 		auto dbname = pgddb::DuckDBManager::Get().GetDefaultDBName().c_str();
 		return list_make2((void *)dbname, (void *)postgres_schema_name);
 	}
@@ -755,7 +755,7 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 		 * this?
 		 */
 		Oid collation = column->attcollation;
-		if (collation != InvalidOid && collation != DEFAULT_COLLATION_OID && !pgduckdb::pg::IsCLocale(collation)) {
+		if (collation != InvalidOid && collation != DEFAULT_COLLATION_OID && !pgddb::pg::IsCLocale(collation)) {
 			elog(ERROR, "DuckDB does not support column collations");
 		}
 	}
@@ -1039,7 +1039,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 		case AT_ColumnDefault: {
 			const char *column_name = cmd->name;
 			TupleDesc tupdesc = RelationGetDescr(relation);
-			Form_pg_attribute attribute = pgduckdb::pg::GetAttributeByName(tupdesc, column_name);
+			Form_pg_attribute attribute = pgddb::pg::GetAttributeByName(tupdesc, column_name);
 			if (!attribute) {
 				elog(ERROR, "Column %s not found in table %s", column_name, relation_name);
 			}

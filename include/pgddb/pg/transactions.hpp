@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
 extern "C" {
 extern bool IsSubTransaction(void);
@@ -34,7 +34,7 @@ typedef enum {
 typedef void (*SubXactCallback)(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg);
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 void CommandCounterIncrement();
 CommandId GetCurrentCommandId(bool used = false);
 bool IsInTransactionBlock(bool top_level);
@@ -43,4 +43,4 @@ void RegisterXactCallback(XactCallback callback, void *arg);
 void UnregisterXactCallback(XactCallback callback, void *arg);
 void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

@@ -1,4 +1,4 @@
-#include "pgduckdb/pg/locale.hpp"
+#include "pgddb/pg/locale.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -18,7 +18,7 @@ extern "C" {
 #include "utils/pg_locale.h"
 }
 
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 
 bool
 IsCLocale(Oid collation_id) {
@@ -29,4 +29,4 @@ IsCLocale(Oid collation_id) {
 #endif
 }
 
-} // namespace pgduckdb::pg
+} // namespace pgddb::pg

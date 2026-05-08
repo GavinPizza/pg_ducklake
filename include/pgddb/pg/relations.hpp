@@ -1,8 +1,8 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
-namespace pgduckdb {
+namespace pgddb {
 
 TupleDesc RelationGetDescr(Relation relation);
 
@@ -43,4 +43,4 @@ namespace pg {
 Form_pg_attribute GetAttributeByName(TupleDesc tupdesc, const char *colname);
 }
 
-} // namespace pgduckdb
+} // namespace pgddb

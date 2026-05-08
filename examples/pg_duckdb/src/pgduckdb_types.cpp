@@ -11,8 +11,8 @@
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/scan/postgres_scan.hpp"
-#include "pgduckdb/pg/memory.hpp"
-#include "pgduckdb/pg/types.hpp"
+#include "pgddb/pg/memory.hpp"
+#include "pgddb/pg/types.hpp"
 
 extern "C" {
 
@@ -181,7 +181,7 @@ ConvertVarbitDatum(const duckdb::Value &value) {
 
 	// Here we rely on postgres conversion function, instead of manual parsing, because BIT string type involves padding
 	// and duckdb/postgres handle it differently, it's non-trivial to memcpy the bits.
-	return pgduckdb::pg::StringToVarbit(value_str.c_str());
+	return pgddb::pg::StringToVarbit(value_str.c_str());
 }
 
 static inline bool
@@ -454,7 +454,7 @@ ConvertNumericDatum(const duckdb::Value &value) {
 		// The performant way to handle the translation is to parse BIGNUM out, here we leverage string conversion and
 		// parsing mainly for code simplicity.
 		const std::string value_str = value.ToString();
-		Datum pg_numeric = pgduckdb::pg::StringToNumeric(value_str.c_str());
+		Datum pg_numeric = pgddb::pg::StringToNumeric(value_str.c_str());
 		return pg_numeric;
 	}
 
@@ -551,7 +551,7 @@ DatumGetBitString(Datum value) {
 	//
 	// NOTE: We use VarbitToString here, because BIT and VARBIT are both stored
 	// internally as a VARBIT in postgres.
-	return std::string(pgduckdb::pg::VarbitToString(value));
+	return std::string(pgddb::pg::VarbitToString(value));
 }
 
 static duckdb::dtime_t
@@ -1292,7 +1292,7 @@ numeric_typmod_scale(int32 typmod) {
 duckdb::LogicalType
 ConvertPostgresToBaseDuckColumnType(Form_pg_attribute &attribute) {
 	int32 type_modifier = attribute->atttypmod;
-	Oid typoid = pg::GetBaseTypeAndTypmod(attribute->atttypid, &type_modifier);
+	Oid typoid = pgddb::pg::GetBaseTypeAndTypmod(attribute->atttypid, &type_modifier);
 	switch (typoid) {
 	case BOOLOID:
 	case BOOLARRAYOID:
@@ -1423,8 +1423,8 @@ ConvertPostgresToDuckColumnType(Form_pg_attribute &attribute) {
 		return base_type;
 	}
 
-	if (!pg::IsArrayType(attribute->atttypid)) {
-		if (!pg::IsArrayDomainType(attribute->atttypid)) {
+	if (!pgddb::pg::IsArrayType(attribute->atttypid)) {
+		if (!pgddb::pg::IsArrayDomainType(attribute->atttypid)) {
 			return base_type;
 		}
 	}
@@ -2116,7 +2116,7 @@ InsertTuplesIntoChunk(duckdb::DataChunk &output, PostgresScanLocalState &scan_lo
 		MemoryContext old_ctx = NULL;
 		if (!is_safe_type) {
 			lock_guard = std::make_unique<std::lock_guard<std::recursive_mutex>>(GlobalProcessLock::GetLock());
-			old_ctx = pg::MemoryContextSwitchTo(scan_global_state->duckdb_scan_memory_ctx);
+			old_ctx = pgddb::pg::MemoryContextSwitchTo(scan_global_state->duckdb_scan_memory_ctx);
 		}
 
 		for (int row = 0; row < num_slots; row++) {
@@ -2141,8 +2141,8 @@ InsertTuplesIntoChunk(duckdb::DataChunk &output, PostgresScanLocalState &scan_lo
 		}
 
 		if (!is_safe_type) {
-			pg::MemoryContextSwitchTo(old_ctx);
-			pg::MemoryContextReset(scan_global_state->duckdb_scan_memory_ctx);
+			pgddb::pg::MemoryContextSwitchTo(old_ctx);
+			pgddb::pg::MemoryContextReset(scan_global_state->duckdb_scan_memory_ctx);
 			// Lock will be automatically unlocked when lock_guard goes out of scope
 		}
 	}

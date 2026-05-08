@@ -1,3 +1,3 @@
-namespace pgduckdb::pg {
+namespace pgddb::pg {
 bool AllowRawFileAccess();
 }

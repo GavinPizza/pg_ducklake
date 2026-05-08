@@ -7,10 +7,10 @@
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 #include "pgduckdb/catalog/pgduckdb_storage.hpp"
-#include "pgduckdb/pg/guc.hpp"
-#include "pgduckdb/pg/permissions.hpp"
-#include "pgduckdb/pg/string_utils.hpp"
-#include "pgduckdb/pg/transactions.hpp"
+#include "pgddb/pg/guc.hpp"
+#include "pgddb/pg/permissions.hpp"
+#include "pgddb/pg/string_utils.hpp"
+#include "pgddb/pg/transactions.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_fdw.hpp"
 #include "pgduckdb/pgduckdb_guc.hpp"
@@ -110,7 +110,7 @@ DuckDBManager::Initialize() {
 		user_agent += ", ";
 		user_agent += duckdb_custom_user_agent;
 	}
-	const char *application_name = pg::GetConfigOption("application_name", true);
+	const char *application_name = pgddb::pg::GetConfigOption("application_name", true);
 	if (!IsEmptyString(application_name)) {
 		user_agent += ", ";
 		user_agent += application_name;
@@ -185,7 +185,7 @@ DuckDBManager::Initialize() {
 		}
 	}
 
-	std::string pg_time_zone(pg::GetConfigOption("TimeZone"));
+	std::string pg_time_zone(pgddb::pg::GetConfigOption("TimeZone"));
 
 	database = new duckdb::DuckDB(connection_string, &config);
 
@@ -245,7 +245,7 @@ GetSeqLastValue(const char *seq_name) {
 
 void
 DuckDBManager::LoadSecrets(duckdb::ClientContext &context) {
-	auto queries = InvokeCPPFunc(pg::ListDuckDBCreateSecretQueries);
+	auto queries = InvokeCPPFunc(pgduckdb::pg::ListDuckDBCreateSecretQueries);
 	foreach_ptr(char, query, queries) {
 		DuckDBQueryOrThrow(context, query);
 	}
@@ -285,7 +285,7 @@ DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
 
 static std::string
 DisabledFileSystems() {
-	if (pgduckdb::pg::AllowRawFileAccess()) {
+	if (pgddb::pg::AllowRawFileAccess()) {
 		return duckdb_disabled_filesystems;
 	}
 
@@ -372,7 +372,7 @@ DuckDBManager::GetConnection(bool force_transaction) {
 			throw duckdb::NotImplementedException("SAVEPOINT and subtransactions are not supported in DuckDB");
 		}
 
-		if (force_transaction || pg::IsInTransactionBlock()) {
+		if (force_transaction || pgduckdb::pg::IsInTransactionBlock()) {
 			/*
 			 * We only want to open a new DuckDB transaction if we're already
 			 * in a Postgres transaction block. Always opening a transaction

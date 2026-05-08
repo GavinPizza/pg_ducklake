@@ -8,7 +8,7 @@
 
 PGDDB_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PGDDB_INCLUDE := -I$(PGDDB_DIR)/include
-PGDDB_SRCS := $(wildcard $(PGDDB_DIR)/src/*.cpp)
+PGDDB_SRCS := $(wildcard $(PGDDB_DIR)/src/*.cpp $(PGDDB_DIR)/src/*/*.cpp)
 PGDDB_OBJS := $(PGDDB_SRCS:.cpp=.o)
 
 examples/%:

@@ -6,7 +6,7 @@
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_userdata_cache.hpp"
-#include "pgduckdb/pg/functions.hpp"
+#include "pgddb/pg/functions.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
 
 extern "C" {
@@ -58,7 +58,7 @@ ReadOptions(FunctionCallInfo fcinfo, int start, const std::vector<std::string> &
 		if (opt_idx >= PG_NARGS()) {
 			break;
 		}
-		auto value = GetArgString(fcinfo, opt_idx++);
+		auto value = pgddb::pg::GetArgString(fcinfo, opt_idx++);
 		if (value.empty()) {
 			continue;
 		}
@@ -96,8 +96,8 @@ DECLARE_PG_FUNCTION(pgduckdb_enable_motherduck) {
 		PG_RETURN_BOOL(false);
 	}
 
-	auto token = pgduckdb::pg::GetArgString(fcinfo, 0);
-	auto default_database = pgduckdb::pg::GetArgString(fcinfo, 1);
+	auto token = pgddb::pg::GetArgString(fcinfo, 0);
+	auto default_database = pgddb::pg::GetArgString(fcinfo, 1);
 
 	// If no token provided, check that token exists in the environment
 	if (token == "::FROM_ENV::" && getenv("MOTHERDUCK_TOKEN") == nullptr && getenv("motherduck_token") == nullptr) {
@@ -146,7 +146,7 @@ DECLARE_PG_FUNCTION(pgduckdb_enable_motherduck) {
 }
 
 DECLARE_PG_FUNCTION(pgduckdb_create_simple_secret) {
-	auto type = pgduckdb::pg::GetArgString(fcinfo, 0);
+	auto type = pgddb::pg::GetArgString(fcinfo, 0);
 	auto lc_type = duckdb::StringUtil::Lower(type);
 	if (lc_type != "r2" && lc_type != "s3" && lc_type != "gcs") {
 		elog(ERROR,
@@ -155,9 +155,9 @@ DECLARE_PG_FUNCTION(pgduckdb_create_simple_secret) {
 		     type.c_str());
 	}
 
-	auto key = pgduckdb::pg::GetArgString(fcinfo, 1);
-	auto secret = pgduckdb::pg::GetArgString(fcinfo, 2);
-	auto session_token = pgduckdb::pg::GetArgString(fcinfo, 3);
+	auto key = pgddb::pg::GetArgString(fcinfo, 1);
+	auto secret = pgddb::pg::GetArgString(fcinfo, 2);
+	auto session_token = pgddb::pg::GetArgString(fcinfo, 3);
 	auto secret_name = "simple_" + lc_type + "_secret";
 	SPI_connect();
 	auto server_name = pgduckdb::FindServerName(secret_name.c_str());
@@ -202,7 +202,7 @@ DECLARE_PG_FUNCTION(pgduckdb_create_simple_secret) {
 
 DECLARE_PG_FUNCTION(pgduckdb_create_azure_secret) {
 	// XXX: Should this install `azure` if not already installed? Or fail if not?
-	auto connection_string = pgduckdb::pg::GetArgString(fcinfo, 0);
+	auto connection_string = pgddb::pg::GetArgString(fcinfo, 0);
 	SPI_connect();
 	auto server_name = pgduckdb::FindServerName("azure_secret");
 	{
@@ -313,7 +313,7 @@ DECLARE_PG_FUNCTION(duckdb_map_out) {
 }
 
 DECLARE_PG_FUNCTION(pgduckdb_test_escape_uri) {
-	auto input = pgduckdb::pg::GetArgString(fcinfo, 0);
+	auto input = pgddb::pg::GetArgString(fcinfo, 0);
 	std::ostringstream oss;
 	pgduckdb::AppendEscapedUri(oss, input.c_str());
 	auto result = oss.str();

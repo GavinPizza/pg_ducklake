@@ -7,7 +7,7 @@
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 
-#include "pgduckdb/pg/transactions.hpp"
+#include "pgddb/pg/transactions.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
 
 namespace pgduckdb {
@@ -25,7 +25,7 @@ static bool force_allow_writes;
  */
 bool
 IsInTransactionBlock() {
-	return IsInTransactionBlock(top_level_statement);
+	return ::pgddb::pg::IsInTransactionBlock(top_level_statement);
 }
 
 /*
@@ -34,7 +34,7 @@ IsInTransactionBlock() {
  */
 void
 PreventInTransactionBlock(const char *statement_type) {
-	PreventInTransactionBlock(top_level_statement, statement_type);
+	::pgddb::pg::PreventInTransactionBlock(top_level_statement, statement_type);
 }
 
 /*
@@ -54,7 +54,7 @@ PreventInTransactionBlock(const char *statement_type) {
  */
 static bool
 DidWrites() {
-	return pg::GetCurrentCommandId() > next_expected_command_id;
+	return pgddb::pg::GetCurrentCommandId() > next_expected_command_id;
 }
 
 void
@@ -74,13 +74,13 @@ AllowWrites() {
 
 bool
 MixedWritesAllowed() {
-	return !pg::IsInTransactionBlock() || duckdb_unsafe_allow_mixed_transactions || pg::force_allow_writes ||
+	return !pgduckdb::pg::IsInTransactionBlock() || duckdb_unsafe_allow_mixed_transactions || pgduckdb::pg::force_allow_writes ||
 	       pgduckdb::doing_motherduck_sync;
 }
 
 bool
 DidDisallowedMixedWrites() {
-	return !MixedWritesAllowed() && pg::DidWrites() && pgddb::ddb::DidWrites();
+	return !MixedWritesAllowed() && pgduckdb::pg::DidWrites() && pgddb::ddb::DidWrites();
 }
 
 /*
@@ -116,15 +116,15 @@ ClaimCurrentCommandId(bool force) {
 	 * CommandCounterIncrement the next call to GetCurrentCommandId will
 	 * receive a new command id.
 	 */
-	CommandId new_command_id = pg::GetCurrentCommandId(true);
+	CommandId new_command_id = pgddb::pg::GetCurrentCommandId(true);
 
 	if (new_command_id != next_expected_command_id && !MixedWritesAllowed() && !force) {
 		throw duckdb::NotImplementedException(
 		    "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
 	}
 
-	pg::CommandCounterIncrement();
-	next_expected_command_id = pg::GetCurrentCommandId();
+	pgddb::pg::CommandCounterIncrement();
+	next_expected_command_id = pgddb::pg::GetCurrentCommandId();
 }
 
 /*
@@ -161,12 +161,12 @@ IsStatementTopLevel() {
  */
 void
 AutocommitSingleStatementQueries() {
-	if (pg::IsInTransactionBlock()) {
+	if (pgduckdb::pg::IsInTransactionBlock()) {
 		/* We're in a transaction block, we can just execute the query */
 		return;
 	}
 
-	pg::PreventInTransactionBlock(top_level_statement,
+	pgddb::pg::PreventInTransactionBlock(top_level_statement,
 	                              "BUG: You should never see this error we checked IsInTransactionBlock before.");
 }
 
@@ -236,7 +236,7 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 		CheckForDisallowedMixedWrites();
 
 		next_expected_command_id = FirstCommandId;
-		pg::force_allow_writes = false;
+		pgduckdb::pg::force_allow_writes = false;
 		if (modified_temporary_duckdb_tables) {
 			modified_temporary_duckdb_tables = false;
 			temporary_duckdb_tables_old.clear();
@@ -251,7 +251,7 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_ABORT:
 		next_expected_command_id = FirstCommandId;
-		pg::force_allow_writes = false;
+		pgduckdb::pg::force_allow_writes = false;
 		if (modified_temporary_duckdb_tables) {
 			modified_temporary_duckdb_tables = false;
 			/* The transaction failed, so we restore original set of temporary
@@ -330,8 +330,8 @@ RegisterDuckdbXactCallback() {
 	if (transaction_handler_configured) {
 		return;
 	}
-	pg::RegisterXactCallback(DuckdbXactCallback, nullptr);
-	pg::RegisterSubXactCallback(DuckdbSubXactCallback, nullptr);
+	pgddb::pg::RegisterXactCallback(DuckdbXactCallback, nullptr);
+	pgddb::pg::RegisterSubXactCallback(DuckdbSubXactCallback, nullptr);
 	transaction_handler_configured = true;
 }
 } // namespace pgduckdb

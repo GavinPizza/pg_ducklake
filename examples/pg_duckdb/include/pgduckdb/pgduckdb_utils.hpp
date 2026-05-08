@@ -3,7 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
-#include "pgduckdb/pg/error_data.hpp"
+#include "pgddb/pg/error_data.hpp"
 #include "pgduckdb/logger.hpp"
 
 #include <setjmp.h>
@@ -114,7 +114,7 @@ __PostgresFunctionGuard__(const char *func_name, FuncArgs... args) {
 		}
 	} // PG_END_TRY
 
-	auto message = duckdb::StringUtil::Format("(PGDuckDB/%s) %s", func_name, pg::GetErrorDataMessage(edata));
+	auto message = duckdb::StringUtil::Format("(PGDuckDB/%s) %s", func_name, pgddb::pg::GetErrorDataMessage(edata));
 	throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, message);
 }
 
@@ -154,7 +154,7 @@ __PostgresMemberGuard__(ReturnType (T::*func)(FuncArgs... args), T *instance, co
 		}
 	} // PG_END_TRY
 
-	auto message = duckdb::StringUtil::Format("(PGDuckDB/%s) %s", func_name, pg::GetErrorDataMessage(edata));
+	auto message = duckdb::StringUtil::Format("(PGDuckDB/%s) %s", func_name, pgddb::pg::GetErrorDataMessage(edata));
 	throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, message);
 }
 

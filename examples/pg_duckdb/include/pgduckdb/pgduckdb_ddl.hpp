@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgduckdb {
 enum class DDLType { NONE, CREATE_TABLE, ALTER_TABLE, REFRESH_MATERIALIZED_VIEW, RENAME_VIEW };

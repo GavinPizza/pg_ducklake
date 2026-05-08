@@ -1,4 +1,4 @@
-#include "pgduckdb/pg/relations.hpp"
+#include "pgddb/pg/relations.hpp"
 
 #include "pgduckdb/pgduckdb_utils.hpp"
 
@@ -17,7 +17,7 @@ extern "C" {
 #include "utils/syscache.h"    // RELOID
 }
 
-namespace pgduckdb {
+namespace pgddb {
 
 #undef RelationGetDescr
 
@@ -197,4 +197,4 @@ GetAttributeByName(TupleDesc tupdesc, const char *colname) {
 
 } // namespace pg
 
-} // namespace pgduckdb
+} // namespace pgddb

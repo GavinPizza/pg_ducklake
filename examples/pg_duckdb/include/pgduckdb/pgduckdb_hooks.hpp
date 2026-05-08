@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pgduckdb/pg/declarations.hpp"
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgduckdb {
 extern int64_t executor_nest_level;

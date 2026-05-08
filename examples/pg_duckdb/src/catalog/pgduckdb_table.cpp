@@ -3,7 +3,7 @@
 #include "pgduckdb/scan/postgres_scan.hpp"
 #include "pgduckdb/catalog/pgduckdb_schema.hpp"
 #include "pgduckdb/logger.hpp"
-#include "pgduckdb/pg/relations.hpp"
+#include "pgddb/pg/relations.hpp"
 #include "pgduckdb/pgduckdb_process_lock.hpp"
 #include "pgduckdb/pgduckdb_types.hpp" // ConvertPostgresToDuckColumnType
 
@@ -21,23 +21,23 @@ PostgresTable::PostgresTable(duckdb::Catalog &_catalog, duckdb::SchemaCatalogEnt
 
 PostgresTable::~PostgresTable() {
 	std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
-	CloseRelation(rel);
+	pgddb::CloseRelation(rel);
 }
 
 Relation
 PostgresTable::OpenRelation(Oid relid) {
 	std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
-	return pgduckdb::OpenRelation(relid);
+	return pgddb::OpenRelation(relid);
 }
 
 void
 PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
-	auto tupleDesc = RelationGetDescr(rel);
+	auto tupleDesc = pgddb::RelationGetDescr(rel);
 
-	const auto n = GetTupleDescNatts(tupleDesc);
+	const auto n = pgddb::GetTupleDescNatts(tupleDesc);
 	for (int i = 0; i < n; ++i) {
-		Form_pg_attribute attr = GetAttr(tupleDesc, i);
-		auto col_name = duckdb::string(GetAttName(attr));
+		Form_pg_attribute attr = pgddb::GetAttr(tupleDesc, i);
+		auto col_name = duckdb::string(pgddb::GetAttName(attr));
 		auto duck_type = ConvertPostgresToDuckColumnType(attr);
 		info.columns.AddColumn(duckdb::ColumnDefinition(col_name, duck_type));
 		/* Log column name and type */

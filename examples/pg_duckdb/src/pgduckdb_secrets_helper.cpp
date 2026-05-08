@@ -4,7 +4,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "pgduckdb/pg/string_utils.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -175,7 +175,7 @@ const char *
 GetQueryError(const char *query, List *server_options) {
 	// Create a new connection on the DB so we can create the secret and rollback without modifying the transaction
 	// state of the main connection.
-	auto con = pgduckdb::DuckDBManager::CreateConnection();
+	auto con = pgddb::DuckDBManager::CreateConnection();
 
 	auto tx_query = duckdb::StringUtil::Format("BEGIN; %s", query);
 	auto res = con->Query(tx_query);

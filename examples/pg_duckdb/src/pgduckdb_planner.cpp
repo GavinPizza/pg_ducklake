@@ -32,7 +32,7 @@ extern "C" {
 #endif
 }
 
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
@@ -49,7 +49,7 @@ DuckdbPrepare(const Query *query, const char *explain_prefix) {
 
 	elog(DEBUG2, "(PGDuckDB/DuckdbPrepare) Preparing: %s", query_string);
 
-	auto con = pgduckdb::DuckDBManager::GetConnection();
+	auto con = pgddb::DuckDBManager::GetConnection();
 	return con->context->Prepare(query_string);
 }
 

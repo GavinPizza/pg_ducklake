@@ -2,7 +2,7 @@
 
 #include "duckdb.hpp"
 
-namespace pgduckdb {
+namespace pgddb {
 
 namespace ddb {
 bool DidWrites();
@@ -103,4 +103,4 @@ private:
 	bool secrets_valid;
 };
 
-} // namespace pgduckdb
+} // namespace pgddb

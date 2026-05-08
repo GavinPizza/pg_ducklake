@@ -1,4 +1,4 @@
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -304,8 +304,8 @@ IsExtensionRegistered() {
 		 * dropped the extension (possibly in a different session). This seems
 		 * like a good moment to clean that up if that's the case.
 		 */
-		if (pgduckdb::DuckDBManager::IsInitialized()) {
-			pgduckdb::DuckDBManager::Reset();
+		if (pgddb::DuckDBManager::IsInitialized()) {
+			pgddb::DuckDBManager::Reset();
 		}
 		elog(DEBUG1, "pgduckdb: extension is not registered in database '%s'", get_database_name(MyDatabaseId));
 	}

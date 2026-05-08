@@ -42,7 +42,7 @@ extern "C" {
 
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_fdw.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
@@ -882,7 +882,7 @@ DuckdbHandleRenameViewPre(RenameStmt *stmt) {
 
 	pgduckdb::ClaimCurrentCommandId();
 
-	auto connection = pgduckdb::DuckDBManager::GetConnection(true);
+	auto connection = pgddb::DuckDBManager::GetConnection(true);
 	pgduckdb::DuckDBQueryOrThrow(*connection, pgduckdb_get_rename_relationdef(relation_oid, stmt));
 	RelationClose(rel);
 
@@ -988,7 +988,7 @@ DuckdbHandleViewStmtPre(Node *parsetree, PlannedStmt *pstmt, const char *query_s
 
 	/* We're doing a cross-database writes, so want to use a transaction to
 	 * limit the duration of inconsistency. */
-	auto connection = pgduckdb::DuckDBManager::GetConnection(true);
+	auto connection = pgddb::DuckDBManager::GetConnection(true);
 	pgduckdb::DuckDBQueryOrThrow(*connection, create_view_string);
 	return true;
 }
@@ -999,7 +999,7 @@ DuckdbHandleViewStmtPost(Node *parsetree) {
 
 	Relation rel = relation_openrv(stmt->view, AccessShareLock);
 	Oid relid = rel->rd_id;
-	auto default_db = pgduckdb::DuckDBManager::Get().GetDefaultDBName();
+	auto default_db = pgddb::DuckDBManager::Get().GetDefaultDBName();
 	char *postgres_schema_name = get_namespace_name(rel->rd_rel->relnamespace);
 
 	const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, "duckdb"));
@@ -1295,7 +1295,7 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 		int sec_context;
 		const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
 		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, "duckdb"));
-		auto default_db = pgduckdb::DuckDBManager::Get().GetDefaultDBName();
+		auto default_db = pgddb::DuckDBManager::Get().GetDefaultDBName();
 
 		Oid arg_types[] = {OIDOID, TEXTOID, TEXTOID, TEXTOID};
 		Datum values[] = {relid_datum, CStringGetTextDatum(duckdb_db), 0, CStringGetTextDatum(default_db.c_str())};
@@ -1364,7 +1364,7 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 
 	/* We're going to run multiple queries in DuckDB, so we need to start a
 	 * transaction to ensure ACID guarantees hold. */
-	auto connection = pgduckdb::DuckDBManager::GetConnection(true);
+	auto connection = pgddb::DuckDBManager::GetConnection(true);
 	Query *ctas_query = nullptr;
 
 	if (IsA(parsetree, CreateTableAsStmt) && !ctas_skip_data) {
@@ -1579,7 +1579,7 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 			if (!connection) {
 				/* We're going to run multiple queries in DuckDB, so we need to
 				 * start a transaction to ensure ACID guarantees hold. */
-				connection = pgduckdb::DuckDBManager::GetConnection(true);
+				connection = pgddb::DuckDBManager::GetConnection(true);
 			}
 			HeapTuple tuple = SPI_tuptable->vals[proc];
 
@@ -1627,7 +1627,7 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 		if (!connection) {
 			/* We're going to run multiple queries in DuckDB, so we need to
 			 * start a transaction to ensure ACID guarantees hold. */
-			connection = pgduckdb::DuckDBManager::GetConnection(true);
+			connection = pgddb::DuckDBManager::GetConnection(true);
 		}
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
 		pgduckdb::DuckDBQueryOrThrow(*connection,
@@ -1779,7 +1779,7 @@ DECLARE_PG_FUNCTION(duckdb_alter_table_trigger) {
 
 	/* We're going to run multiple queries in DuckDB, so we need to start a
 	 * transaction to ensure ACID guarantees hold. */
-	auto connection = pgduckdb::DuckDBManager::GetConnection(true);
+	auto connection = pgddb::DuckDBManager::GetConnection(true);
 
 	EventTriggerData *trigdata = (EventTriggerData *)fcinfo->context;
 	char *alter_table_stmt_string;

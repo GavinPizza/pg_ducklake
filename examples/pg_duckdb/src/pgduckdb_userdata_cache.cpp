@@ -1,4 +1,4 @@
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -45,7 +45,7 @@ bool callback_is_configured = false;
 void
 InvalidateCache(Datum, int, uint32) {
 	InvalidateUserDataCache();
-	InvokeCPPFunc(pgduckdb::DuckDBManager::InvalidateDuckDBSecretsIfInitialized);
+	InvokeCPPFunc(pgddb::DuckDBManager::InvalidateDuckDBSecretsIfInitialized);
 }
 
 } // namespace

@@ -1,7 +1,7 @@
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_guc.hpp"
 
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 extern "C" {
 #include "postgres.h"

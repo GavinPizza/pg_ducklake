@@ -3,7 +3,7 @@
 #include "duckdb.hpp"
 
 #include "pgduckdb/pg/declarations.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 #include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 

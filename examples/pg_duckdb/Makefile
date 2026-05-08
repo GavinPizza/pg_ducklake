@@ -1,5 +1,9 @@
 .PHONY: duckdb install-duckdb clean-duckdb clean-all lintcheck check-regression-duckdb clean-regression
 
+# Pull in libpgddb sources (PGDDB_INCLUDE / PGDDB_OBJS) from the repo root.
+ROOT_DIR := $(abspath $(CURDIR)/../..)
+include $(ROOT_DIR)/Makefile
+
 PG_DUCKDB_VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo "unknown")
 
 MODULE_big = pg_duckdb
@@ -11,6 +15,9 @@ OBJS = $(subst .cpp,.o, $(SRCS))
 
 C_SRCS = $(wildcard src/*.c src/*/*.c)
 OBJS += $(subst .c,.o, $(C_SRCS))
+
+# libpgddb objects, compiled in-place at $(ROOT_DIR)/src/.
+OBJS += $(PGDDB_OBJS)
 
 # set to `make` to disable ninja
 DUCKDB_GEN ?= ninja
@@ -72,7 +79,7 @@ endif
 
 COMPILER_FLAGS=-Wno-sign-compare -Wshadow -Wswitch -Wunused-parameter -Wunreachable-code -Wno-unknown-pragmas -Wall -Wextra ${ERROR_ON_WARNING}
 
-override PG_CPPFLAGS += -Iinclude -isystem third_party/duckdb/src/include -isystem third_party/duckdb/third_party/re2 -isystem $(INCLUDEDIR_SERVER) ${COMPILER_FLAGS}
+override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) -isystem third_party/duckdb/src/include -isystem third_party/duckdb/third_party/re2 -isystem $(INCLUDEDIR_SERVER) ${COMPILER_FLAGS}
 override PG_CXXFLAGS += -std=c++17 ${DUCKDB_BUILD_CXX_FLAGS} ${COMPILER_FLAGS} -Wno-register -Weffc++
 # Ignore declaration-after-statement warnings in our code. Postgres enforces
 # this because their ancient style guide requires it, but we don't care. It

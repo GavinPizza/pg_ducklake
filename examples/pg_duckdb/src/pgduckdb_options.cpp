@@ -2,7 +2,7 @@
 
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_userdata_cache.hpp"
@@ -259,7 +259,7 @@ DECLARE_PG_FUNCTION(pgduckdb_recycle_ddb) {
 	 * violate our assumptions about DuckDB its transaction lifecycle
 	 */
 	pgduckdb::pg::PreventInTransactionBlock("duckdb.recycle_ddb()");
-	pgduckdb::DuckDBManager::Reset();
+	pgddb::DuckDBManager::Reset();
 	PG_RETURN_BOOL(true);
 }
 

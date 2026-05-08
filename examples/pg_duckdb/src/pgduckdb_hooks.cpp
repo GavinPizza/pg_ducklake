@@ -388,7 +388,7 @@ DuckdbExecutorFinishHook_Cpp(QueryDesc *queryDesc) {
 		return;
 	}
 
-	if (!pgduckdb::ddb::DidWrites()) {
+	if (!pgddb::ddb::DidWrites()) {
 		return;
 	}
 

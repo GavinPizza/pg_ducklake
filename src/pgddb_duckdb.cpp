@@ -1,4 +1,4 @@
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 
 #include <filesystem>
 
@@ -39,7 +39,12 @@ extern "C" {
 #include "utils/lsyscache.h"  // get_relname_relid
 }
 
-namespace pgduckdb {
+namespace pgddb {
+
+// Bring pgduckdb's free functions and globals into scope so the moved code
+// can keep its unqualified references while the rest stays put. Future
+// iterations move more pieces and shrink this dependency.
+using namespace ::pgduckdb;
 
 const char *
 GetSessionHint() {
@@ -264,7 +269,7 @@ DuckDBManager::LoadExtensions(duckdb::ClientContext &context) {
 
 	for (auto &extension : duckdb_extensions) {
 		if (extension.autoload) {
-			DuckDBQueryOrThrow(context, ddb::LoadExtensionQuery(extension.name));
+			DuckDBQueryOrThrow(context, ::pgduckdb::ddb::LoadExtensionQuery(extension.name));
 		}
 	}
 }
@@ -274,7 +279,7 @@ DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
 	auto duckdb_extensions = ReadDuckdbExtensions();
 
 	for (auto &extension : duckdb_extensions) {
-		DuckDBQueryOrThrow(context, ddb::InstallExtensionQuery(extension.name, extension.repository));
+		DuckDBQueryOrThrow(context, ::pgduckdb::ddb::InstallExtensionQuery(extension.name, extension.repository));
 	}
 }
 
@@ -399,4 +404,4 @@ DuckDBManager::GetConnectionUnsafe() {
 	return instance.connection.get();
 }
 
-} // namespace pgduckdb
+} // namespace pgddb

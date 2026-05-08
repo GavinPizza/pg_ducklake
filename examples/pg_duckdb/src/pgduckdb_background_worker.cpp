@@ -61,7 +61,7 @@ extern "C" {
 
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_guc.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_userdata_cache.hpp"
@@ -172,7 +172,7 @@ RunOneCheck(int64_t &last_activity_count) {
 
 	if (!ddb_connection) {
 		try {
-			ddb_connection = DuckDBManager::CreateConnection();
+			ddb_connection = pgddb::DuckDBManager::CreateConnection();
 		} catch (std::exception &ex) {
 			elog(LOG, "pg_duckdb background worker: failed to create connection: %s", ex.what());
 			return true; // should exit
@@ -236,7 +236,7 @@ BgwMainLoop() {
 	}
 
 	ddb_connection.reset();
-	DuckDBManager::Reset();
+	pgddb::DuckDBManager::Reset();
 
 	elog(LOG, "pg_duckdb background worker for database '%s' (%u) has now terminated.", db_name, MyDatabaseId);
 }
@@ -291,7 +291,7 @@ force_motherduck_sync(PG_FUNCTION_ARGS) {
 	 * lifecycle would be linked to those postgres transactions, which we
 	 * don't want.
 	 */
-	auto connection = pgduckdb::DuckDBManager::Get().CreateConnection();
+	auto connection = pgddb::DuckDBManager::Get().CreateConnection();
 	SPI_connect_ext(SPI_OPT_NONATOMIC);
 	PG_TRY();
 	{

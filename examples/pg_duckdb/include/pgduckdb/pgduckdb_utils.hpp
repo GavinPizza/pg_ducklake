@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/error_data.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pg/error_data.hpp"
 #include "pgduckdb/logger.hpp"
 

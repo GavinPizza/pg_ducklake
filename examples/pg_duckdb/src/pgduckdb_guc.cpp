@@ -5,7 +5,7 @@
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"

@@ -1,6 +1,6 @@
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/pgduckdb_extensions.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 #include "pgddb/pg/functions.hpp"
 #include "pgddb/pg/snapshots.hpp"
 #include "pgddb/pg/relations.hpp"

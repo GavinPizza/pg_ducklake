@@ -1,8 +1,8 @@
-#include "pgduckdb/utility/signal_guard.hpp"
+#include "pgddb/utility/signal_guard.hpp"
 
 #include <stdexcept>
 
-namespace pgduckdb {
+namespace pgddb {
 
 ThreadSignalBlockGuard::ThreadSignalBlockGuard() : _blocked(false), _saved_set() {
 	sigset_t new_set;
@@ -36,4 +36,4 @@ ThreadSignalBlockGuard::unblock() {
 	_blocked = false;
 }
 
-} // namespace pgduckdb
+} // namespace pgddb

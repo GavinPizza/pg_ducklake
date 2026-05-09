@@ -3,7 +3,7 @@
 
 #include <signal.h>
 
-namespace pgduckdb {
+namespace pgddb {
 
 class ThreadSignalBlockGuard {
 public:
@@ -21,4 +21,4 @@ private:
 	sigset_t _saved_set;
 };
 
-} // namespace pgduckdb
+} // namespace pgddb

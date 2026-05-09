@@ -6,7 +6,7 @@ extern "C" {
 #include "postgres.h"
 }
 
-namespace pgduckdb {
+namespace pgddb {
 
 template <typename Func, Func func, typename... FuncArgs>
 typename std::invoke_result<Func, FuncArgs &...>::type
@@ -81,10 +81,10 @@ __CPPFunctionGuard__(const char *func_name, const char *file_name, int line, Fun
 	pg_unreachable();
 }
 
-} // namespace pgduckdb
+} // namespace pgddb
 
 #define InvokeCPPFunc(FUNC, ...)                                                                                       \
-	pgduckdb::__CPPFunctionGuard__<decltype(&FUNC), &FUNC>(#FUNC, __FILE__, __LINE__, ##__VA_ARGS__)
+	pgddb::__CPPFunctionGuard__<decltype(&FUNC), &FUNC>(#FUNC, __FILE__, __LINE__, ##__VA_ARGS__)
 
 // Wrappers
 

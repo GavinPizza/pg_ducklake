@@ -4,7 +4,7 @@
 #include "duckdb/common/reference_map.hpp"
 #include "pgddb/pg/declarations.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgddb {
 

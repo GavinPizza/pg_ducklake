@@ -5,7 +5,7 @@
 #include "pgddb/catalog/pgddb_storage.hpp"
 #include "pgddb/catalog/pgddb_transaction.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgddb {
 PostgresCatalog::PostgresCatalog(duckdb::AttachedDatabase &_db, const duckdb::string &connection_string)

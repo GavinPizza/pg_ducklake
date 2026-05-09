@@ -41,7 +41,7 @@ extern "C" {
 }
 
 #include "pgduckdb/pgduckdb_guc.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_fdw.hpp"

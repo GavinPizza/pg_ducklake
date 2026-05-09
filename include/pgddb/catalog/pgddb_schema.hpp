@@ -3,7 +3,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "pgddb/pg/declarations.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgddb {
 

@@ -77,7 +77,7 @@
 
 #include "pgduckdb/pgduckdb_ruleutils.h"
 
-#include "pgduckdb/utility/rename_ruleutils.h"
+#include "pgddb/utility/rename_ruleutils.h"
 
 /* ----------
  * Pretty formatting constants

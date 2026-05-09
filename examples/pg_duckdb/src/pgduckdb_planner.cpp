@@ -35,7 +35,7 @@ extern "C" {
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 
 duckdb::unique_ptr<duckdb::PreparedStatement>

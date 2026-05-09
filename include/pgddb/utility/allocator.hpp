@@ -1,6 +1,6 @@
 #pragma once
 
-namespace pgduckdb {
+namespace pgddb {
 
 template <class T>
 struct DuckDBMallocator {
@@ -44,4 +44,4 @@ operator!=(const DuckDBMallocator<T> &, const DuckDBMallocator<U> &) {
 	return false;
 }
 
-} // namespace pgduckdb
+} // namespace pgddb

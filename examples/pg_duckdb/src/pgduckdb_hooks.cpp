@@ -35,7 +35,7 @@ extern "C" {
 #include "pgduckdb/vendor/pg_explain.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
 #include "pgduckdb/pgduckdb_node.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 static planner_hook_type prev_planner_hook = NULL;
 static ExecutorStart_hook_type prev_executor_start_hook = NULL;

@@ -2,7 +2,7 @@
 #include "pgddb/catalog/pgddb_catalog.hpp"
 #include "pgddb/catalog/pgddb_transaction_manager.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgddb {
 static duckdb::unique_ptr<duckdb::TransactionManager>

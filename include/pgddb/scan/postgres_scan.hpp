@@ -3,11 +3,11 @@
 #include "duckdb.hpp"
 
 #include "pgddb/pg/declarations.hpp"
-#include "pgduckdb/utility/allocator.hpp"
+#include "pgddb/utility/allocator.hpp"
 
 #include "pgddb/scan/postgres_table_reader.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgddb {
 

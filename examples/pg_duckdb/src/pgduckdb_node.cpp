@@ -19,7 +19,7 @@ extern "C" {
 
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 bool duckdb_explain_analyze = false;
 bool duckdb_explain_ctas = false;

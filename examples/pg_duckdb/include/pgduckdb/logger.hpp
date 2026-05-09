@@ -2,7 +2,7 @@
 
 #include "pgduckdb/pgduckdb_process_lock.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 extern "C" {
 bool errstart(int elevel, const char *domain);

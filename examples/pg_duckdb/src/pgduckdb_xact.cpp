@@ -8,7 +8,7 @@
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 
 #include "pgddb/pg/transactions.hpp"
-#include "pgduckdb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 namespace pgduckdb {
 

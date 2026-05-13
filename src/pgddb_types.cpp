@@ -6,17 +6,16 @@
 #include "duckdb/common/types/uuid.hpp"
 
 #include "pgduckdb/pgduckdb_guc.hpp"
-#include "pgduckdb/pgduckdb_types.hpp"
+#include "pgddb/pgddb_types.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgddb/pgddb_utils.hpp"
-#include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgddb/scan/postgres_scan.hpp"
 #include "pgddb/pg/memory.hpp"
 #include "pgddb/pg/types.hpp"
 
 extern "C" {
 
-#include "pgduckdb/vendor/pg_numeric_c.hpp"
+#include "pgddb/vendor/pg_numeric_c.hpp"
 
 #include "postgres.h"
 #include "fmgr.h"
@@ -40,7 +39,13 @@ extern "C" {
 #include "pgduckdb/pgduckdb_detoast.hpp"
 #include "pgddb/pgddb_process_lock.hpp"
 
-namespace pgduckdb {
+namespace pgddb {
+
+// Bring pgduckdb's free functions and globals into scope while sibling pieces
+// (DuckdbStructOid / DuckdbUnionOid / DuckdbMapOid composite type Oids,
+// duckdb_convert_unsupported_numeric_to_double GUC, DetoastPostgresDatum) still
+// live in pgduckdb::. Type hooks in the next iteration will narrow this.
+using namespace ::pgduckdb;
 
 NumericVar FromNumeric(Numeric num);
 
@@ -188,7 +193,7 @@ static inline bool
 ValidDate(duckdb::date_t dt) {
 	if (dt == duckdb::date_t::infinity() || dt == duckdb::date_t::ninfinity())
 		return true;
-	return dt >= pgduckdb::PGDUCKDB_PG_MIN_DATE_VALUE && dt <= pgduckdb::PGDUCKDB_PG_MAX_DATE_VALUE;
+	return dt >= PGDUCKDB_PG_MIN_DATE_VALUE && dt <= PGDUCKDB_PG_MAX_DATE_VALUE;
 }
 
 static inline bool
@@ -199,7 +204,7 @@ ValidTimestampOrTimestampTz(int64_t timestamp) {
 	// MIN TIMESTAMP = 4714-11-24 00:00:00 (BC)
 	// MAX TIMESTAMP = 294246-12-31 23:59:59 , To keep it capped to a specific year.. also coincidently this is EXACTLY
 	// 30 years less than PG max value.
-	return timestamp >= pgduckdb::PGDUCKDB_MIN_TIMESTAMP_VALUE && timestamp < pgduckdb::PGDUCKDB_MAX_TIMESTAMP_VALUE;
+	return timestamp >= PGDUCKDB_MIN_TIMESTAMP_VALUE && timestamp < PGDUCKDB_MAX_TIMESTAMP_VALUE;
 }
 
 static Datum
@@ -264,8 +269,8 @@ ConvertDateDatum(const duckdb::Value &value) {
 	duckdb::date_t date = value.GetValue<duckdb::date_t>();
 	if (!ValidDate(date))
 		throw duckdb::OutOfRangeException("The value should be between min and max value (%s <-> %s)",
-		                                  duckdb::Date::ToString(pgduckdb::PGDUCKDB_PG_MIN_DATE_VALUE),
-		                                  duckdb::Date::ToString(pgduckdb::PGDUCKDB_PG_MAX_DATE_VALUE));
+		                                  duckdb::Date::ToString(PGDUCKDB_PG_MIN_DATE_VALUE),
+		                                  duckdb::Date::ToString(PGDUCKDB_PG_MAX_DATE_VALUE));
 
 	// Special Handling for +/-infinity date values
 	// -infinity value is different for PG date
@@ -274,7 +279,7 @@ ConvertDateDatum(const duckdb::Value &value) {
 	else if (date == duckdb::date_t::infinity())
 		return DateADTGetDatum(DATEVAL_NOEND);
 
-	return DateADTGetDatum(date.days - pgduckdb::PGDUCKDB_DUCK_DATE_OFFSET);
+	return DateADTGetDatum(date.days - PGDUCKDB_DUCK_DATE_OFFSET);
 }
 
 static Datum
@@ -344,7 +349,7 @@ ConvertTimestampDatum(const duckdb::Value &value) {
 		    duckdb::Timestamp::ToString(static_cast<duckdb::timestamp_t>(PGDUCKDB_MIN_TIMESTAMP_VALUE)),
 		    duckdb::Timestamp::ToString(static_cast<duckdb::timestamp_t>(PGDUCKDB_MAX_TIMESTAMP_VALUE)));
 
-	return TimestampGetDatum(rawValue - pgduckdb::PGDUCKDB_DUCK_TIMESTAMP_OFFSET);
+	return TimestampGetDatum(rawValue - PGDUCKDB_DUCK_TIMESTAMP_OFFSET);
 }
 
 inline Datum
@@ -364,7 +369,7 @@ ConvertTimestampTzDatum(const duckdb::Value &value) {
 		    duckdb::Timestamp::ToString(static_cast<duckdb::timestamp_tz_t>(PGDUCKDB_MIN_TIMESTAMP_VALUE)),
 		    duckdb::Timestamp::ToString(static_cast<duckdb::timestamp_tz_t>(PGDUCKDB_MAX_TIMESTAMP_VALUE)));
 
-	return TimestampTzGetDatum(rawValue - pgduckdb::PGDUCKDB_DUCK_TIMESTAMP_OFFSET);
+	return TimestampTzGetDatum(rawValue - PGDUCKDB_DUCK_TIMESTAMP_OFFSET);
 }
 
 inline Datum
@@ -930,7 +935,7 @@ GetChildType(const duckdb::LogicalType &type) {
 static idx_t
 GetDuckDBListDimensionality(const duckdb::LogicalType &nested_type, idx_t depth = 0) {
 	D_ASSERT(IsNestedType(nested_type.id()));
-	auto &child = pgduckdb::GetChildType(nested_type);
+	auto &child = GetChildType(nested_type);
 	if (IsNestedType(child.id())) {
 		return GetDuckDBListDimensionality(child, depth + 1);
 	}
@@ -1055,7 +1060,7 @@ public:
 template <class OP>
 static void
 ConvertDuckToPostgresArray(TupleTableSlot *slot, duckdb::Value &value, idx_t col) {
-	D_ASSERT(pgduckdb::IsNestedType(value.type().id()));
+	D_ASSERT(IsNestedType(value.type().id()));
 	auto number_of_dimensions = GetDuckDBListDimensionality(value.type());
 
 	PostgresArrayAppendState<OP> append_state(number_of_dimensions);
@@ -1602,7 +1607,7 @@ GetPostgresDuckDBType(const duckdb::LogicalType &type, bool throw_error) {
 	case duckdb::LogicalTypeId::ARRAY: {
 		const duckdb::LogicalType *duck_type = &type;
 		while (IsNestedType(duck_type->id())) {
-			auto &child_type = pgduckdb::GetChildType(*duck_type);
+			auto &child_type = GetChildType(*duck_type);
 			duck_type = &child_type;
 		}
 		return GetPostgresArrayDuckDBType(*duck_type, throw_error);
@@ -2162,4 +2167,4 @@ FromNumeric(Numeric num) {
 	dest.buf = NULL; /* digits array is not palloc'd */
 	return dest;
 }
-} // namespace pgduckdb
+} // namespace pgddb

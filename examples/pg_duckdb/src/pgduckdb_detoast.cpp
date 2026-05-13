@@ -1,6 +1,6 @@
 #include "duckdb.hpp"
 
-#include "pgduckdb/pgduckdb_types.hpp"
+#include "pgddb/pgddb_types.hpp"
 #include "pgddb/pgddb_utils.hpp"
 
 extern "C" {

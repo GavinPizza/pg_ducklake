@@ -36,9 +36,11 @@ extern "C" {
 #include "rewrite/rewriteHandler.h"
 #include "utils/ruleutils.h"
 
-#include "pgduckdb/vendor/pg_ruleutils.h"
-#include "pgduckdb/pgduckdb_ruleutils.h"
+#include "pgddb/vendor/pg_ruleutils.h"
+#include "pgddb/pgddb_ruleutils.h"
 }
+
+#include "pgduckdb/pgduckdb_ruleutils.hpp"
 
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
@@ -314,7 +316,7 @@ EntrenchColumnsFromCall(Query *query, const char *function_call, const char **qu
  */
 static Query *
 WrapQueryInDuckdbQueryCall(Query *query, const char *query_string) {
-	char *duckdb_query_string = pgduckdb_get_querydef(query);
+	char *duckdb_query_string = pgddb_get_querydef(query);
 
 	char *function_call = psprintf("duckdb.query(%s)", quote_literal_cstr(duckdb_query_string));
 
@@ -967,7 +969,7 @@ DuckdbHandleViewStmtPre(Node *parsetree, PlannedStmt *pstmt, const char *query_s
 		                errmsg("views must not contain data-modifying statements in WITH")));
 	/* END OF COPIED LOGIC */
 
-	char *duckdb_query_string = pgduckdb_get_querydef((Query *)copyObjectImpl(viewParse));
+	char *duckdb_query_string = pgddb_get_querydef((Query *)copyObjectImpl(viewParse));
 	List *db_and_schema = pgduckdb_db_and_schema(schema_name, "duckdb");
 
 	char *duckdb_db = (char *)linitial(db_and_schema);
@@ -1163,7 +1165,7 @@ DuckdbInitUtilityHook() {
  */
 void
 DuckdbTruncateTable(Oid relation_oid) {
-	auto name = PostgresFunctionGuard(pgduckdb_relation_name, relation_oid);
+	auto name = PostgresFunctionGuard(pgddb_relation_name, relation_oid);
 	pgddb::DuckDBManager::DuckDBQueryOrThrow(std::string("TRUNCATE ") + name);
 }
 
@@ -1374,10 +1376,10 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 
 	pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, create_table_string);
 	if (ctas_query) {
-		const char *ctas_query_string = pgduckdb_get_querydef(ctas_query);
+		const char *ctas_query_string = pgddb_get_querydef(ctas_query);
 
 		std::string insert_string =
-		    std::string("INSERT INTO ") + pgduckdb_relation_name(relid) + " " + ctas_query_string;
+		    std::string("INSERT INTO ") + pgddb_relation_name(relid) + " " + ctas_query_string;
 		pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, insert_string);
 	}
 
@@ -1588,7 +1590,7 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 			char *object_type = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 3);
 			char *drop_query =
 			    psprintf("DROP %s IF EXISTS %s.%s", object_type,
-			             pgduckdb_db_and_schema_string(postgres_schema_name, "duckdb"), quote_identifier(table_name));
+			             pgddb_db_and_schema_string(postgres_schema_name, "duckdb"), quote_identifier(table_name));
 			pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, drop_query);
 
 			deleted_duckdb_relations++;

@@ -1,17 +1,17 @@
 /*-------------------------------------------------------------------------
  *
- * pg_ruleutils_17.c
+ * pg_ruleutils_16.c
  *	  Functions to convert stored expressions/querytrees back to
  *	  source text
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
-#if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
+#if PG_VERSION_NUM >= 160000 && PG_VERSION_NUM < 170000
 
 #pragma GCC diagnostic ignored "-Wshadow" // ignore any compiler warnings
 #pragma GCC diagnostic ignored "-Wsign-compare" // ignore any compiler warnings
@@ -24,6 +24,7 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
@@ -68,14 +69,14 @@
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
-#include "pgduckdb/vendor/pg_ruleutils.h"
+#include "pgddb/vendor/pg_ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 #include "utils/varlena.h"
 #include "utils/xml.h"
 
-#include "pgduckdb/pgduckdb_ruleutils.h"
+#include "pgddb/pgddb_ruleutils.h"
 
 #include "pgddb/utility/rename_ruleutils.h"
 
@@ -321,9 +322,9 @@ typedef void (*rsv_callback) (Node *node, deparse_context *context,
  * ----------
  */
 static SPIPlanPtr plan_getrulebyoid = NULL;
-static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
+static const char *query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 static SPIPlanPtr plan_getviewrule = NULL;
-static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
+static const char *query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
 /* GUC parameters */
 bool		quote_all_identifiers = false;
@@ -443,10 +444,6 @@ static void resolve_special_varno(Node *node, deparse_context *context,
 								  rsv_callback callback, void *callback_arg);
 static Node *find_param_referent(Param *param, deparse_context *context,
 								 deparse_namespace **dpns_p, ListCell **ancestor_cell_p);
-static SubPlan *find_param_generator(Param *param, deparse_context *context,
-									 int *column_p);
-static SubPlan *find_param_generator_initplan(Param *param, Plan *plan,
-											  int *column_p);
 static void get_parameter(Param *param, deparse_context *context);
 static const char *get_simple_binary_op_name(OpExpr *expr);
 static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
@@ -484,8 +481,6 @@ static void get_const_expr(Const *constval, deparse_context *context,
 						   int showtype);
 static void get_const_collation(Const *constval, deparse_context *context);
 static void get_json_format(JsonFormat *format, StringInfo buf);
-static void get_json_returning(JsonReturning *returning, StringInfo buf,
-							   bool json_format_by_default);
 static void get_json_constructor(JsonConstructorExpr *ctor,
 								 deparse_context *context, bool showimplicit);
 static void get_json_constructor_options(JsonConstructorExpr *ctor,
@@ -526,15 +521,6 @@ static char *generate_qualified_type_name(Oid typid);
 static text *string_to_text(char *str);
 static char *flatten_reloptions(Oid relid);
 static void get_reloptions(StringInfo buf, Datum reloptions);
-static void get_json_path_spec(Node *path_spec, deparse_context *context,
-							   bool showimplicit);
-static void get_json_table_columns(TableFunc *tf, JsonTablePathScan *scan,
-								   deparse_context *context,
-								   bool showimplicit);
-static void get_json_table_nested_columns(TableFunc *tf, JsonTablePlan *plan,
-										  deparse_context *context,
-										  bool showimplicit,
-										  bool needcomma);
 
 #define only_marker(rte)  ((rte)->inh ? "" : "ONLY ")
 
@@ -3299,7 +3285,7 @@ print_function_arguments(StringInfo buf, HeapTuple proctup,
 		HeapTuple	aggtup;
 		Form_pg_aggregate agg;
 
-		aggtup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(proc->oid));
+		aggtup = SearchSysCache1(AGGFNOID, proc->oid);
 		if (!HeapTupleIsValid(aggtup))
 			elog(ERROR, "cache lookup failed for aggregate %u",
 				 proc->oid);
@@ -6025,7 +6011,7 @@ get_basic_select_query(Query *query, deparse_context *context,
 /* ----------
  * get_target_list			- Parse back a SELECT target list
  *
- * This is also used for RETURNING lists in INSERT/UPDATE/DELETE/MERGE.
+ * This is also used for RETURNING lists in INSERT/UPDATE/DELETE.
  *
  * resultDesc and colNamesVisible are as for get_query_def()
  * ----------
@@ -6059,8 +6045,8 @@ get_target_list(List *targetList, deparse_context *context,
 		char	   *colname;
 		char	   *attname;
 
-		if (pgduckdb_reconstruct_star_step(&star_reconstruction_context, l)) {
-			continue;
+		if (pgddb_reconstruct_star_step(&star_reconstruction_context, l)) {
+				continue;
 		}
 
 		if (tle->resjunk)
@@ -6117,28 +6103,28 @@ get_target_list(List *targetList, deparse_context *context,
 			colname = tle->resname;
 
 		/*
-		 * This makes sure we don't add Postgres its bad default alias to the
-		 * duckdb.row type.
-		 */
-		bool duckdb_skip_as = pgduckdb_var_is_duckdb_row(var);
+			* This makes sure we don't add Postgres its bad default alias to the
+			* duckdb.row type.
+			*/
+		bool duckdb_skip_as = pgddb_var_is_row(var);
 
 		/*
-		 * For r['abc'] expressions we don't want the column name to be r, but
-		 * instead we want it to be "abc". We can only to do this for the
-		 * target list of the outside most query though to make sure references
-		 * to the column name are still valid.
-		 */
+			* For r['abc'] expressions we don't want the column name to be r, but
+			* instead we want it to be "abc". We can only to do this for the
+			* target list of the outside most query though to make sure references
+			* to the column name are still valid.
+			*/
 		if (!duckdb_skip_as && outermost_targetlist) {
-			Var *subscript_var = pgduckdb_duckdb_subscript_var(tle->expr);
-			if (subscript_var) {
-				/*
-				 * This cannot be moved to pgduckdb_ruleutils, because of
-				 * the reliance on the non-public deparse_namespace type.
-				 */
-				deparse_namespace* dpns = (deparse_namespace *) list_nth(context->namespaces,
-															subscript_var->varlevelsup);
-				duckdb_skip_as = !pgduckdb_subscript_has_custom_alias(dpns->plan, dpns->rtable, subscript_var, colname);
-			}
+				Var *subscript_var = pgddb_subscript_var(tle->expr);
+				if (subscript_var) {
+						/*
+							* This cannot be moved to pgduckdb_ruleutils, because of
+							* the reliance on the non-public deparse_namespace type.
+							*/
+						deparse_namespace* dpns = (deparse_namespace *) list_nth(context->namespaces,
+																												subscript_var->varlevelsup);
+						duckdb_skip_as = !pgddb_subscript_has_custom_alias(dpns->plan, dpns->rtable, subscript_var, colname);
+				}
 		}
 
 		/* Show AS unless the column's name is correct as-is */
@@ -6741,7 +6727,7 @@ get_insert_query_def(Query *query, deparse_context *context,
 		 */
 		if (values_rte || select_rte)
 		{
-			if (!pgduckdb_is_not_default_expr((Node *) tle, NULL))
+			if (!pgddb_is_not_default_expr((Node *) tle, NULL))
 				continue;
 		}
 
@@ -7155,7 +7141,6 @@ get_merge_query_def(Query *query, deparse_context *context,
 	StringInfo	buf = context->buf;
 	RangeTblEntry *rte;
 	ListCell   *lc;
-	bool		haveNotMatchedBySource;
 
 	/* Insert the WITH clause if given */
 	get_with_clause(query, context);
@@ -7181,26 +7166,7 @@ get_merge_query_def(Query *query, deparse_context *context,
 	get_from_clause(query, " USING ", context);
 	appendContextKeyword(context, " ON ",
 						 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
-	get_rule_expr(query->mergeJoinCondition, context, false);
-
-	/*
-	 * Test for any NOT MATCHED BY SOURCE actions.  If there are none, then
-	 * any NOT MATCHED BY TARGET actions are output as "WHEN NOT MATCHED", per
-	 * SQL standard.  Otherwise, we have a non-SQL-standard query, so output
-	 * "BY SOURCE" / "BY TARGET" qualifiers for all NOT MATCHED actions, to be
-	 * more explicit.
-	 */
-	haveNotMatchedBySource = false;
-	foreach(lc, query->mergeActionList)
-	{
-		MergeAction *action = lfirst_node(MergeAction, lc);
-
-		if (action->matchKind == MERGE_WHEN_NOT_MATCHED_BY_SOURCE)
-		{
-			haveNotMatchedBySource = true;
-			break;
-		}
-	}
+	get_rule_expr(query->jointree->quals, context, false);
 
 	/* Print each merge action */
 	foreach(lc, query->mergeActionList)
@@ -7209,24 +7175,7 @@ get_merge_query_def(Query *query, deparse_context *context,
 
 		appendContextKeyword(context, " WHEN ",
 							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
-		switch (action->matchKind)
-		{
-			case MERGE_WHEN_MATCHED:
-				appendStringInfoString(buf, "MATCHED");
-				break;
-			case MERGE_WHEN_NOT_MATCHED_BY_SOURCE:
-				appendStringInfoString(buf, "NOT MATCHED BY SOURCE");
-				break;
-			case MERGE_WHEN_NOT_MATCHED_BY_TARGET:
-				if (haveNotMatchedBySource)
-					appendStringInfoString(buf, "NOT MATCHED BY TARGET");
-				else
-					appendStringInfoString(buf, "NOT MATCHED");
-				break;
-			default:
-				elog(ERROR, "unrecognized matchKind: %d",
-					 (int) action->matchKind);
-		}
+		appendStringInfo(buf, "%sMATCHED", action->matched ? "" : "NOT ");
 
 		if (action->qual)
 		{
@@ -7298,13 +7247,8 @@ get_merge_query_def(Query *query, deparse_context *context,
 			appendStringInfoString(buf, "DO NOTHING");
 	}
 
-	/* Add RETURNING if present */
-	if (query->returningList)
-	{
-		appendContextKeyword(context, " RETURNING",
-							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 1);
-		get_target_list(query->returningList, context, NULL, colNamesVisible);
-	}
+	/* No RETURNING support in MERGE yet */
+	Assert(query->returningList == NIL);
 }
 
 
@@ -7548,8 +7492,8 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 			elog(ERROR, "invalid attnum %d for relation \"%s\"",
 				 attnum, rte->eref->aliasname);
 
-		if (pgduckdb_var_is_duckdb_row(var)) {
-			return pgduckdb_write_row_refname(context->buf, refname, istoplevel);
+		if (pgddb_var_is_row(var)) {
+				return pgddb_write_row_refname(context->buf, refname, istoplevel);
 		}
 
 		attname = colinfo->colnames[attnum - 1];
@@ -8263,128 +8207,6 @@ find_param_referent(Param *param, deparse_context *context,
 }
 
 /*
- * Try to find a subplan/initplan that emits the value for a PARAM_EXEC Param.
- *
- * If successful, return the generating subplan/initplan and set *column_p
- * to the subplan's 0-based output column number.
- * Otherwise, return NULL.
- */
-static SubPlan *
-find_param_generator(Param *param, deparse_context *context, int *column_p)
-{
-	/* Initialize output parameter to prevent compiler warnings */
-	*column_p = 0;
-
-	/*
-	 * If it's a PARAM_EXEC parameter, search the current plan node as well as
-	 * ancestor nodes looking for a subplan or initplan that emits the value
-	 * for the Param.  It could appear in the setParams of an initplan or
-	 * MULTIEXPR_SUBLINK subplan, or in the paramIds of an ancestral SubPlan.
-	 */
-	if (param->paramkind == PARAM_EXEC)
-	{
-		SubPlan    *result;
-		deparse_namespace *dpns;
-		ListCell   *lc;
-
-		dpns = (deparse_namespace *) linitial(context->namespaces);
-
-		/* First check the innermost plan node's initplans */
-		result = find_param_generator_initplan(param, dpns->plan, column_p);
-		if (result)
-			return result;
-
-		/*
-		 * The plan's targetlist might contain MULTIEXPR_SUBLINK SubPlans,
-		 * which can be referenced by Params elsewhere in the targetlist.
-		 * (Such Params should always be in the same targetlist, so there's no
-		 * need to do this work at upper plan nodes.)
-		 */
-		foreach_node(TargetEntry, tle, dpns->plan->targetlist)
-		{
-			if (tle->expr && IsA(tle->expr, SubPlan))
-			{
-				SubPlan    *subplan = (SubPlan *) tle->expr;
-
-				if (subplan->subLinkType == MULTIEXPR_SUBLINK)
-				{
-					foreach_int(paramid, subplan->setParam)
-					{
-						if (paramid == param->paramid)
-						{
-							/* Found a match, so return it. */
-							*column_p = foreach_current_index(paramid);
-							return subplan;
-						}
-					}
-				}
-			}
-		}
-
-		/* No luck, so check the ancestor nodes */
-		foreach(lc, dpns->ancestors)
-		{
-			Node	   *ancestor = (Node *) lfirst(lc);
-
-			/*
-			 * If ancestor is a SubPlan, check the paramIds it provides.
-			 */
-			if (IsA(ancestor, SubPlan))
-			{
-				SubPlan    *subplan = (SubPlan *) ancestor;
-
-				foreach_int(paramid, subplan->paramIds)
-				{
-					if (paramid == param->paramid)
-					{
-						/* Found a match, so return it. */
-						*column_p = foreach_current_index(paramid);
-						return subplan;
-					}
-				}
-
-				/* SubPlan isn't a kind of Plan, so skip the rest */
-				continue;
-			}
-
-			/*
-			 * Otherwise, it's some kind of Plan node, so check its initplans.
-			 */
-			result = find_param_generator_initplan(param, (Plan *) ancestor,
-												   column_p);
-			if (result)
-				return result;
-
-			/* No luck, crawl up to next ancestor */
-		}
-	}
-
-	/* No generator found */
-	return NULL;
-}
-
-/*
- * Subroutine for find_param_generator: search one Plan node's initplans
- */
-static SubPlan *
-find_param_generator_initplan(Param *param, Plan *plan, int *column_p)
-{
-	foreach_node(SubPlan, subplan, plan->initPlan)
-	{
-		foreach_int(paramid, subplan->setParam)
-		{
-			if (paramid == param->paramid)
-			{
-				/* Found a match, so return it. */
-				*column_p = foreach_current_index(paramid);
-				return subplan;
-			}
-		}
-	}
-	return NULL;
-}
-
-/*
  * Display a Param appropriately.
  */
 static void
@@ -8393,13 +8215,12 @@ get_parameter(Param *param, deparse_context *context)
 	Node	   *expr;
 	deparse_namespace *dpns;
 	ListCell   *ancestor_cell;
-	SubPlan    *subplan;
-	int			column;
 
 	/*
 	 * If it's a PARAM_EXEC parameter, try to locate the expression from which
-	 * the parameter was computed.  This stanza handles only cases in which
-	 * the Param represents an input to the subplan we are currently in.
+	 * the parameter was computed.  Note that failing to find a referent isn't
+	 * an error, since the Param might well be a subplan output rather than an
+	 * input.
 	 */
 	expr = find_param_referent(param, context, &dpns, &ancestor_cell);
 	if (expr)
@@ -8439,24 +8260,6 @@ get_parameter(Param *param, deparse_context *context)
 		context->varprefix = save_varprefix;
 
 		pop_ancestor_plan(dpns, &save_dpns);
-
-		return;
-	}
-
-	/*
-	 * Alternatively, maybe it's a subplan output, which we print as a
-	 * reference to the subplan.  (We could drill down into the subplan and
-	 * print the relevant targetlist expression, but that has been deemed too
-	 * confusing since it would violate normal SQL scope rules.  Also, we're
-	 * relying on this reference to show that the testexpr containing the
-	 * Param has anything to do with that subplan at all.)
-	 */
-	subplan = find_param_generator(param, context, &column);
-	if (subplan)
-	{
-		appendStringInfo(context->buf, "(%s%s).col%d",
-						 subplan->useHashTable ? "hashed " : "",
-						 subplan->plan_name, column + 1);
 
 		return;
 	}
@@ -8509,12 +8312,7 @@ get_parameter(Param *param, deparse_context *context)
 
 	/*
 	 * Not PARAM_EXEC, or couldn't find referent: just print $N.
-	 *
-	 * It's a bug if we get here for anything except PARAM_EXTERN Params, but
-	 * in production builds printing $N seems more useful than failing.
 	 */
-	Assert(param->paramkind == PARAM_EXTERN);
-
 	appendStringInfo(context->buf, "$%d", param->paramid);
 }
 
@@ -8579,10 +8377,8 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 		case T_Aggref:
 		case T_GroupingFunc:
 		case T_WindowFunc:
-		case T_MergeSupportFunc:
 		case T_FuncExpr:
 		case T_JsonConstructorExpr:
-		case T_JsonExpr:
 			/* function-like: name(..) or name[..] */
 			return true;
 
@@ -8754,7 +8550,6 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 				case T_GroupingFunc:	/* own parentheses */
 				case T_WindowFunc:	/* own parentheses */
 				case T_CaseExpr:	/* other separators */
-				case T_JsonExpr:	/* own parentheses */
 					return true;
 				default:
 					return false;
@@ -8870,71 +8665,6 @@ get_rule_expr_paren(Node *node, deparse_context *context,
 		appendStringInfoChar(context->buf, ')');
 }
 
-static void
-get_json_behavior(JsonBehavior *behavior, deparse_context *context,
-				  const char *on)
-{
-	/*
-	 * The order of array elements must correspond to the order of
-	 * JsonBehaviorType members.
-	 */
-	const char *behavior_names[] =
-	{
-		" NULL",
-		" ERROR",
-		" EMPTY",
-		" TRUE",
-		" FALSE",
-		" UNKNOWN",
-		" EMPTY ARRAY",
-		" EMPTY OBJECT",
-		" DEFAULT "
-	};
-
-	if ((int) behavior->btype < 0 || behavior->btype >= lengthof(behavior_names))
-		elog(ERROR, "invalid json behavior type: %d", behavior->btype);
-
-	appendStringInfoString(context->buf, behavior_names[behavior->btype]);
-
-	if (behavior->btype == JSON_BEHAVIOR_DEFAULT)
-		get_rule_expr(behavior->expr, context, false);
-
-	appendStringInfo(context->buf, " ON %s", on);
-}
-
-/*
- * get_json_expr_options
- *
- * Parse back common options for JSON_QUERY, JSON_VALUE, JSON_EXISTS and
- * JSON_TABLE columns.
- */
-static void
-get_json_expr_options(JsonExpr *jsexpr, deparse_context *context,
-					  JsonBehaviorType default_behavior)
-{
-	if (jsexpr->op == JSON_QUERY_OP)
-	{
-		if (jsexpr->wrapper == JSW_CONDITIONAL)
-			appendStringInfoString(context->buf, " WITH CONDITIONAL WRAPPER");
-		else if (jsexpr->wrapper == JSW_UNCONDITIONAL)
-			appendStringInfoString(context->buf, " WITH UNCONDITIONAL WRAPPER");
-		/* The default */
-		else if (jsexpr->wrapper == JSW_NONE || jsexpr->wrapper == JSW_UNSPEC)
-			appendStringInfoString(context->buf, " WITHOUT WRAPPER");
-
-		if (jsexpr->omit_quotes)
-			appendStringInfoString(context->buf, " OMIT QUOTES");
-		/* The default */
-		else
-			appendStringInfoString(context->buf, " KEEP QUOTES");
-	}
-
-	if (jsexpr->on_empty && jsexpr->on_empty->btype != default_behavior)
-		get_json_behavior(jsexpr->on_empty, context, "EMPTY");
-
-	if (jsexpr->on_error && jsexpr->on_error->btype != default_behavior)
-		get_json_behavior(jsexpr->on_error, context, "ERROR");
-}
 
 /* ----------
  * get_rule_expr			- Parse back an expression
@@ -9001,10 +8731,6 @@ get_rule_expr(Node *node, deparse_context *context,
 			get_windowfunc_expr((WindowFunc *) node, context);
 			break;
 
-		case T_MergeSupportFunc:
-			appendStringInfoString(buf, "MERGE_ACTION()");
-			break;
-
 		case T_SubscriptingRef:
 			{
 				SubscriptingRef *sbsref = (SubscriptingRef *) node;
@@ -9065,7 +8791,7 @@ get_rule_expr(Node *node, deparse_context *context,
 				}
 				else
 				{
-					SubscriptingRef *new_sbsref = pgduckdb_strip_first_subscript(sbsref, context->buf);
+					SubscriptingRef *new_sbsref = pgddb_strip_first_subscript(sbsref, context->buf);
 					/* Just an ordinary container fetch, so print subscripts */
 					printSubscripts(new_sbsref, context);
 				}
@@ -9223,79 +8949,12 @@ get_rule_expr(Node *node, deparse_context *context,
 				 * We cannot see an already-planned subplan in rule deparsing,
 				 * only while EXPLAINing a query plan.  We don't try to
 				 * reconstruct the original SQL, just reference the subplan
-				 * that appears elsewhere in EXPLAIN's result.  It does seem
-				 * useful to show the subLinkType and testexpr (if any), and
-				 * we also note whether the subplan will be hashed.
+				 * that appears elsewhere in EXPLAIN's result.
 				 */
-				switch (subplan->subLinkType)
-				{
-					case EXISTS_SUBLINK:
-						appendStringInfoString(buf, "EXISTS(");
-						Assert(subplan->testexpr == NULL);
-						break;
-					case ALL_SUBLINK:
-						appendStringInfoString(buf, "(ALL ");
-						Assert(subplan->testexpr != NULL);
-						break;
-					case ANY_SUBLINK:
-						appendStringInfoString(buf, "(ANY ");
-						Assert(subplan->testexpr != NULL);
-						break;
-					case ROWCOMPARE_SUBLINK:
-						/* Parenthesizing the testexpr seems sufficient */
-						appendStringInfoChar(buf, '(');
-						Assert(subplan->testexpr != NULL);
-						break;
-					case EXPR_SUBLINK:
-						/* No need to decorate these subplan references */
-						appendStringInfoChar(buf, '(');
-						Assert(subplan->testexpr == NULL);
-						break;
-					case MULTIEXPR_SUBLINK:
-						/* MULTIEXPR isn't executed in the normal way */
-						appendStringInfoString(buf, "(rescan ");
-						Assert(subplan->testexpr == NULL);
-						break;
-					case ARRAY_SUBLINK:
-						appendStringInfoString(buf, "ARRAY(");
-						Assert(subplan->testexpr == NULL);
-						break;
-					case CTE_SUBLINK:
-						/* This case is unreachable within expressions */
-						appendStringInfoString(buf, "CTE(");
-						Assert(subplan->testexpr == NULL);
-						break;
-				}
-
-				if (subplan->testexpr != NULL)
-				{
-					deparse_namespace *dpns;
-
-					/*
-					 * Push SubPlan into ancestors list while deparsing
-					 * testexpr, so that we can handle PARAM_EXEC references
-					 * to the SubPlan's paramIds.  (This makes it look like
-					 * the SubPlan is an "ancestor" of the current plan node,
-					 * which is a little weird, but it does no harm.)  In this
-					 * path, we don't need to mention the SubPlan explicitly,
-					 * because the referencing Params will show its existence.
-					 */
-					dpns = (deparse_namespace *) linitial(context->namespaces);
-					dpns->ancestors = lcons(subplan, dpns->ancestors);
-
-					get_rule_expr(subplan->testexpr, context, showimplicit);
-					appendStringInfoChar(buf, ')');
-
-					dpns->ancestors = list_delete_first(dpns->ancestors);
-				}
+				if (subplan->useHashTable)
+					appendStringInfo(buf, "(hashed %s)", subplan->plan_name);
 				else
-				{
-					/* No referencing Params, so show the SubPlan's name */
-					if (subplan->useHashTable)
-						appendStringInfo(buf, "hashed %s)", subplan->plan_name);
-					else
-						appendStringInfo(buf, "%s)", subplan->plan_name);
-				}
+					appendStringInfo(buf, "(%s)", subplan->plan_name);
 			}
 			break;
 
@@ -10215,67 +9874,6 @@ get_rule_expr(Node *node, deparse_context *context,
 			}
 			break;
 
-		case T_JsonExpr:
-			{
-				JsonExpr   *jexpr = (JsonExpr *) node;
-
-				switch (jexpr->op)
-				{
-					case JSON_EXISTS_OP:
-						appendStringInfoString(buf, "JSON_EXISTS(");
-						break;
-					case JSON_QUERY_OP:
-						appendStringInfoString(buf, "JSON_QUERY(");
-						break;
-					case JSON_VALUE_OP:
-						appendStringInfoString(buf, "JSON_VALUE(");
-						break;
-					default:
-						elog(ERROR, "unrecognized JsonExpr op: %d",
-							 (int) jexpr->op);
-				}
-
-				get_rule_expr(jexpr->formatted_expr, context, showimplicit);
-
-				appendStringInfoString(buf, ", ");
-
-				get_json_path_spec(jexpr->path_spec, context, showimplicit);
-
-				if (jexpr->passing_values)
-				{
-					ListCell   *lc1,
-							   *lc2;
-					bool		needcomma = false;
-
-					appendStringInfoString(buf, " PASSING ");
-
-					forboth(lc1, jexpr->passing_names,
-							lc2, jexpr->passing_values)
-					{
-						if (needcomma)
-							appendStringInfoString(buf, ", ");
-						needcomma = true;
-
-						get_rule_expr((Node *) lfirst(lc2), context, showimplicit);
-						appendStringInfo(buf, " AS %s",
-										 ((String *) lfirst_node(String, lc1))->sval);
-					}
-				}
-
-				if (jexpr->op != JSON_EXISTS_OP ||
-					jexpr->returning->typid != BOOLOID)
-					get_json_returning(jexpr->returning, context->buf,
-									   jexpr->op == JSON_QUERY_OP);
-
-				get_json_expr_options(jexpr, context,
-									  jexpr->op != JSON_EXISTS_OP ?
-									  JSON_BEHAVIOR_NULL :
-									  JSON_BEHAVIOR_FALSE);
-
-				appendStringInfoChar(buf, ')');
-			}
-			break;
-
 		case T_List:
 			{
 				char	   *sep;
@@ -10399,7 +9997,6 @@ looks_like_function(Node *node)
 		case T_MinMaxExpr:
 		case T_SQLValueFunction:
 		case T_XmlExpr:
-		case T_JsonExpr:
 			/* these are all accepted by func_expr_common_subexpr */
 			return true;
 		default:
@@ -10831,16 +10428,6 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 			appendStringInfoChar(buf, ')');
 			return true;
 
-		case F_TIMEZONE_TIMESTAMP:
-		case F_TIMEZONE_TIMESTAMPTZ:
-		case F_TIMEZONE_TIMETZ:
-			/* AT LOCAL */
-			appendStringInfoChar(buf, '(');
-			get_rule_expr_paren((Node *) linitial(expr->args), context, false,
-								(Node *) expr);
-			appendStringInfoString(buf, " AT LOCAL)");
-			return true;
-
 		case F_OVERLAPS_TIMESTAMPTZ_INTERVAL_TIMESTAMPTZ_INTERVAL:
 		case F_OVERLAPS_TIMESTAMPTZ_INTERVAL_TIMESTAMPTZ_TIMESTAMPTZ:
 		case F_OVERLAPS_TIMESTAMPTZ_TIMESTAMPTZ_TIMESTAMPTZ_INTERVAL:
@@ -10889,7 +10476,7 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 
 		case F_IS_NORMALIZED:
 			/* IS xxx NORMALIZED */
-			appendStringInfoChar(buf, '(');
+			appendStringInfoString(buf, "(");
 			get_rule_expr_paren((Node *) linitial(expr->args), context, false,
 								(Node *) expr);
 			appendStringInfoString(buf, " IS");
@@ -11097,7 +10684,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
 			appendStringInfoChar(buf, ')');
 	}
 
-	if (pgduckdb_is_fake_type(resulttype)) {
+	if (pgddb_is_fake_type(resulttype)) {
 		return;
 	}
 
@@ -11136,7 +10723,7 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 	char	   *extval;
 	bool		needlabel = false;
 
-	showtype = pgduckdb_show_type(constval, showtype);
+	showtype = pgddb_show_type(constval, showtype);
 
 	if (constval->constisnull)
 	{
@@ -11277,18 +10864,6 @@ get_const_collation(Const *constval, deparse_context *context)
 }
 
 /*
- * get_json_path_spec		- Parse back a JSON path specification
- */
-static void
-get_json_path_spec(Node *path_spec, deparse_context *context, bool showimplicit)
-{
-	if (IsA(path_spec, Const))
-		get_const_expr((Const *) path_spec, context, -1);
-	else
-		get_rule_expr(path_spec, context, showimplicit);
-}
-
-/*
  * get_json_format			- Parse back a JsonFormat node
  */
 static void
@@ -11365,15 +10940,6 @@ get_json_constructor(JsonConstructorExpr *ctor, deparse_context *context,
 		case JSCTOR_JSON_ARRAY:
 			funcname = "JSON_ARRAY";
 			break;
-		case JSCTOR_JSON_PARSE:
-			funcname = "JSON";
-			break;
-		case JSCTOR_JSON_SCALAR:
-			funcname = "JSON_SCALAR";
-			break;
-		case JSCTOR_JSON_SERIALIZE:
-			funcname = "JSON_SERIALIZE";
-			break;
 		default:
 			elog(ERROR, "invalid JsonConstructorType %d", ctor->type);
 	}
@@ -11396,7 +10962,7 @@ get_json_constructor(JsonConstructorExpr *ctor, deparse_context *context,
 	}
 
 	get_json_constructor_options(ctor, buf);
-	appendStringInfoChar(buf, ')');
+	appendStringInfo(buf, ")");
 }
 
 /*
@@ -11421,12 +10987,7 @@ get_json_constructor_options(JsonConstructorExpr *ctor, StringInfo buf)
 	if (ctor->unique)
 		appendStringInfoString(buf, " WITH UNIQUE KEYS");
 
-	/*
-	 * Append RETURNING clause if needed; JSON() and JSON_SCALAR() don't
-	 * support one.
-	 */
-	if (ctor->type != JSCTOR_JSON_PARSE && ctor->type != JSCTOR_JSON_SCALAR)
-		get_json_returning(ctor->returning, buf, true);
+	get_json_returning(ctor->returning, buf, true);
 }
 
 /*
@@ -11606,13 +11167,15 @@ get_sublink_expr(SubLink *sublink, deparse_context *context)
 
 
 /* ----------
- * get_xmltable			- Parse back a XMLTABLE function
+ * get_tablefunc			- Parse back a table function
  * ----------
  */
 static void
-get_xmltable(TableFunc *tf, deparse_context *context, bool showimplicit)
+get_tablefunc(TableFunc *tf, deparse_context *context, bool showimplicit)
 {
 	StringInfo	buf = context->buf;
+
+	/* XMLTABLE is the only existing implementation.  */
 
 	appendStringInfoString(buf, "XMLTABLE(");
 
@@ -11702,227 +11265,6 @@ get_xmltable(TableFunc *tf, deparse_context *context, bool showimplicit)
 	}
 
 	appendStringInfoChar(buf, ')');
-}
-
-/*
- * get_json_table_nested_columns - Parse back nested JSON_TABLE columns
- */
-static void
-get_json_table_nested_columns(TableFunc *tf, JsonTablePlan *plan,
-							  deparse_context *context, bool showimplicit,
-							  bool needcomma)
-{
-	if (IsA(plan, JsonTablePathScan))
-	{
-		JsonTablePathScan *scan = castNode(JsonTablePathScan, plan);
-
-		if (needcomma)
-			appendStringInfoChar(context->buf, ',');
-
-		appendStringInfoChar(context->buf, ' ');
-		appendContextKeyword(context, "NESTED PATH ", 0, 0, 0);
-		get_const_expr(scan->path->value, context, -1);
-		appendStringInfo(context->buf, " AS %s", quote_identifier(scan->path->name));
-		get_json_table_columns(tf, scan, context, showimplicit);
-	}
-	else if (IsA(plan, JsonTableSiblingJoin))
-	{
-		JsonTableSiblingJoin *join = (JsonTableSiblingJoin *) plan;
-
-		get_json_table_nested_columns(tf, join->lplan, context, showimplicit,
-									  needcomma);
-		get_json_table_nested_columns(tf, join->rplan, context, showimplicit,
-									  true);
-	}
-}
-
-/*
- * get_json_table_columns - Parse back JSON_TABLE columns
- */
-static void
-get_json_table_columns(TableFunc *tf, JsonTablePathScan *scan,
-					   deparse_context *context,
-					   bool showimplicit)
-{
-	StringInfo	buf = context->buf;
-	JsonExpr   *jexpr = castNode(JsonExpr, tf->docexpr);
-	ListCell   *lc_colname;
-	ListCell   *lc_coltype;
-	ListCell   *lc_coltypmod;
-	ListCell   *lc_colvalexpr;
-	int			colnum = 0;
-
-	appendStringInfoChar(buf, ' ');
-	appendContextKeyword(context, "COLUMNS (", 0, 0, 0);
-
-	if (PRETTY_INDENT(context))
-		context->indentLevel += PRETTYINDENT_VAR;
-
-	forfour(lc_colname, tf->colnames,
-			lc_coltype, tf->coltypes,
-			lc_coltypmod, tf->coltypmods,
-			lc_colvalexpr, tf->colvalexprs)
-	{
-		char	   *colname = strVal(lfirst(lc_colname));
-		JsonExpr   *colexpr;
-		Oid			typid;
-		int32		typmod;
-		bool		ordinality;
-		JsonBehaviorType default_behavior;
-
-		typid = lfirst_oid(lc_coltype);
-		typmod = lfirst_int(lc_coltypmod);
-		colexpr = castNode(JsonExpr, lfirst(lc_colvalexpr));
-
-		/* Skip columns that don't belong to this scan. */
-		if (scan->colMin < 0 || colnum < scan->colMin)
-		{
-			colnum++;
-			continue;
-		}
-		if (colnum > scan->colMax)
-			break;
-
-		if (colnum > scan->colMin)
-			appendStringInfoString(buf, ", ");
-
-		colnum++;
-
-		ordinality = !colexpr;
-
-		appendContextKeyword(context, "", 0, 0, 0);
-
-		appendStringInfo(buf, "%s %s", quote_identifier(colname),
-						 ordinality ? "FOR ORDINALITY" :
-						 format_type_with_typemod(typid, typmod));
-		if (ordinality)
-			continue;
-
-		if (colexpr->op == JSON_EXISTS_OP)
-		{
-			appendStringInfoString(buf, " EXISTS");
-			default_behavior = JSON_BEHAVIOR_FALSE;
-		}
-		else
-		{
-			if (colexpr->op == JSON_QUERY_OP)
-			{
-				char		typcategory;
-				bool		typispreferred;
-
-				get_type_category_preferred(typid, &typcategory, &typispreferred);
-
-				if (typcategory == TYPCATEGORY_STRING)
-					appendStringInfoString(buf,
-										   colexpr->format->format_type == JS_FORMAT_JSONB ?
-										   " FORMAT JSONB" : " FORMAT JSON");
-			}
-
-			default_behavior = JSON_BEHAVIOR_NULL;
-		}
-
-		if (jexpr->on_error->btype == JSON_BEHAVIOR_ERROR)
-			default_behavior = JSON_BEHAVIOR_ERROR;
-
-		appendStringInfoString(buf, " PATH ");
-
-		get_json_path_spec(colexpr->path_spec, context, showimplicit);
-
-		get_json_expr_options(colexpr, context, default_behavior);
-	}
-
-	if (scan->child)
-		get_json_table_nested_columns(tf, scan->child, context, showimplicit,
-									  scan->colMin >= 0);
-
-	if (PRETTY_INDENT(context))
-		context->indentLevel -= PRETTYINDENT_VAR;
-
-	appendContextKeyword(context, ")", 0, 0, 0);
-}
-
-/* ----------
- * get_json_table			- Parse back a JSON_TABLE function
- * ----------
- */
-static void
-get_json_table(TableFunc *tf, deparse_context *context, bool showimplicit)
-{
-	StringInfo	buf = context->buf;
-	JsonExpr   *jexpr = castNode(JsonExpr, tf->docexpr);
-	JsonTablePathScan *root = castNode(JsonTablePathScan, tf->plan);
-
-	appendStringInfoString(buf, "JSON_TABLE(");
-
-	if (PRETTY_INDENT(context))
-		context->indentLevel += PRETTYINDENT_VAR;
-
-	appendContextKeyword(context, "", 0, 0, 0);
-
-	get_rule_expr(jexpr->formatted_expr, context, showimplicit);
-
-	appendStringInfoString(buf, ", ");
-
-	get_const_expr(root->path->value, context, -1);
-
-	appendStringInfo(buf, " AS %s", quote_identifier(root->path->name));
-
-	if (jexpr->passing_values)
-	{
-		ListCell   *lc1,
-				   *lc2;
-		bool		needcomma = false;
-
-		appendStringInfoChar(buf, ' ');
-		appendContextKeyword(context, "PASSING ", 0, 0, 0);
-
-		if (PRETTY_INDENT(context))
-			context->indentLevel += PRETTYINDENT_VAR;
-
-		forboth(lc1, jexpr->passing_names,
-				lc2, jexpr->passing_values)
-		{
-			if (needcomma)
-				appendStringInfoString(buf, ", ");
-			needcomma = true;
-
-			appendContextKeyword(context, "", 0, 0, 0);
-
-			get_rule_expr((Node *) lfirst(lc2), context, false);
-			appendStringInfo(buf, " AS %s",
-							 quote_identifier((lfirst_node(String, lc1))->sval)
-				);
-		}
-
-		if (PRETTY_INDENT(context))
-			context->indentLevel -= PRETTYINDENT_VAR;
-	}
-
-	get_json_table_columns(tf, castNode(JsonTablePathScan, tf->plan), context,
-						   showimplicit);
-
-	if (jexpr->on_error->btype != JSON_BEHAVIOR_EMPTY)
-		get_json_behavior(jexpr->on_error, context, "ERROR");
-
-	if (PRETTY_INDENT(context))
-		context->indentLevel -= PRETTYINDENT_VAR;
-
-	appendContextKeyword(context, ")", 0, 0, 0);
-}
-
-/* ----------
- * get_tablefunc			- Parse back a table function
- * ----------
- */
-static void
-get_tablefunc(TableFunc *tf, deparse_context *context, bool showimplicit)
-{
-	/* XMLTABLE and JSON_TABLE are the only existing implementations.  */
-
-	if (tf->functype == TFT_XMLTABLE)
-		get_xmltable(tf, context, showimplicit);
-	else if (tf->functype == TFT_JSON_TABLE)
-		get_json_table(tf, context, showimplicit);
 }
 
 /* ----------
@@ -12055,7 +11397,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				break;
 			case RTE_SUBQUERY:
 				/* Subquery RTE */
-				if (pgduckdb_replace_subquery_with_view(rte->subquery, buf)) {
+				if (pgddb_replace_subquery_with_view(rte->subquery, buf)) {
 					break;
 				}
 				appendStringInfoChar(buf, '(');
@@ -12180,7 +11522,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 		/* Print the relation alias, if needed */
 		get_rte_alias(rte, varno, false, context);
 
-		if (pgduckdb_func_returns_duckdb_row(rtfunc1)) {
+		if (pgddb_func_returns_row(rtfunc1)) {
 			/*
 			 * We never want to print column aliases for functions that return
 			 * a duckdb.row. The common pattern is for people to not provide an
@@ -12520,7 +11862,7 @@ get_tablesample_def(TableSampleClause *tablesample, deparse_context *context)
 		const char *tsm_name = generate_function_name(tablesample->tsmhandler, 1,
 											NIL, argtypes,
 											false, NULL, EXPR_KIND_NONE);
-		pgduckdb_add_tablesample_percent(tsm_name, buf, list_length(tablesample->args));
+		pgddb_add_tablesample_percent(tsm_name, buf, list_length(tablesample->args));
 	}
 	appendStringInfoChar(buf, ')');
 
@@ -12823,7 +12165,6 @@ get_relation_name(Oid relid)
 	return relname;
 }
 
-
 /*
  * generate_function_name
  *		Compute the name to display for a function specified by OID,
@@ -12859,7 +12200,7 @@ generate_function_name(Oid funcid, int nargs, List *argnames, Oid *argtypes,
 	Oid		   *p_true_typeids;
 	bool		force_qualify = false;
 
-	result = pgduckdb_function_name(funcid, use_variadic_p);
+	result = pgddb_function_name(funcid, use_variadic_p);
 	if (result)
 		return result;
 
@@ -13294,24 +12635,6 @@ get_range_partbound_string(List *bound_datums)
 		sep = ", ";
 	}
 	appendStringInfoChar(buf, ')');
-
-	return buf->data;
-}
-
-/*
- * get_list_partvalue_string
- *		A C string representation of one list partition value
- */
-char *
-get_list_partvalue_string(Const *val)
-{
-	deparse_context context;
-	StringInfo	buf = makeStringInfo();
-
-	memset(&context, 0, sizeof(deparse_context));
-	context.buf = buf;
-
-	get_const_expr(val, &context, -1);
 
 	return buf->data;
 }

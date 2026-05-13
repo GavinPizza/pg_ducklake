@@ -26,7 +26,7 @@ extern "C" {
 #include "utils/rls.h"
 
 #include "pgddb/vendor/pg_list.hpp"
-#include "pgduckdb/pgduckdb_ruleutils.h"
+#include "pgddb/pgddb_ruleutils.h"
 }
 
 /*
@@ -56,7 +56,7 @@ AppendCreateRelationCopyString(StringInfo info, ParseState *pstate, CopyStmt *co
 
 	table_close(rel, AccessShareLock);
 
-	appendStringInfoString(info, pgduckdb_relation_name(relid));
+	appendStringInfoString(info, pgddb_relation_name(relid));
 	if (!copy_stmt->attlist) {
 		return;
 	}
@@ -428,7 +428,7 @@ MakeDuckdbCopyQuery(PlannedStmt *pstmt, const char *query_string, struct QueryEn
 		CheckQueryPermissions(query, query_string);
 
 		appendStringInfo(rewritten_query_info, "(");
-		appendStringInfoString(rewritten_query_info, pgduckdb_get_querydef(query));
+		appendStringInfoString(rewritten_query_info, pgddb_get_querydef(query));
 		appendStringInfo(rewritten_query_info, ")");
 	} else {
 		ParseState *pstate = make_parsestate(NULL);

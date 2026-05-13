@@ -36,15 +36,15 @@ extern "C" {
 #include "utils/varbit.h"
 }
 
-#include "pgduckdb/pgduckdb_detoast.hpp"
+#include "pgddb/pgddb_detoast.hpp"
 #include "pgddb/pgddb_process_lock.hpp"
 
 namespace pgddb {
 
 // Bring pgduckdb's free functions and globals into scope while sibling pieces
-// (DuckdbStructOid / DuckdbUnionOid / DuckdbMapOid composite type Oids,
-// duckdb_convert_unsupported_numeric_to_double GUC, DetoastPostgresDatum) still
-// live in pgduckdb::. Type hooks in the next iteration will narrow this.
+// (DuckdbStructOid / DuckdbUnionOid / DuckdbMapOid composite type Oids and the
+// duckdb_convert_unsupported_numeric_to_double GUC) still live in pgduckdb::.
+// Type hooks in the next iteration will narrow this.
 using namespace ::pgduckdb;
 
 NumericVar FromNumeric(Numeric num);

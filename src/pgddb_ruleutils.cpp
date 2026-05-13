@@ -105,7 +105,7 @@ pgddb_relation_name(Oid relation_oid) {
 }
 
 /*
- * Wraps pgduckdb_pg_get_querydef_internal to force ISO date format (the
+ * Wraps pgddb_pg_get_querydef_internal to force ISO date format (the
  * only one DuckDB understands) and to flag outermost_query for the
  * deparser's target-list logic.
  */
@@ -114,7 +114,7 @@ pgddb_get_querydef(Query *query) {
 	outermost_query = true;
 	auto save_nestlevel = NewGUCNestLevel();
 	SetConfigOption("DateStyle", "ISO, YMD", PGC_USERSET, PGC_S_SESSION);
-	char *result = pgduckdb_pg_get_querydef_internal(query, false);
+	char *result = pgddb_pg_get_querydef_internal(query, false);
 	AtEOXact_GUC(false, save_nestlevel);
 	return result;
 }
@@ -217,7 +217,7 @@ pg_duckdb_get_oper_expr_make_ctx(const char *op_name, Node **, Node **arg2) {
 		}
 
 		*arg2 = (Node *)linitial(arg2_func->args);
-		ctx->escape_pattern = pgduckdb_deparse_expression((Node *)lsecond(arg2_func->args), nullptr, false, false);
+		ctx->escape_pattern = pgddb_deparse_expression((Node *)lsecond(arg2_func->args), nullptr, false, false);
 	}
 
 	return ctx;

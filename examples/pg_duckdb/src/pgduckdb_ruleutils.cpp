@@ -501,7 +501,7 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 		elog(ERROR, "DuckDB tables do not support foreign keys");
 	}
 
-	List *relation_context = pgduckdb_deparse_context_for(relation_name, relation_oid);
+	List *relation_context = pgddb_deparse_context_for(relation_name, relation_oid);
 
 	TupleDesc tuple_descriptor = RelationGetDescr(relation);
 	TupleConstr *tuple_constraints = tuple_descriptor->constr;
@@ -551,7 +551,7 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 
 			Node *default_node = (Node *)stringToNode(default_value->adbin);
 
-			char *default_string = pgduckdb_deparse_expression(default_node, relation_context, false, false);
+			char *default_string = pgddb_deparse_expression(default_node, relation_context, false, false);
 
 			if (!column->attgenerated) {
 				appendStringInfo(&buffer, " DEFAULT %s", default_string);
@@ -580,7 +580,7 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 
 		Node *check_node = (Node *)stringToNode(check_constraint->ccbin);
 
-		char *check_string = pgduckdb_deparse_expression(check_node, relation_context, false, false);
+		char *check_string = pgddb_deparse_expression(check_node, relation_context, false, false);
 
 		if (first_column_printed || i > 0) {
 			appendStringInfoString(&buffer, ", ");
@@ -697,7 +697,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 		elog(ERROR, "DuckDB tables do not support foreign keys");
 	}
 
-	List *relation_context = pgduckdb_deparse_context_for(relation_name, relation_oid);
+	List *relation_context = pgddb_deparse_context_for(relation_name, relation_oid);
 	ParseState *pstate = make_parsestate(NULL);
 	ParseNamespaceItem *nsitem = addRangeTableEntryForRelation(pstate, relation, AccessShareLock, NULL, false, true);
 	addNSItemToQuery(pstate, nsitem, true, true, true);
@@ -731,7 +731,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 					if (constraint->raw_expr) {
 						auto expr = cookDefault(pstate, constraint->raw_expr, attribute->atttypid, attribute->atttypmod,
 						                        col->colname, attribute->attgenerated);
-						char *default_string = pgduckdb_deparse_expression(expr, relation_context, false, false);
+						char *default_string = pgddb_deparse_expression(expr, relation_context, false, false);
 						appendStringInfo(&buffer, " DEFAULT %s", default_string);
 					}
 					break;
@@ -741,7 +741,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 
 					auto expr = cookConstraint(pstate, constraint->raw_expr, RelationGetRelationName(relation));
 
-					char *check_string = pgduckdb_deparse_expression(expr, relation_context, false, false);
+					char *check_string = pgddb_deparse_expression(expr, relation_context, false, false);
 
 					appendStringInfo(&buffer, "(%s); ", check_string);
 					break;
@@ -804,7 +804,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 			if (cmd->def) {
 				auto expr = cookDefault(pstate, cmd->def, attribute->atttypid, attribute->atttypmod, column_name,
 				                        attribute->attgenerated);
-				char *default_string = pgduckdb_deparse_expression(expr, relation_context, false, false);
+				char *default_string = pgddb_deparse_expression(expr, relation_context, false, false);
 				appendStringInfo(&buffer, "SET DEFAULT %s; ", default_string);
 			} else {
 				appendStringInfoString(&buffer, "DROP DEFAULT; ");
@@ -834,7 +834,7 @@ pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 
 				auto expr = cookConstraint(pstate, constraint->raw_expr, RelationGetRelationName(relation));
 
-				char *check_string = pgduckdb_deparse_expression(expr, relation_context, false, false);
+				char *check_string = pgddb_deparse_expression(expr, relation_context, false, false);
 
 				appendStringInfo(&buffer, "(%s); ", check_string);
 				break;

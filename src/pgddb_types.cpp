@@ -1181,7 +1181,7 @@ ConvertPostgresToBaseDuckColumnType(Form_pg_attribute &attribute) {
 		// Non-built-in PG type: consult the consumer's hook.
 		if (ConvertPostgresToBaseDuckColumnType_hook) {
 			duckdb::LogicalType out;
-			if (ConvertPostgresToBaseDuckColumnType_hook(typoid, &out)) {
+			if (ConvertPostgresToBaseDuckColumnType_hook(typoid, out)) {
 				return out;
 			}
 		}
@@ -1284,7 +1284,7 @@ GetPostgresArrayDuckDBType(const duckdb::LogicalType &type, bool throw_error) {
 	default: {
 		if (GetPostgresArrayDuckDBType_hook) {
 			Oid out;
-			if (GetPostgresArrayDuckDBType_hook(type, &out)) {
+			if (GetPostgresArrayDuckDBType_hook(type, out)) {
 				return out;
 			}
 		}
@@ -1385,7 +1385,7 @@ GetPostgresDuckDBType(const duckdb::LogicalType &type, bool throw_error) {
 	default: {
 		if (GetPostgresDuckDBType_hook) {
 			Oid out;
-			if (GetPostgresDuckDBType_hook(type, &out)) {
+			if (GetPostgresDuckDBType_hook(type, out)) {
 				return out;
 			}
 		}

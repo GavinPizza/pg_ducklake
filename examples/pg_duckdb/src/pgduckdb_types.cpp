@@ -14,10 +14,10 @@ extern "C" {
 
 namespace pgduckdb {
 
-namespace {
-
 // pgduckdb composite types are stored as text Datums on the PG side.
-// All three converters (struct, union, map) just stringify the duckdb value.
+// All three converters (struct, union, map) stringify the duckdb value.
+
+namespace {
 
 struct StructArray {
 	static ArrayType *
@@ -52,68 +52,72 @@ struct MapArray {
 	}
 };
 
-// Prev-hook slots: captured at registration, called as fallthrough.
-pgddb::ConvertPostgresToBaseDuckColumnType_hook_t prev_pg_to_duck_hook = nullptr;
-pgddb::GetPostgresDuckDBType_hook_t prev_duck_to_pg_hook = nullptr;
-pgddb::GetPostgresArrayDuckDBType_hook_t prev_duck_to_pg_array_hook = nullptr;
-pgddb::ConvertDuckToPostgresValue_hook_t prev_convert_duck_to_pg_hook = nullptr;
-pgddb::ConvertUnsupportedNumericToDouble_hook_t prev_numeric_to_double_hook = nullptr;
+} // namespace
 
-bool
-PgToDuckImpl(Oid pg_oid, duckdb::LogicalType *out) {
+// Prev-hook slots: captured at registration, called as fallthrough.
+static pgddb::ConvertPostgresToBaseDuckColumnType_hook_t prev_ConvertPostgresToBaseDuckColumnType_hook = nullptr;
+static pgddb::GetPostgresDuckDBType_hook_t prev_GetPostgresDuckDBType_hook = nullptr;
+static pgddb::GetPostgresArrayDuckDBType_hook_t prev_GetPostgresArrayDuckDBType_hook = nullptr;
+static pgddb::ConvertDuckToPostgresValue_hook_t prev_ConvertDuckToPostgresValue_hook = nullptr;
+static pgddb::ConvertUnsupportedNumericToDouble_hook_t prev_ConvertUnsupportedNumericToDouble_hook = nullptr;
+
+static bool
+ConvertPostgresToBaseDuckColumnType(Oid pg_oid, duckdb::LogicalType &out) {
 	if (pg_oid == DuckdbStructOid() || pg_oid == DuckdbStructArrayOid()) {
-		*out = duckdb::LogicalTypeId::STRUCT;
+		out = duckdb::LogicalTypeId::STRUCT;
 		return true;
 	}
 	if (pg_oid == DuckdbUnionOid() || pg_oid == DuckdbUnionArrayOid()) {
-		*out = duckdb::LogicalTypeId::UNION;
+		out = duckdb::LogicalTypeId::UNION;
 		return true;
 	}
 	if (pg_oid == DuckdbMapOid() || pg_oid == DuckdbMapArrayOid()) {
-		*out = duckdb::LogicalTypeId::MAP;
+		out = duckdb::LogicalTypeId::MAP;
 		return true;
 	}
-	return prev_pg_to_duck_hook ? prev_pg_to_duck_hook(pg_oid, out) : false;
+	return prev_ConvertPostgresToBaseDuckColumnType_hook
+	           ? prev_ConvertPostgresToBaseDuckColumnType_hook(pg_oid, out)
+	           : false;
 }
 
-bool
-DuckToPgImpl(const duckdb::LogicalType &type, Oid *out) {
+static bool
+GetPostgresDuckDBType(const duckdb::LogicalType &type, Oid &out) {
 	switch (type.id()) {
 	case duckdb::LogicalTypeId::STRUCT:
-		*out = DuckdbStructOid();
+		out = DuckdbStructOid();
 		return true;
 	case duckdb::LogicalTypeId::UNION:
-		*out = DuckdbUnionOid();
+		out = DuckdbUnionOid();
 		return true;
 	case duckdb::LogicalTypeId::MAP:
-		*out = DuckdbMapOid();
+		out = DuckdbMapOid();
 		return true;
 	default:
 		break;
 	}
-	return prev_duck_to_pg_hook ? prev_duck_to_pg_hook(type, out) : false;
+	return prev_GetPostgresDuckDBType_hook ? prev_GetPostgresDuckDBType_hook(type, out) : false;
 }
 
-bool
-DuckToPgArrayImpl(const duckdb::LogicalType &type, Oid *out) {
+static bool
+GetPostgresArrayDuckDBType(const duckdb::LogicalType &type, Oid &out) {
 	switch (type.id()) {
 	case duckdb::LogicalTypeId::STRUCT:
-		*out = DuckdbStructArrayOid();
+		out = DuckdbStructArrayOid();
 		return true;
 	case duckdb::LogicalTypeId::UNION:
-		*out = DuckdbUnionArrayOid();
+		out = DuckdbUnionArrayOid();
 		return true;
 	case duckdb::LogicalTypeId::MAP:
-		*out = DuckdbMapArrayOid();
+		out = DuckdbMapArrayOid();
 		return true;
 	default:
 		break;
 	}
-	return prev_duck_to_pg_array_hook ? prev_duck_to_pg_array_hook(type, out) : false;
+	return prev_GetPostgresArrayDuckDBType_hook ? prev_GetPostgresArrayDuckDBType_hook(type, out) : false;
 }
 
-bool
-ConvertDuckToPgImpl(Oid pg_oid, duckdb::Value &value, TupleTableSlot *slot, uint64_t col) {
+static bool
+ConvertDuckToPostgresValue(Oid pg_oid, duckdb::Value &value, TupleTableSlot *slot, uint64_t col) {
 	if (pg_oid == DuckdbStructOid() || pg_oid == DuckdbUnionOid() || pg_oid == DuckdbMapOid()) {
 		slot->tts_values[col] = pgddb::ConvertToStringDatum(value);
 		return true;
@@ -130,35 +134,35 @@ ConvertDuckToPgImpl(Oid pg_oid, duckdb::Value &value, TupleTableSlot *slot, uint
 		pgddb::ConvertDuckToPostgresArray<MapArray>(slot, value, col);
 		return true;
 	}
-	return prev_convert_duck_to_pg_hook ? prev_convert_duck_to_pg_hook(pg_oid, value, slot, col) : false;
+	return prev_ConvertDuckToPostgresValue_hook
+	           ? prev_ConvertDuckToPostgresValue_hook(pg_oid, value, slot, col)
+	           : false;
 }
 
-bool
-NumericToDoubleImpl(void) {
+static bool
+ConvertUnsupportedNumericToDouble(void) {
 	if (duckdb_convert_unsupported_numeric_to_double) {
 		return true;
 	}
-	return prev_numeric_to_double_hook ? prev_numeric_to_double_hook() : false;
+	return prev_ConvertUnsupportedNumericToDouble_hook ? prev_ConvertUnsupportedNumericToDouble_hook() : false;
 }
 
-} // namespace
-
 void
-RegisterTypeHooks() {
-	prev_pg_to_duck_hook = pgddb::ConvertPostgresToBaseDuckColumnType_hook;
-	pgddb::ConvertPostgresToBaseDuckColumnType_hook = PgToDuckImpl;
+InitTypeHooks() {
+	prev_ConvertPostgresToBaseDuckColumnType_hook = pgddb::ConvertPostgresToBaseDuckColumnType_hook;
+	pgddb::ConvertPostgresToBaseDuckColumnType_hook = ConvertPostgresToBaseDuckColumnType;
 
-	prev_duck_to_pg_hook = pgddb::GetPostgresDuckDBType_hook;
-	pgddb::GetPostgresDuckDBType_hook = DuckToPgImpl;
+	prev_GetPostgresDuckDBType_hook = pgddb::GetPostgresDuckDBType_hook;
+	pgddb::GetPostgresDuckDBType_hook = GetPostgresDuckDBType;
 
-	prev_duck_to_pg_array_hook = pgddb::GetPostgresArrayDuckDBType_hook;
-	pgddb::GetPostgresArrayDuckDBType_hook = DuckToPgArrayImpl;
+	prev_GetPostgresArrayDuckDBType_hook = pgddb::GetPostgresArrayDuckDBType_hook;
+	pgddb::GetPostgresArrayDuckDBType_hook = GetPostgresArrayDuckDBType;
 
-	prev_convert_duck_to_pg_hook = pgddb::ConvertDuckToPostgresValue_hook;
-	pgddb::ConvertDuckToPostgresValue_hook = ConvertDuckToPgImpl;
+	prev_ConvertDuckToPostgresValue_hook = pgddb::ConvertDuckToPostgresValue_hook;
+	pgddb::ConvertDuckToPostgresValue_hook = ConvertDuckToPostgresValue;
 
-	prev_numeric_to_double_hook = pgddb::ConvertUnsupportedNumericToDouble_hook;
-	pgddb::ConvertUnsupportedNumericToDouble_hook = NumericToDoubleImpl;
+	prev_ConvertUnsupportedNumericToDouble_hook = pgddb::ConvertUnsupportedNumericToDouble_hook;
+	pgddb::ConvertUnsupportedNumericToDouble_hook = ConvertUnsupportedNumericToDouble;
 }
 
 } // namespace pgduckdb

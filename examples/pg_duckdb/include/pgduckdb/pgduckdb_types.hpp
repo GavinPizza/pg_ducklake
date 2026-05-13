@@ -4,6 +4,6 @@ namespace pgduckdb {
 
 // Install pg_duckdb's type-extension hook implementations into libpgddb.
 // Called from _PG_init.
-void RegisterTypeHooks();
+void InitTypeHooks();
 
 } // namespace pgduckdb

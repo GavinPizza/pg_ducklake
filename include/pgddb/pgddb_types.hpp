@@ -50,18 +50,18 @@ Datum ConvertToStringDatum(const duckdb::Value &value);
 // prev_hook chaining). Consumer extensions install their impls in _PG_init.
 
 // Called in the default branch of the PG-Oid -> DuckDB LogicalType switch
-// when the Oid isn't a built-in PG type. Return true and fill *out for your
+// when the Oid isn't a built-in PG type. Return true and fill out for your
 // custom type; chain to prev_hook otherwise.
-typedef bool (*ConvertPostgresToBaseDuckColumnType_hook_t)(Oid pg_oid, duckdb::LogicalType *out);
+typedef bool (*ConvertPostgresToBaseDuckColumnType_hook_t)(Oid pg_oid, duckdb::LogicalType &out);
 extern ConvertPostgresToBaseDuckColumnType_hook_t ConvertPostgresToBaseDuckColumnType_hook;
 
 // Called when libpgddb's LogicalType -> PG Oid switch has no built-in case
-// (currently STRUCT / UNION / MAP). Return true and fill *out.
-typedef bool (*GetPostgresDuckDBType_hook_t)(const duckdb::LogicalType &type, Oid *out);
+// (currently STRUCT / UNION / MAP). Return true and fill out.
+typedef bool (*GetPostgresDuckDBType_hook_t)(const duckdb::LogicalType &type, Oid &out);
 extern GetPostgresDuckDBType_hook_t GetPostgresDuckDBType_hook;
 
 // Same as above but for the LIST/ARRAY element direction (returns the array form).
-typedef bool (*GetPostgresArrayDuckDBType_hook_t)(const duckdb::LogicalType &type, Oid *out);
+typedef bool (*GetPostgresArrayDuckDBType_hook_t)(const duckdb::LogicalType &type, Oid &out);
 extern GetPostgresArrayDuckDBType_hook_t GetPostgresArrayDuckDBType_hook;
 
 // Called in the default branch of ConvertDuckToPostgresValue when the PG Oid

@@ -8,6 +8,21 @@
 extern "C" {
 #endif
 
+/*
+ * Forward declarations of PG node types used in the hook signatures.
+ * The full definitions are pulled in by the vendored ruleutils (C) and
+ * by consumer .cpp files via their own `#include "postgres.h"` plus
+ * `nodes/parsenodes.h`, etc. — we don't include those here so this
+ * header stays cheap to consume.
+ */
+struct Var;
+struct Expr;
+struct Const;
+struct Plan;
+struct Query;
+struct RangeTblFunction;
+struct SubscriptingRef;
+
 typedef struct StarReconstructionContext {
 	List *target_list;
 	int varno_star;
@@ -119,19 +134,11 @@ bool is_bernoulli_sampling(const char *tsm_name, int num_args);
 void pgddb_add_tablesample_percent(const char *tsm_name, StringInfo buf, int num_args);
 
 /*
- * Entry points and helpers that still live in libpgddb under the legacy
- * pgduckdb_* names. They will be renamed and the pg_duckdb-only ones will
- * move back to the consumer side in the next slice.
+ * Generic deparser entry points and helpers.
  */
-char *pgduckdb_relation_name(Oid relid);
-char *pgduckdb_get_querydef(Query *);
-char *pgduckdb_get_tabledef(Oid relation_id);
-char *pgduckdb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt);
-char *pgduckdb_get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stmt);
-char *pgduckdb_get_viewdef(const ViewStmt *stmt, const char *postgres_schema_name, const char *view_name,
-                           const char *duckdb_query_string);
-List *pgduckdb_db_and_schema(const char *postgres_schema_name, const char *duckdb_table_am_name);
-const char *pgduckdb_db_and_schema_string(const char *postgres_schema_name, const char *duckdb_table_am_name);
+char *pgddb_relation_name(Oid relid);
+char *pgddb_get_querydef(Query *);
+const char *pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_am_name);
 
 extern bool outermost_query;
 

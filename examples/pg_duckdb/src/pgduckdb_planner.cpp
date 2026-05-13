@@ -41,7 +41,7 @@ extern "C" {
 duckdb::unique_ptr<duckdb::PreparedStatement>
 DuckdbPrepare(const Query *query, const char *explain_prefix) {
 	Query *copied_query = (Query *)copyObjectImpl(query);
-	const char *query_string = pgduckdb_get_querydef(copied_query);
+	const char *query_string = pgddb_get_querydef(copied_query);
 
 	if (explain_prefix) {
 		query_string = psprintf("%s %s", explain_prefix, query_string);

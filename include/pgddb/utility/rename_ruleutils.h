@@ -28,10 +28,10 @@
 
 /*
  * The following replaces all usages of generate_qualified_relation_name and
- * generate_relation_name with calls to the pgduckdb_relation_name function
+ * generate_relation_name with calls to the pgddb_relation_name function
  */
-#define generate_qualified_relation_name          pgduckdb_relation_name
-#define generate_relation_name(relid, namespaces) pgduckdb_relation_name(relid)
+#define generate_qualified_relation_name          pgddb_relation_name
+#define generate_relation_name(relid, namespaces) pgddb_relation_name(relid)
 
 #define declare_pgduckdb_ruleutils_function(original_name) extern Datum pgduckdb_##original_name(PG_FUNCTION_ARGS);
 

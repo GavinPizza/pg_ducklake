@@ -10,6 +10,7 @@ extern "C" {
 
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_node.hpp"
+#include "pgduckdb/pgduckdb_ruleutils.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 
@@ -35,6 +36,7 @@ _PG_init(void) {
 
 	pgduckdb::InitGUC();
 	pgduckdb::InitGUCHooks();
+	pgduckdb::InitRuleutilsHooks();
 	pgduckdb::InitTypeHooks();
 	DuckdbInitHooks();
 	DuckdbInitNode();

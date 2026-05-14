@@ -79,9 +79,12 @@ DuckDBManager::Initialize() {
 
 	SET_DUCKDB_OPTION(temporary_directory);
 	SET_DUCKDB_OPTION(extension_directory);
-	// Make sure directories provided in config exists
-	std::filesystem::create_directories(duckdb_temporary_directory);
-	std::filesystem::create_directories(duckdb_extension_directory);
+	if (duckdb_temporary_directory && strlen(duckdb_temporary_directory) > 0) {
+		std::filesystem::create_directories(duckdb_temporary_directory);
+	}
+	if (duckdb_extension_directory && strlen(duckdb_extension_directory) > 0) {
+		std::filesystem::create_directories(duckdb_extension_directory);
+	}
 
 	if (duckdb_maximum_memory > 0) {
 		// Convert the memory limit from MB (as set by Postgres GUC_UNIT_MB, which is actually MiB; see

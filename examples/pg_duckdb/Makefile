@@ -1,7 +1,10 @@
-.PHONY: duckdb install-duckdb clean-duckdb clean-all lintcheck check-regression-duckdb clean-regression
+.PHONY: clean-all lintcheck check-regression-duckdb clean-regression
 
-# Pull in libpgddb sources (PGDDB_INCLUDE / PGDDB_OBJS) from the repo root.
+# Pull in libpgddb sources + duckdb-build wiring from the repo root.
 ROOT_DIR := $(abspath $(CURDIR)/../..)
+# Consumers must set EXTENSION_CONFIGS BEFORE including the root Makefile so
+# the $(FULL_DUCKDB_LIB) rule sees the right prereq.
+EXTENSION_CONFIGS := $(CURDIR)/third_party/pg_duckdb_extensions.cmake
 include $(ROOT_DIR)/Makefile
 
 PG_DUCKDB_VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo "unknown")
@@ -19,44 +22,11 @@ OBJS += $(subst .c,.o, $(C_SRCS))
 # libpgddb objects, compiled in-place at $(ROOT_DIR)/src/.
 OBJS += $(PGDDB_OBJS)
 
-# set to `make` to disable ninja
-DUCKDB_GEN ?= ninja
-# used to know what version of extensions to download
-DUCKDB_VERSION = v1.4.3
-# duckdb build tweaks
-DUCKDB_CMAKE_VARS = -DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0
-# set to 1 to disable asserts in DuckDB. This is particularly useful in combinition with MotherDuck.
-# When asserts are enabled the released motherduck extension will fail some of
-# those asserts. By disabling asserts it's possible to run a debug build of
-# DuckDB agains the release build of MotherDuck.
-DUCKDB_DISABLE_ASSERTIONS ?= 0
-
-DUCKDB_BUILD_CXX_FLAGS=
-DUCKDB_BUILD_TYPE=
-ifeq ($(DUCKDB_BUILD), Debug)
-	DUCKDB_BUILD_CXX_FLAGS = -g -O0 -D_GLIBCXX_ASSERTIONS
-	DUCKDB_BUILD_TYPE = debug
-	DUCKDB_MAKE_TARGET = debug
-else ifeq ($(DUCKDB_BUILD), ReleaseStatic)
-	DUCKDB_BUILD_CXX_FLAGS =
-	DUCKDB_BUILD_TYPE = release
-	DUCKDB_MAKE_TARGET = bundle-library
-else
-	DUCKDB_BUILD_CXX_FLAGS =
-	DUCKDB_BUILD_TYPE = release
-	DUCKDB_MAKE_TARGET = release
-endif
-
-DUCKDB_BUILD_DIR = third_party/duckdb/build/$(DUCKDB_BUILD_TYPE)
-
 ifeq ($(DUCKDB_BUILD), ReleaseStatic)
-	FULL_DUCKDB_LIB = $(DUCKDB_BUILD_DIR)/libduckdb_bundle.a
 	PG_DUCKDB_LINK_FLAGS = $(FULL_DUCKDB_LIB) -lcurl
 else
-	FULL_DUCKDB_LIB = $(DUCKDB_BUILD_DIR)/src/libduckdb$(DLSUFFIX)
 	PG_DUCKDB_LINK_FLAGS = -lduckdb
 endif
-
 
 PG_DUCKDB_LINK_FLAGS += -Wl,-rpath,$(PG_LIB)/ -L$(DUCKDB_BUILD_DIR)/src -L$(PG_LIB) -lstdc++ -llz4
 
@@ -79,7 +49,7 @@ endif
 
 COMPILER_FLAGS=-Wno-sign-compare -Wshadow -Wswitch -Wunused-parameter -Wunreachable-code -Wno-unknown-pragmas -Wall -Wextra ${ERROR_ON_WARNING}
 
-override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) -isystem third_party/duckdb/src/include -isystem third_party/duckdb/third_party/re2 -isystem $(INCLUDEDIR_SERVER) ${COMPILER_FLAGS}
+override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) $(PGDDB_DUCKDB_INCLUDE) -isystem $(INCLUDEDIR_SERVER) ${COMPILER_FLAGS}
 override PG_CXXFLAGS += -std=c++17 ${DUCKDB_BUILD_CXX_FLAGS} ${COMPILER_FLAGS} -Wno-register -Weffc++
 # Ignore declaration-after-statement warnings in our code. Postgres enforces
 # this because their ancient style guide requires it, but we don't care. It
@@ -97,12 +67,10 @@ include Makefile.global
 # doesn't invalidate everything on every commit.
 src/pgduckdb.o: PG_CPPFLAGS += -DPG_DUCKDB_VERSION="\"$(PG_DUCKDB_VERSION)\""
 
-# We need the DuckDB header files to build our own .o files. We depend on the
-# duckdb submodule HEAD, because that target pulls in the submodule which
-# includes those header files. This does mean that we rebuild our .o files
-# whenever we change the DuckDB version, but that seems like a fairly
-# reasonable thing to do anyway, even if not always strictly necessary always.
-$(OBJS): .git/modules/third_party/duckdb/HEAD
+# We need the DuckDB header files to build our own .o files. Depend on the
+# submodule HEAD marker (defined in the root Makefile) so first-time builds
+# init the submodule before compiling consumer .o files.
+$(OBJS): $(PGDDB_DIR)/.git/modules/third_party/duckdb/HEAD
 
 COMPILE.cc.bc += $(PG_CPPFLAGS)
 COMPILE.cxx.bc += $(PG_CXXFLAGS)
@@ -132,34 +100,7 @@ check: installcheck pycheck schedulecheck
 schedulecheck:
 	./scripts/schedule-check.sh
 
-duckdb: $(FULL_DUCKDB_LIB)
-
-.git/modules/third_party/duckdb/HEAD:
-	git submodule update --init --recursive
-
-$(FULL_DUCKDB_LIB): .git/modules/third_party/duckdb/HEAD third_party/pg_duckdb_extensions.cmake
-ifeq ($(DUCKDB_BUILD), ReleaseStatic)
-	mkdir -p third_party/duckdb/build/release/vcpkg_installed
-endif
-	OVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION) \
-	GEN=$(DUCKDB_GEN) \
-	CMAKE_VARS="$(DUCKDB_CMAKE_VARS)" \
-	DISABLE_SANITIZER=1 \
-	DISABLE_ASSERTIONS=$(DUCKDB_DISABLE_ASSERTIONS) \
-	EXTENSION_CONFIGS="../pg_duckdb_extensions.cmake" \
-	$(MAKE) -C third_party/duckdb \
-	$(DUCKDB_MAKE_TARGET)
-
-ifeq ($(DUCKDB_BUILD), ReleaseStatic)
-install-duckdb: $(FULL_DUCKDB_LIB) $(shlib)
-else
-install-duckdb: $(FULL_DUCKDB_LIB) $(shlib)
-	$(install_bin) -m 755 $(FULL_DUCKDB_LIB) $(DESTDIR)$(PG_LIB)
-endif
-
-clean-duckdb:
-	rm -rf third_party/duckdb/build
-
+# Hook the duckdb-install (from the root Makefile) into pgxs's install target.
 install: install-duckdb
 
 clean-all: clean clean-regression clean-duckdb

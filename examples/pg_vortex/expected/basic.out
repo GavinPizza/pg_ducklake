@@ -5,3 +5,13 @@ SELECT vortex_version();
  pg_vortex 0.1.0
 (1 row)
 
+-- read_vortex is registered as the marker UDF that the planner_hook
+-- offloads to DuckDB.
+SELECT proname, pronargs, prorettype::regtype
+FROM pg_proc
+WHERE proname = 'read_vortex' AND pronamespace = 'public'::regnamespace;
+   proname   | pronargs | prorettype 
+-------------+----------+------------
+ read_vortex |        1 | record
+(1 row)
+

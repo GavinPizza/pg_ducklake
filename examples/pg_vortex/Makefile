@@ -18,10 +18,6 @@ OBJS += $(PGDDB_OBJS)
 PG_VORTEX_LINK_FLAGS = -lduckdb -Wl,-rpath,$(PG_LIB)/ -L$(DUCKDB_BUILD_DIR)/src -L$(PG_LIB) -lstdc++ -llz4
 
 override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) $(PGDDB_DUCKDB_INCLUDE) -isystem $(INCLUDEDIR_SERVER)
-# libpgddb's pgddb_duckdb.cpp / scan/*.cpp still include pgduckdb/* headers
-# (leakage to be cleaned up in Phase D). Add pg_duckdb's include dir so the
-# shared libpgddb sources compile from pg_vortex's build too.
-override PG_CPPFLAGS += -I$(ROOT_DIR)/examples/pg_duckdb/include
 override PG_CXXFLAGS += -std=c++17 -Wno-register
 
 SHLIB_LINK += $(PG_VORTEX_LINK_FLAGS)

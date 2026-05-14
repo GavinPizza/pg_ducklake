@@ -48,4 +48,9 @@ private:
 	bool cleaned_up;
 };
 
+// Logs the EXPLAIN plan of a Postgres scan at the NOTICE log level
+extern bool duckdb_log_pg_explain;
+// Maximum number of PostgreSQL workers used for a single Postgres scan
+extern int duckdb_max_workers_per_postgres_scan;
+
 } // namespace pgddb

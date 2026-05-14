@@ -1,7 +1,6 @@
 #include "pgddb/scan/postgres_table_reader.hpp"
 #include "pgddb/pgddb_process_lock.hpp"
 #include "pgddb/pgddb_utils.hpp"
-#include "pgduckdb/pgduckdb_guc.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -30,9 +29,8 @@ extern "C" {
 
 namespace pgddb {
 
-// Bring pgduckdb's free functions and globals into scope while sibling
-// pieces still live in pgduckdb::. Future iterations shrink this.
-using namespace ::pgduckdb;
+bool duckdb_log_pg_explain = false;
+int duckdb_max_workers_per_postgres_scan = 2;
 
 PostgresTableReader::PostgresTableReader()
     : table_scan_query_desc(nullptr), table_scan_planstate(nullptr), parallel_executor_info(nullptr),

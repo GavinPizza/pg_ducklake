@@ -14,7 +14,6 @@
 #include "pgddb/pgddb_utils.hpp"
 #include "pgddb/pg/memory.hpp"
 #include "pgddb/pg/relations.hpp"
-#include "pgduckdb/pgduckdb_guc.hpp"
 
 #include "pgddb/pgddb_process_lock.hpp"
 #include "pgddb/logger.hpp"
@@ -24,9 +23,7 @@
 
 namespace pgddb {
 
-// Bring pgduckdb's free functions and globals into scope while sibling
-// pieces still live in pgduckdb::. Future iterations shrink this.
-using namespace ::pgduckdb;
+int duckdb_threads_for_postgres_scan = 2;
 
 //
 // PostgresScanGlobalState

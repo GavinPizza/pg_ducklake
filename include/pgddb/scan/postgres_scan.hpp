@@ -97,4 +97,7 @@ struct PostgresScanTableFunction : public duckdb::TableFunction {
 	static duckdb::InsertionOrderPreservingMap<duckdb::string> ToString(duckdb::TableFunctionToStringInput &input);
 };
 
+// Maximum number of DuckDB threads used for a single Postgres scan
+extern int duckdb_threads_for_postgres_scan;
+
 } // namespace pgddb

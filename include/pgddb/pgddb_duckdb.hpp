@@ -9,27 +9,32 @@ bool DidWrites();
 bool DidWrites(duckdb::ClientContext &context);
 } // namespace ddb
 
+class DuckDBManager;
+
+// Extension defined manager initializer.
+extern duckdb::unique_ptr<DuckDBManager> GetManagerInstance();
+
 class DuckDBManager {
 public:
+	DuckDBManager()
+	    : database(nullptr), connection(nullptr), default_dbname("<!UNSET!>") {
+	}
+	virtual ~DuckDBManager() = default;
+
 	static inline bool
 	IsInitialized() {
-		return manager_instance.database != nullptr;
+		return manager_instance != nullptr && manager_instance->database != nullptr;
 	}
 
 	static inline DuckDBManager &
 	Get() {
-		if (!manager_instance.database) {
-			manager_instance.Initialize();
+		if (!manager_instance) {
+			manager_instance = GetManagerInstance();
 		}
-		return manager_instance;
-	}
-
-	static void
-	InvalidateDuckDBSecretsIfInitialized() {
-		// Only invalidate the secrets if the database is initialized.
-		if (IsInitialized()) {
-			manager_instance.InvalidateDuckDBSecrets();
+		if (!manager_instance->database) {
+			manager_instance->Initialize();
 		}
+		return *manager_instance;
 	}
 
 	static duckdb::unique_ptr<duckdb::Connection> CreateConnection();
@@ -41,11 +46,6 @@ public:
 		return default_dbname;
 	}
 
-	inline void
-	InvalidateDuckDBSecrets() {
-		secrets_valid = false;
-	}
-
 	inline duckdb::DuckDB &
 	GetDatabase() {
 		return *database;
@@ -54,38 +54,41 @@ public:
 	static void Reset();
 
 private:
-	DuckDBManager()
-	    : extensions_table_current_seq(0), database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"),
-	      secrets_valid(false) {
-	}
-
 	DuckDBManager(const DuckDBManager &) = delete;
 	DuckDBManager &operator=(const DuckDBManager &) = delete;
 
-	static DuckDBManager manager_instance;
+	static duckdb::unique_ptr<DuckDBManager> manager_instance;
 
 	void Initialize();
 
-	void InitializeDatabase();
-
-	void LoadSecrets(duckdb::ClientContext &);
-	void DropSecrets(duckdb::ClientContext &);
-	void LoadExtensions(duckdb::ClientContext &);
-	void InstallExtensions(duckdb::ClientContext &);
-	void LoadFunctions(duckdb::ClientContext &);
-	void RefreshConnectionState(duckdb::ClientContext &);
-
-	inline bool
-	IsExtensionsSeqLessThan(int64_t seq) const {
-		return extensions_table_current_seq < seq;
+protected:
+	virtual void
+	OnInit(duckdb::DBConfig & /*config*/) {
+	}
+	virtual void
+	OnPostInit(duckdb::ClientContext & /*context*/) {
+	}
+	virtual void
+	RefreshConnectionState(duckdb::ClientContext & /*context*/) {
 	}
 
-	inline void
-	UpdateExtensionsSeq(int64_t seq) {
-		extensions_table_current_seq = seq;
+
+	virtual std::string
+	ConnectionString() {
+		return {};
 	}
 
-	int64_t extensions_table_current_seq;
+	virtual void
+	RequireExecution() {
+	}
+
+	// Whether GetConnection should open a DuckDB transaction. Default uses
+	// PG's IsInTransactionBlock at the top-level (no function-context
+	// tracking). pg_duckdb overrides this to consult its own
+	// top_level_statement flag so DuckDB joins the outer PG transaction
+	// when invoked from inside a plpgsql function.
+	virtual bool ShouldBeginTransaction();
+
 	/*
 	 * FIXME: Use a unique_ptr instead of a raw pointer. For now this is not
 	 * possible though, as the MotherDuck extension causes an ABORT when the
@@ -100,7 +103,6 @@ private:
 	duckdb::DuckDB *database;
 	duckdb::unique_ptr<duckdb::Connection> connection;
 	std::string default_dbname;
-	bool secrets_valid;
 
 public:
 	static duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(duckdb::ClientContext &context,
@@ -109,5 +111,16 @@ public:
 	                                                                 const std::string &query);
 	static duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(const std::string &query);
 };
+
+// Set the directory to which DuckDB writes temp files
+extern char *duckdb_temporary_directory;
+// Set the directory to where DuckDB stores extensions in
+extern char *duckdb_extension_directory;
+// The maximum amount of data stored inside DuckDB's 'temp_directory' (when set) (e.g., 1GB)
+extern char *duckdb_max_temp_directory_size;
+// The maximum memory DuckDB can use in MB (e.g., 4096 for 4GB)
+extern int duckdb_maximum_memory;
+// Maximum number of DuckDB threads per Postgres backend
+extern int duckdb_maximum_threads;
 
 } // namespace pgddb

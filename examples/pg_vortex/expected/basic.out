@@ -5,3 +5,95 @@ SELECT vortex_version();
  pg_vortex 0.1.0
 (1 row)
 
+-- read_vortex is registered as the marker UDF that the planner_hook
+-- offloads to DuckDB.
+SELECT proname, pronargs, prorettype::regtype
+FROM pg_proc
+WHERE proname = 'read_vortex' AND pronamespace = 'public'::regnamespace;
+   proname   | pronargs | prorettype 
+-------------+----------+------------
+ read_vortex |        1 | record
+(1 row)
+
+-- Path is relative to the temp-instance's PGDATA (tmp_check/data) -- the
+-- backend's CWD at query time. data/sample.vortex sits at the same level
+-- as Makefile, so ../../data/ resolves there.
+\set fixture '\'../../data/sample.vortex\''
+-- Full read: planner-hook offload + CustomScan + type conversion.
+SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint) ORDER BY x;
+ x | y 
+---+---
+ 0 | 0
+ 1 | 2
+ 2 | 4
+ 3 | 6
+ 4 | 8
+(5 rows)
+
+-- EXPLAIN to show the plan is a VortexScan custom-scan node.
+EXPLAIN (COSTS OFF) SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint);
+          QUERY PLAN           
+-------------------------------
+ Custom Scan (VortexScan)
+   DuckDB Execution Plan: 
+ 
+ ┌───────────────────────────┐
+ │        READ_VORTEX        │
+ │    ────────────────────   │
+ │   Function: Vortex Scan   │
+ │          Files: 1         │
+ │                           │
+ │        Projections:       │
+ │             x             │
+ │             y             │
+ │                           │
+ │          ~5 rows          │
+ └───────────────────────────┘
+ 
+ 
+(17 rows)
+
+-- Projection: only one column survives the deparse.
+SELECT x FROM read_vortex(:fixture) AS r(x bigint, y bigint) ORDER BY x;
+ x 
+---
+ 0
+ 1
+ 2
+ 3
+ 4
+(5 rows)
+
+-- Filter: WHERE clause is deparsed and pushed to DuckDB.
+SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint) WHERE x > 2 ORDER BY x;
+ x | y 
+---+---
+ 3 | 6
+ 4 | 8
+(2 rows)
+
+-- Aggregate: runs on the DuckDB side.
+SELECT count(*) AS rows, sum(x) AS sum_x, sum(y) AS sum_y
+FROM read_vortex(:fixture) AS r(x bigint, y bigint);
+ rows | sum_x | sum_y 
+------+-------+-------
+    5 |    10 |    20
+(1 row)
+
+-- ORDER BY + LIMIT.
+SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint) ORDER BY y DESC LIMIT 3;
+ x | y 
+---+---
+ 4 | 8
+ 3 | 6
+ 2 | 4
+(3 rows)
+
+-- Missing file: DuckDB error propagates back through pg_vortex/CreatePlan.
+SELECT * FROM read_vortex('/nonexistent.vortex') AS r(x bigint, y bigint);
+ERROR:  (pg_vortex/CreatePlan) Prepared query returned an error: Binder Error: No files matched the glob
+Backtrace:
+disabled backtrace
+
+LINE 1: SELECT x, y FROM read_vortex('/nonexistent.vortex'::text) r(x bigint, y bigint...
+                         ^

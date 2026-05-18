@@ -41,7 +41,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint)
  │        READ_VORTEX        │
  │    ────────────────────   │
  │   Function: Vortex Scan   │
- │          Files: 1         │
  │                           │
  │        Projections:       │
  │             x             │
@@ -51,7 +50,7 @@ EXPLAIN (COSTS OFF) SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint)
  └───────────────────────────┘
  
  
-(17 rows)
+(16 rows)
 
 -- Projection: only one column survives the deparse.
 SELECT x FROM read_vortex(:fixture) AS r(x bigint, y bigint) ORDER BY x;
@@ -91,9 +90,7 @@ SELECT * FROM read_vortex(:fixture) AS r(x bigint, y bigint) ORDER BY y DESC LIM
 
 -- Missing file: DuckDB error propagates back through pg_vortex/CreatePlan.
 SELECT * FROM read_vortex('/nonexistent.vortex') AS r(x bigint, y bigint);
-ERROR:  (pg_vortex/CreatePlan) Prepared query returned an error: Binder Error: No files matched the glob
-Backtrace:
-disabled backtrace
+ERROR:  (pg_vortex/CreatePlan) Prepared query returned an error: Binder Error: Object store error: Object at location /nonexistent.vortex not found: No such file or directory (os error 2)
 
 LINE 1: SELECT x, y FROM read_vortex('/nonexistent.vortex'::text) r(x bigint, y bigint...
                          ^

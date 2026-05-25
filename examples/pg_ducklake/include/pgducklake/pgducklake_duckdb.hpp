@@ -3,14 +3,21 @@
 /*
  * pgducklake_duckdb.hpp -- C++ interface for DuckDB/DuckLake operations
  *
- * Provides functions for DuckLake extension lifecycle management.
- * Query execution against DuckDB is done via pg_duckdb's raw_query() UDF
- * through PostgreSQL's SPI, not through direct DuckDB instance access.
+ * Provides functions for DuckLake extension lifecycle management and the
+ * pg_ducklake-flavored DuckDBManager subclass.
  */
 
-namespace duckdb {
-class DuckDB;
-}
+#include "pgddb/pgddb_duckdb.hpp"
+
+namespace pgducklake {
+
+class DuckDBManager : public ::pgddb::DuckDBManager {
+protected:
+	void OnInit(duckdb::DBConfig &config) override;
+	void OnPostInit(duckdb::ClientContext &context) override;
+};
+
+} // namespace pgducklake
 
 /*
  * Callback invoked by pg_duckdb during DuckDBManager::Initialize().
@@ -31,3 +38,27 @@ void ducklake_detach_catalog();
  * extension load (ducklake_load_extension) and on re-create
  * (ducklake_initialize). */
 void ducklake_attach_catalog();
+
+namespace pgducklake {
+
+/* Installs pg_ducklake's libpgddb ruleutils hooks (pgddb_db_and_schema_hook)
+ * so pgddb_get_tabledef etc. resolve the DuckDB catalog/schema correctly
+ * for ducklake-AM tables. Called from _PG_init. */
+void InitRuleutilsHooks();
+
+/* Register PG XactCallback that mirrors PG PRE_COMMIT/ABORT to DuckDB's
+ * DuckLake transaction. Without this, DuckDB never commits its in-memory
+ * transaction state and subsequent statements see stale snapshots. Called
+ * from _PG_init. */
+void RegisterXactCallback();
+
+/*
+ * Toggle the SUBXACT_EVENT_START_SUB guard. Set true around code paths that
+ * legitimately need to open a PG subtransaction while DuckDB has an active
+ * transaction (e.g. DuckLake metadata commit's FlushChanges retry loop);
+ * set false everywhere else. Backs the pgduckdb::DuckdbAllowSubtransaction
+ * contract shim.
+ */
+void SetAllowSubtransaction(bool allow);
+
+} // namespace pgducklake

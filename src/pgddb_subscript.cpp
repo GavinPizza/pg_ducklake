@@ -1,22 +1,51 @@
-#include "pgduckdb/pgduckdb_metadata_cache.hpp"
-#include "pgddb/utility/cpp_wrapper.hpp"
+#include "pgddb/pgddb_subscript.h"
 
 extern "C" {
 #include "postgres.h"
+#include "catalog/pg_type.h"
 #include "executor/execExpr.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_node.h"
 #include "parser/parse_expr.h"
 #include "nodes/subscripting.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "pgddb/vendor/pg_list.hpp"
 }
 
-namespace pgduckdb {
+namespace pgddb {
 
 namespace pg {
 
-Node *
+subscript_refrestype_hook_t subscript_refrestype_hook = nullptr;
+
+/* "<schema>.<typname>" without format_type_be's reserved-keyword quoting. */
+static char *
+TypeNameOf(Oid type_oid) {
+	HeapTuple tp = SearchSysCache1(TYPEOID, ObjectIdGetDatum(type_oid));
+	if (!HeapTupleIsValid(tp))
+		return pstrdup("?");
+	Form_pg_type typ = (Form_pg_type)GETSTRUCT(tp);
+	char *schema = get_namespace_name(typ->typnamespace);
+	char *result = psprintf("%s.%s", schema ? schema : "?", NameStr(typ->typname));
+	ReleaseSysCache(tp);
+	return result;
+}
+
+static Oid
+ResolveRefrestype(Oid container_oid) {
+	if (subscript_refrestype_hook) {
+		Oid oid = subscript_refrestype_hook(container_oid);
+		if (OidIsValid(oid)) {
+			return oid;
+		}
+	}
+	return container_oid;
+}
+
+static Node *
 CoerceSubscriptToText(struct ParseState *pstate, A_Indices *subscript, const char *type_name) {
 	if (!subscript->uidx) {
 		elog(ERROR, "Creating a slice out of %s is not supported", type_name);
@@ -69,7 +98,7 @@ CoerceSubscriptToText(struct ParseState *pstate, A_Indices *subscript, const cha
  *
  * See also comments on SubscriptingRef in nodes/subscripting.h
  */
-void
+static void
 AddSubscriptExpressions(SubscriptingRef *sbsref, struct ParseState *pstate, A_Indices *subscript, bool is_slice) {
 	Assert(is_slice || subscript->uidx);
 
@@ -95,18 +124,9 @@ AddSubscriptExpressions(SubscriptingRef *sbsref, struct ParseState *pstate, A_In
  * expressions. All this does is parse those expressions and make sure the
  * subscript returns an an duckdb.unresolved_type again.
  */
-void
+static void
 DuckdbSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                          bool is_assignment, const char *type_name) {
-	/*
-	 * We need to populate our cache for some of the code below. Normally this
-	 * cache is populated at the start of our planner hook, but this function
-	 * is being called from the parser.
-	 */
-	if (!pgduckdb::IsExtensionRegistered()) {
-		elog(ERROR, "BUG: Using %s but the pg_duckdb extension is not installed", type_name);
-	}
-
 	if (is_assignment) {
 		elog(ERROR, "Assignment to %s is not supported", type_name);
 	}
@@ -121,7 +141,7 @@ DuckdbSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct Pars
 	}
 
 	// Set the result type of the subscripting operation
-	sbsref->refrestype = pgduckdb::DuckdbUnresolvedTypeOid();
+	sbsref->refrestype = ResolveRefrestype(sbsref->refcontainertype);
 	sbsref->reftypmod = -1;
 }
 
@@ -135,18 +155,9 @@ DuckdbSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct Pars
  *
  * Currently this is used for duckdb.row and duckdb.struct types.
  */
-void
+static void
 DuckdbTextSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                              bool is_assignment, const char *type_name) {
-	/*
-	 * We need to populate our cache for some of the code below. Normally this
-	 * cache is populated at the start of our planner hook, but this function
-	 * is being called from the parser.
-	 */
-	if (!pgduckdb::IsExtensionRegistered()) {
-		elog(ERROR, "BUG: Using %s but the pg_duckdb extension is not installed", type_name);
-	}
-
 	if (is_assignment) {
 		elog(ERROR, "Assignment to %s is not supported", type_name);
 	}
@@ -176,7 +187,7 @@ DuckdbTextSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct 
 	}
 
 	// Set the result type of the subscripting operation
-	sbsref->refrestype = pgduckdb::DuckdbUnresolvedTypeOid();
+	sbsref->refrestype = ResolveRefrestype(sbsref->refcontainertype);
 	sbsref->reftypmod = -1;
 }
 
@@ -217,92 +228,72 @@ DuckdbSubscriptFetchOld(ExprState * /*state*/, ExprEvalStep *op, ExprContext * /
  * shouldn't force usage of DuckDB execution when duckdb types are present in
  * the query. So these methods are just stubs that throw an error when called.
  */
-void
-DuckdbSubscriptExecSetup(const SubscriptingRef * /*sbsref*/, SubscriptingRefState *sbsrefstate,
-                         SubscriptExecSteps *methods, const char *type_name) {
+static void
+DuckdbSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,
+                         SubscriptExecSteps *methods) {
 
-	sbsrefstate->workspace = makeString(pstrdup(type_name));
+	sbsrefstate->workspace = makeString(TypeNameOf(sbsref->refcontainertype));
 	methods->sbs_check_subscripts = DuckdbSubscriptCheckSubscripts;
 	methods->sbs_fetch = DuckdbSubscriptFetch;
 	methods->sbs_assign = DuckdbSubscriptAssign;
 	methods->sbs_fetch_old = DuckdbSubscriptFetchOld;
 }
 
-void
+static void
 DuckdbRowSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                             bool is_assignment) {
-	DuckdbTextSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment, "duckdb.row");
+	DuckdbTextSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment,
+	                             TypeNameOf(sbsref->refcontainertype));
 }
 
-void
-DuckdbRowSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,
-                            SubscriptExecSteps *methods) {
-	DuckdbSubscriptExecSetup(sbsref, sbsrefstate, methods, "duckdb.row");
-}
-
-static SubscriptRoutines duckdb_row_subscript_routines = {
+const SubscriptRoutines duckdb_row_subscript_routines = {
     .transform = DuckdbRowSubscriptTransform,
-    .exec_setup = DuckdbRowSubscriptExecSetup,
+    .exec_setup = DuckdbSubscriptExecSetup,
     .fetch_strict = false,
     .fetch_leakproof = true,
     .store_leakproof = true,
 };
 
-void
+static void
 DuckdbUnresolvedTypeSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate,
                                        bool is_slice, bool is_assignment) {
-	DuckdbSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment, "duckdb.unresolved_type");
+	DuckdbSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment,
+	                         TypeNameOf(sbsref->refcontainertype));
 }
 
-void
-DuckdbUnresolvedTypeSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,
-                                       SubscriptExecSteps *methods) {
-	DuckdbSubscriptExecSetup(sbsref, sbsrefstate, methods, "duckdb.unresolved_type");
-}
-
-static SubscriptRoutines duckdb_unresolved_type_subscript_routines = {
+const SubscriptRoutines duckdb_unresolved_type_subscript_routines = {
     .transform = DuckdbUnresolvedTypeSubscriptTransform,
-    .exec_setup = DuckdbUnresolvedTypeSubscriptExecSetup,
+    .exec_setup = DuckdbSubscriptExecSetup,
     .fetch_strict = false,
     .fetch_leakproof = true,
     .store_leakproof = true,
 };
 
-void
+static void
 DuckdbStructSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                                bool is_assignment) {
-	DuckdbTextSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment, "duckdb.struct");
+	DuckdbTextSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment,
+	                             TypeNameOf(sbsref->refcontainertype));
 }
 
-void
-DuckdbStructSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,
-                               SubscriptExecSteps *methods) {
-	DuckdbSubscriptExecSetup(sbsref, sbsrefstate, methods, "duckdb.struct");
-}
-
-static SubscriptRoutines duckdb_struct_subscript_routines = {
+const SubscriptRoutines duckdb_struct_subscript_routines = {
     .transform = DuckdbStructSubscriptTransform,
-    .exec_setup = DuckdbStructSubscriptExecSetup,
+    .exec_setup = DuckdbSubscriptExecSetup,
     .fetch_strict = false,
     .fetch_leakproof = true,
     .store_leakproof = true,
 };
 
-void
+static void
 DuckdbMapSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                             bool is_assignment) {
-	DuckdbSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment, "duckdb.map");
+	DuckdbSubscriptTransform(sbsref, indirection, pstate, is_slice, is_assignment,
+	                         TypeNameOf(sbsref->refcontainertype));
 }
 
-void
-DuckdbMapSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,
-                            SubscriptExecSteps *methods) {
-	DuckdbSubscriptExecSetup(sbsref, sbsrefstate, methods, "duckdb.map");
-}
-
-static SubscriptRoutines duckdb_map_subscript_routines = {
+const SubscriptRoutines duckdb_map_subscript_routines = {
     .transform = DuckdbMapSubscriptTransform,
-    .exec_setup = DuckdbMapSubscriptExecSetup,
+    .exec_setup = DuckdbSubscriptExecSetup,
     .fetch_strict = false,
     .fetch_leakproof = true,
     .store_leakproof = true,
@@ -310,23 +301,4 @@ static SubscriptRoutines duckdb_map_subscript_routines = {
 
 } // namespace pg
 
-} // namespace pgduckdb
-
-extern "C" {
-
-DECLARE_PG_FUNCTION(duckdb_row_subscript) {
-	PG_RETURN_POINTER(&pgduckdb::pg::duckdb_row_subscript_routines);
-}
-
-DECLARE_PG_FUNCTION(duckdb_unresolved_type_subscript) {
-	PG_RETURN_POINTER(&pgduckdb::pg::duckdb_unresolved_type_subscript_routines);
-}
-
-DECLARE_PG_FUNCTION(duckdb_struct_subscript) {
-	PG_RETURN_POINTER(&pgduckdb::pg::duckdb_struct_subscript_routines);
-}
-
-DECLARE_PG_FUNCTION(duckdb_map_subscript) {
-	PG_RETURN_POINTER(&pgduckdb::pg::duckdb_map_subscript_routines);
-}
-}
+} // namespace pgddb

@@ -223,7 +223,8 @@ void RegisterScalarMacros(DatabaseInstance &db) {
 static TableFunction LookupUpstreamFunction(ClientContext &context, const string &ducklake_name,
                                             vector<LogicalType> arg_types = {LogicalType::VARCHAR}) {
   auto &catalog = Catalog::GetSystemCatalog(context);
-  auto &entry = catalog.GetEntry<TableFunctionCatalogEntry>(context, DEFAULT_SCHEMA, ducklake_name);
+  auto &entry = catalog.GetEntry(context, CatalogType::TABLE_FUNCTION_ENTRY, DEFAULT_SCHEMA, ducklake_name)
+                    .Cast<TableFunctionCatalogEntry>();
   return entry.functions.GetFunctionByArguments(context, arg_types);
 }
 

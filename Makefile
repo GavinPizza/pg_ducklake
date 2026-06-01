@@ -95,6 +95,12 @@ $(FULL_DUCKDB_LIB): $(PGDDB_DIR)/.git/modules/third_party/duckdb/HEAD $(EXTENSIO
 	@# similar Rust-backed extensions) drop alongside it. The narrow
 	@# whitelist avoids accidentally scooping up test fixtures cmake may
 	@# leave under extension/ in future versions.
+	@#
+	@# Consumers can set EXTENSION_BUNDLE_EXCLUDE = name1 name2 ... to keep
+	@# specific extensions out of the bundle. Useful when a consumer
+	@# force-loads the standalone lib<name>_extension.a separately (e.g.
+	@# pg_ducklake) -- bundling it as well causes Linux ld to fail with
+	@# multiple-definition errors.
 	rm -f $(DUCKDB_BUILD_DIR)/libduckdb_bundle.a
 	rm -rf $(DUCKDB_BUILD_DIR)/bundle
 	mkdir -p $(DUCKDB_BUILD_DIR)/bundle
@@ -103,6 +109,7 @@ $(FULL_DUCKDB_LIB): $(PGDDB_DIR)/.git/modules/third_party/duckdb/HEAD $(EXTENSIO
 	find $(DUCKDB_BUILD_DIR)/extension -maxdepth 2 \
 		\( -name 'lib*_extension.a' -o -name 'lib*_duckdb.a' \
 		   -o -name 'libduckdb_generated_extension_loader.a' \) \
+		$(foreach n,$(EXTENSION_BUNDLE_EXCLUDE),-not -name 'lib$(n)_extension.a' -not -name 'lib$(n)_duckdb.a') \
 		-exec cp {} $(DUCKDB_BUILD_DIR)/bundle/. \;
 	find $(DUCKDB_BUILD_DIR)/vcpkg_installed -name '*.a' -exec cp {} $(DUCKDB_BUILD_DIR)/bundle/. \;
 	cd $(DUCKDB_BUILD_DIR)/bundle && \

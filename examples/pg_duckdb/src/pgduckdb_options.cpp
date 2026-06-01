@@ -7,6 +7,7 @@
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_userdata_cache.hpp"
 #include "pgddb/pg/functions.hpp"
+#include "pgddb/pgddb_subscript.h"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
@@ -294,6 +295,22 @@ DECLARE_PG_FUNCTION(duckdb_unresolved_type_operator) {
 DECLARE_PG_FUNCTION(duckdb_only_function) {
 	char *function_name = DatumGetCString(DirectFunctionCall1(regprocout, fcinfo->flinfo->fn_oid));
 	elog(ERROR, "Function '%s' only works with DuckDB execution", function_name);
+}
+
+DECLARE_PG_FUNCTION(duckdb_row_subscript) {
+	PG_RETURN_POINTER(&pgddb::pg::duckdb_row_subscript_routines);
+}
+
+DECLARE_PG_FUNCTION(duckdb_unresolved_type_subscript) {
+	PG_RETURN_POINTER(&pgddb::pg::duckdb_unresolved_type_subscript_routines);
+}
+
+DECLARE_PG_FUNCTION(duckdb_struct_subscript) {
+	PG_RETURN_POINTER(&pgddb::pg::duckdb_struct_subscript_routines);
+}
+
+DECLARE_PG_FUNCTION(duckdb_map_subscript) {
+	PG_RETURN_POINTER(&pgddb::pg::duckdb_map_subscript_routines);
 }
 
 DECLARE_PG_FUNCTION(duckdb_union_in) {

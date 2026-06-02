@@ -12,10 +12,20 @@
 namespace pgducklake {
 
 class DuckDBManager : public ::pgddb::DuckDBManager {
+public:
+	static bool IsInitialized();
+	static DuckDBManager &Get();
+	static void Reset();
+
 protected:
-	void OnInit(duckdb::DBConfig &config) override;
 	void OnPostInit(duckdb::ClientContext &context) override;
+
+private:
+	static duckdb::unique_ptr<DuckDBManager> instance_;
 };
+
+// Installs pgddb_get_connection_hook; called from _PG_init.
+void InitDuckDBManager();
 
 } // namespace pgducklake
 

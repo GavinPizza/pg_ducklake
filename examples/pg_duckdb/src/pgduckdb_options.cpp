@@ -3,6 +3,7 @@
 #include "pgddb/pgddb_utils.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_userdata_cache.hpp"
@@ -80,7 +81,7 @@ extern "C" {
 
 DECLARE_PG_FUNCTION(pgduckdb_raw_query) {
 	const char *query = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	auto result = pgddb::DuckDBManager::DuckDBQueryOrThrow(query);
+	auto result = pgduckdb::DuckDBManager::QueryOrThrow(query);
 	elog(NOTICE, "result: %s", result->ToString().c_str());
 	PG_RETURN_BOOL(true);
 }
@@ -260,7 +261,7 @@ DECLARE_PG_FUNCTION(pgduckdb_recycle_ddb) {
 	 * violate our assumptions about DuckDB its transaction lifecycle
 	 */
 	pgduckdb::pg::PreventInTransactionBlock("duckdb.recycle_ddb()");
-	pgddb::DuckDBManager::Reset();
+	pgduckdb::DuckDBManager::Reset();
 	PG_RETURN_BOOL(true);
 }
 

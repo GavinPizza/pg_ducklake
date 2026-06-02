@@ -362,7 +362,7 @@ void pgducklake::RegisterForeignTablesInQuery(Query *query) {
 
 static List *InferForeignTableColumns(CreateForeignTableStmt *stmt) {
   /* Ensure DuckDB is initialized (triggers pg_duckdb startup via SPI) */
-  if (!pgddb::DuckDBManager::IsInitialized()) {
+  if (!pgducklake::DuckDBManager::IsInitialized()) {
     const char *errmsg;
     pgducklake::ExecuteDuckDBQuery("SELECT 1", &errmsg);
   }
@@ -426,7 +426,7 @@ static List *InferForeignTableColumns(CreateForeignTableStmt *stmt) {
 
 static List *DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
   /* Ensure DuckDB is initialized */
-  if (!pgddb::DuckDBManager::IsInitialized()) {
+  if (!pgducklake::DuckDBManager::IsInitialized()) {
     const char *errmsg;
     pgducklake::ExecuteDuckDBQuery("SELECT 1", &errmsg);
   }

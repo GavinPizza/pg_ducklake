@@ -1,3 +1,4 @@
+#include "pg_vortex/pgvortex_duckdb.hpp"
 #include "pg_vortex/vortex_hooks.hpp"
 #include "pg_vortex/vortex_node.hpp"
 
@@ -20,6 +21,7 @@ _PG_init(void)
 		         errhint("Add pg_vortex to shared_preload_libraries.")));
 	}
 
+	pg_vortex::InitDuckDBManager();
 	pg_vortex::InitNode();
 	pg_vortex::InitHooks();
 }

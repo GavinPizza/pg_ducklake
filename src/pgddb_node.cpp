@@ -146,7 +146,7 @@ Duckdb_BeginCustomScan_Cpp(CustomScanState *cscanstate, EState *estate, int /*ef
 		}
 	}
 
-	duckdb_scan_state->duckdb_connection = pgddb::DuckDBManager::GetConnection();
+	duckdb_scan_state->duckdb_connection = pgddb::GetConnection();
 	duckdb_scan_state->prepared_statement = prepared_query.release();
 	duckdb_scan_state->params = estate->es_param_list_info;
 	duckdb_scan_state->is_executed = false;
@@ -451,16 +451,16 @@ Duckdb_ExplainCustomScan(CustomScanState *node, List * /*ancestors*/, ExplainSta
 }
 
 void
-InitNode() {
+InitNode(const char* custom_scan_name) {
 	/* setup scan methods */
 	memset(&scan_methods, 0, sizeof(scan_methods));
-	scan_methods.CustomName = "DuckDBScan";
+	scan_methods.CustomName = custom_scan_name;
 	scan_methods.CreateCustomScanState = Duckdb_CreateCustomScanState;
 	RegisterCustomScanMethods(&scan_methods);
 
 	/* setup exec methods */
 	memset(&scan_exec_methods, 0, sizeof(scan_exec_methods));
-	scan_exec_methods.CustomName = "DuckDBScan";
+	scan_exec_methods.CustomName = custom_scan_name;
 
 	scan_exec_methods.BeginCustomScan = Duckdb_BeginCustomScan;
 	scan_exec_methods.ExecCustomScan = Duckdb_ExecCustomScan;

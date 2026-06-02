@@ -15,18 +15,17 @@ extern "C" {
 
 namespace pgddb {
 
-namespace ddb {
-bool
-DidWrites() {
-	if (!DuckDBManager::IsInitialized()) {
-		return false;
-	}
+PgddbGetConnectionHook pgddb_get_connection_hook = nullptr;
 
-	auto connection = DuckDBManager::GetConnectionUnsafe();
-	auto &context = *connection->context;
-	return DidWrites(context);
+duckdb::Connection *
+GetConnection(bool force_transaction) {
+	if (!pgddb_get_connection_hook) {
+		elog(ERROR, "pgddb_get_connection_hook is not installed; consumer must install it in _PG_init");
+	}
+	return pgddb_get_connection_hook(force_transaction);
 }
 
+namespace ddb {
 bool
 DidWrites(duckdb::ClientContext &context) {
 	if (!context.transaction.HasActiveTransaction()) {
@@ -36,19 +35,10 @@ DidWrites(duckdb::ClientContext &context) {
 }
 } // namespace ddb
 
-duckdb::unique_ptr<DuckDBManager> DuckDBManager::manager_instance;
-
 bool
 DuckDBManager::ShouldBeginTransaction() {
 	return pgddb::pg::IsInTransactionBlock(true);
 }
-
-char *duckdb_temp_directory = strdup("");
-char *duckdb_extension_directory = strdup("");
-char *duckdb_max_temp_directory_size = strdup("");
-int duckdb_maximum_memory = 0;
-int duckdb_threads = -1;
-
 
 namespace {
 
@@ -76,13 +66,8 @@ void
 DuckDBManager::Initialize() {
 	elog(DEBUG2, "(pgddb/DuckDBManager) Creating DuckDB instance");
 
-	// Block signals before initializing DuckDB to ensure signal is handled by the Postgres main thread only
-	pgddb::ThreadSignalBlockGuard guard;
-
 	duckdb::DBConfig config;
 	config.SetOptionByName("default_null_order", "postgres");
-
-	OnInit(config);
 
 	SET_DUCKDB_OPTION(temp_directory);
 	SET_DUCKDB_OPTION(extension_directory);
@@ -114,7 +99,13 @@ DuckDBManager::Initialize() {
 	connection_string = ConnectionString();
 	std::string pg_time_zone(pgddb::pg::GetConfigOption("TimeZone"));
 
-	database = new duckdb::DuckDB(connection_string, &config);
+	OnInit(config);
+
+	{
+    	// Block signals before initializing DuckDB to ensure signal is handled by the Postgres main thread only
+    	pgddb::ThreadSignalBlockGuard guard;
+    	database = new duckdb::DuckDB(connection_string, &config);
+	}
 
 	connection = duckdb::make_uniq<duckdb::Connection>(*database);
 
@@ -122,53 +113,35 @@ DuckDBManager::Initialize() {
 
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);
-	DuckDBQueryOrThrow(context, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(pg_time_zone));
+	QueryOrThrow(context, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(pg_time_zone));
 
 	OnPostInit(context);
 }
 
-void
-DuckDBManager::Reset() {
-	if (!manager_instance) {
-		return;
-	}
-	manager_instance->connection = nullptr;
-	delete manager_instance->database;
-	manager_instance->database = nullptr;
-}
-
-/*
- * Creates a new connection to the global DuckDB instance. This should only be
- * used in some rare cases, where a temporary new connection is needed instead
- * of the global cached connection that is returned by GetConnection.
- */
 duckdb::unique_ptr<duckdb::Connection>
 DuckDBManager::CreateConnection() {
-	auto &instance = Get();
-	instance.RequireExecution();
+	RequireExecution();
 
-	auto connection = duckdb::make_uniq<duckdb::Connection>(*instance.database);
-	auto &context = *connection->context;
+	auto new_connection = duckdb::make_uniq<duckdb::Connection>(*database);
+	auto &context = *new_connection->context;
 
-	instance.RefreshConnectionState(context);
+	RefreshConnectionState(context);
 
-	return connection;
+	return new_connection;
 }
 
-/* Returns the cached connection to the global DuckDB instance. */
 duckdb::Connection *
 DuckDBManager::GetConnection(bool force_transaction) {
-	auto &instance = Get();
-	instance.RequireExecution();
+	RequireExecution();
 
-	auto &context = *instance.connection->context;
+	auto &context = *connection->context;
 
 	if (!context.transaction.HasActiveTransaction()) {
 		if (IsSubTransaction()) {
 			throw duckdb::NotImplementedException("SAVEPOINT and subtransactions are not supported in DuckDB");
 		}
 
-		if (force_transaction || instance.ShouldBeginTransaction()) {
+		if (force_transaction || ShouldBeginTransaction()) {
 			/*
 			 * We only want to open a new DuckDB transaction if we're already
 			 * in a Postgres transaction block. Always opening a transaction
@@ -178,26 +151,12 @@ DuckDBManager::GetConnection(bool force_transaction) {
 			 * transaction finishes. So we only want to do this when actually
 			 * necessary.
 			 */
-			instance.connection->BeginTransaction();
+			connection->BeginTransaction();
 		}
 	}
 
-	instance.RefreshConnectionState(context);
+	RefreshConnectionState(context);
 
-	return instance.connection.get();
+	return connection.get();
 }
-
-/*
- * Returns the cached connection to the global DuckDB instance, but does not do
- * any checks required to correctly initialize the DuckDB transaction nor
- * refreshes the secrets/extensions/etc. Only use this in rare cases where you
- * know for sure that the connection is already initialized correctly for the
- * current query, and you just want a pointer to it.
- */
-duckdb::Connection *
-DuckDBManager::GetConnectionUnsafe() {
-	auto &instance = Get();
-	return instance.connection.get();
-}
-
 } // namespace pgddb

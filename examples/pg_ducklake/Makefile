@@ -1,21 +1,6 @@
-# pg_ducklake as a libpgddb consumer.
-#
-# Build wiring follows examples/pg_vortex/Makefile: include the root Makefile
-# to pull in PGDDB_INCLUDE / PGDDB_OBJS / FULL_DUCKDB_LIB, then bundle the
-# libpgddb sources into pg_ducklake.so. The ducklake DuckDB extension is
-# built standalone as libducklake_extension.a (DONT_LINK in
-# pg_ducklake_extensions.cmake keeps it out of DuckDB's own static link)
-# and force-loaded by this Makefile so vtable references to
-# DuckLakeMetadataManager subclasses pull all the .o's in.
-
-# EXTENSION_CONFIGS must be set before including the root Makefile because
-# DUCKDB_CONSUMER_TAG hashes it. EXTENSION_BUNDLE_EXCLUDE keeps
-# libducklake_extension.a out of libduckdb_bundle.a: we force-load it
-# separately below, and bundling it too would cause Linux ld to fail
-# with multiple-definition errors.
 ROOT_DIR := $(abspath $(CURDIR)/../..)
 EXTENSION_CONFIGS := $(CURDIR)/pg_ducklake_extensions.cmake
-EXTENSION_BUNDLE_EXCLUDE := ducklake
+EXTENSION_BUNDLE_EXCLUDE := ducklake postgres_scanner
 include $(ROOT_DIR)/Makefile
 
 MODULE_big = pg_ducklake
@@ -35,19 +20,16 @@ DUCKLAKE_INCLUDE = -I$(CURDIR)/third_party/ducklake/src/include
 override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) $(PGDDB_DUCKDB_INCLUDE) $(DUCKLAKE_INCLUDE) -isystem $(INCLUDEDIR_SERVER)
 override PG_CXXFLAGS += -std=c++17 -Wno-register
 
-# pg_ducklake's source directly references DuckLakeMetadataManager /
-# PostgresMetadataManager symbols from the ducklake DuckDB extension. The
-# bundle (libduckdb_bundle.a) contains them, but the linker won't pull them
-# in just because pg_ducklake.cpp inherits from those classes -- vtable
-# references don't drive archive member inclusion. Force-load the
-# pre-bundle libducklake_extension.a explicitly to keep all its .o's.
 DUCKLAKE_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/ducklake/libducklake_extension.a
 
-PG_DUCKLAKE_LINK_FLAGS = $(FULL_DUCKDB_LIB) -lstdc++ -llz4
+POSTGRES_SCANNER_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/postgres_scanner/libpostgres_scanner_extension.a
+
+PG_DUCKLAKE_LINK_FLAGS = $(FULL_DUCKDB_LIB) -lssl -lcrypto -lstdc++ -llz4
 ifeq ($(shell uname -s),Darwin)
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,-force_load,$(DUCKLAKE_EXT_LIB)
+	PG_DUCKLAKE_LINK_FLAGS += -Wl,-force_load,$(POSTGRES_SCANNER_EXT_LIB)
 else
-	PG_DUCKLAKE_LINK_FLAGS += -Wl,--whole-archive $(DUCKLAKE_EXT_LIB) -Wl,--no-whole-archive
+	PG_DUCKLAKE_LINK_FLAGS += -Wl,--whole-archive $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB) -Wl,--no-whole-archive
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,--exclude-libs,ALL
 endif
 

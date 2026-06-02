@@ -1,6 +1,7 @@
 #include "duckdb/common/exception.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_hooks.hpp"
@@ -67,7 +68,7 @@ AllowWrites() {
 	if (MixedWritesAllowed()) {
 		return true;
 	}
-	return !pgddb::ddb::DidWrites();
+	return !pgduckdb::DuckDBManager::DidWrites();
 }
 
 } // namespace pg
@@ -80,7 +81,7 @@ MixedWritesAllowed() {
 
 bool
 DidDisallowedMixedWrites() {
-	return !MixedWritesAllowed() && pgduckdb::pg::DidWrites() && pgddb::ddb::DidWrites();
+	return !MixedWritesAllowed() && pgduckdb::pg::DidWrites() && pgduckdb::DuckDBManager::DidWrites();
 }
 
 /*
@@ -223,11 +224,11 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 	executor_nest_level = 0;
 
 	/* If DuckDB is not initialized there's no need to do anything */
-	if (!pgddb::DuckDBManager::IsInitialized()) {
+	if (!pgduckdb::DuckDBManager::IsInitialized()) {
 		return;
 	}
 
-	auto connection = pgddb::DuckDBManager::GetConnectionUnsafe();
+	auto connection = pgduckdb::DuckDBManager::Get().GetConnectionUnsafe();
 	auto &context = *connection->context;
 
 	switch (event) {
@@ -304,10 +305,10 @@ DuckdbXactCallback(XactEvent event, void * /*arg*/) {
  */
 static void
 DuckdbSubXactCallback_Cpp(SubXactEvent event) {
-	if (!pgddb::DuckDBManager::IsInitialized()) {
+	if (!pgduckdb::DuckDBManager::IsInitialized()) {
 		return;
 	}
-	auto connection = pgddb::DuckDBManager::GetConnectionUnsafe();
+	auto connection = pgduckdb::DuckDBManager::Get().GetConnectionUnsafe();
 	auto &context = *connection->context;
 	if (!context.transaction.HasActiveTransaction()) {
 		return;

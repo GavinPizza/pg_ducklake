@@ -430,7 +430,7 @@ PlannedStmt *DucklakePlannerHook(Query *parse, const char *query_string, int cur
   parse = RewriteVariantOperators(parse);
   parse = RewriteRegclassFunctions(parse);
 
-  if (pgddb::DuckDBManager::IsInitialized()) {
+  if (pgducklake::DuckDBManager::IsInitialized()) {
     /* ATTACH databases for any ducklake FDW tables before planning. */
     pgducklake::RegisterForeignTablesInQuery(parse);
   }
@@ -617,7 +617,7 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 void DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
                          ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
                          DestReceiver *dest, QueryCompletion *qc) {
-  if (IsCommitUtilityStmt(pstmt) && pgddb::DuckDBManager::IsInitialized()) {
+  if (IsCommitUtilityStmt(pstmt) && pgducklake::DuckDBManager::IsInitialized()) {
     elog(DEBUG1, "pg_ducklake utility hook caught COMMIT");
     ForceDuckDBCommitOnExplicitCommit();
   }

@@ -50,6 +50,7 @@
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/transaction/transaction_context.hpp"
 #include "ducklake_extension.hpp"
@@ -131,10 +132,19 @@ namespace pgducklake {
 void ResetDirectInsertCaches();
 } // namespace pgducklake
 
+class PostgresScannerExtension : public duckdb::Extension {
+public:
+  std::string Name() override {
+    return "postgres_scanner";
+  }
+  void Load(duckdb::ExtensionLoader &loader) override;
+};
+
 void ducklake_load_extension(duckdb::DuckDB &db) {
   ducklake_duckdb_instance = &db;
   pgducklake::ResetDirectInsertCaches();
   db.LoadStaticExtension<duckdb::DucklakeExtension>();
+  db.LoadStaticExtension<PostgresScannerExtension>();
   pgducklake::RegisterTimeTravelFunction(*db.instance);
   pgducklake::RegisterWrapperMacros(*db.instance);
   pgducklake::RegisterScalarMacros(*db.instance);
@@ -159,18 +169,6 @@ void ducklake_load_extension(duckdb::DuckDB &db) {
 namespace pgducklake {
 
 void
-DuckDBManager::OnInit(duckdb::DBConfig &config) {
-	// DuckLake's FDW path attaches a remote DuckLake via "ducklake:..."
-	// URIs, which pull in the postgres_scanner DuckDB extension at
-	// runtime. The system-installed postgres_scanner.duckdb_extension
-	// has no Anthropic-signed signature in the test environment, so
-	// DuckDB refuses to load it under the default policy. Allow
-	// unsigned extensions so the FDW tests can attach upstream
-	// postgres-backed DuckLake catalogs.
-	config.SetOptionByName("allow_unsigned_extensions", duckdb::Value::BOOLEAN(true));
-}
-
-void
 DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
 	/*
@@ -191,18 +189,53 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	 * `<storage_catalog>.schema.table` references. Mirrors upstream
 	 * pg_duckdb's `ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)`.
 	 */
-	DuckDBQueryOrThrow(context,
+	QueryOrThrow(context,
 	                   "ATTACH DATABASE '" PGDUCKLAKE_PG_STORAGE_CATALOG "' (TYPE " PGDUCKLAKE_PG_STORAGE_CATALOG ")");
 }
 
 } // namespace pgducklake
 
-namespace pgddb {
-duckdb::unique_ptr<DuckDBManager>
-GetManagerInstance() {
-	return duckdb::make_uniq<pgducklake::DuckDBManager>();
+namespace pgducklake {
+
+duckdb::unique_ptr<DuckDBManager> DuckDBManager::instance_;
+
+bool
+DuckDBManager::IsInitialized() {
+	return instance_ != nullptr && instance_->database != nullptr;
 }
-} // namespace pgddb
+
+DuckDBManager &
+DuckDBManager::Get() {
+	if (!instance_) {
+		instance_ = duckdb::make_uniq<DuckDBManager>();
+	}
+	if (!instance_->database) {
+		instance_->Initialize();
+	}
+	return *instance_;
+}
+
+void
+DuckDBManager::Reset() {
+	if (!instance_) {
+		return;
+	}
+	instance_->connection = nullptr;
+	delete instance_->database;
+	instance_->database = nullptr;
+}
+
+static duckdb::Connection *
+GetConnectionForScan(bool force_transaction) {
+	return DuckDBManager::Get().GetConnection(force_transaction);
+}
+
+void
+InitDuckDBManager() {
+	::pgddb::pgddb_get_connection_hook = GetConnectionForScan;
+}
+
+} // namespace pgducklake
 
 namespace pgducklake {
 
@@ -303,10 +336,10 @@ InitRuleutilsHooks() {
  */
 static void
 DuckLakeXactCallback(XactEvent event, void * /*arg*/) {
-	if (!::pgddb::DuckDBManager::IsInitialized()) {
+	if (!pgducklake::DuckDBManager::IsInitialized()) {
 		return;
 	}
-	auto *connection = ::pgddb::DuckDBManager::GetConnectionUnsafe();
+	auto *connection = pgducklake::DuckDBManager::Get().GetConnectionUnsafe();
 	if (!connection) {
 		return;
 	}
@@ -356,10 +389,10 @@ SetAllowSubtransaction(bool allow) {
 static void
 DuckLakeSubXactCallback(SubXactEvent event, SubTransactionId /*my_subid*/, SubTransactionId /*parent_subid*/,
                         void * /*arg*/) {
-	if (!::pgddb::DuckDBManager::IsInitialized()) {
+	if (!pgducklake::DuckDBManager::IsInitialized()) {
 		return;
 	}
-	auto *connection = ::pgddb::DuckDBManager::GetConnectionUnsafe();
+	auto *connection = pgducklake::DuckDBManager::Get().GetConnectionUnsafe();
 	if (!connection) {
 		return;
 	}

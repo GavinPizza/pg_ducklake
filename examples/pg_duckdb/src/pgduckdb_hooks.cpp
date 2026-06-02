@@ -30,6 +30,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_table_am.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/utility/copy.hpp"
@@ -358,7 +359,7 @@ DuckdbExecutorFinishHook_Cpp(QueryDesc *queryDesc) {
 		return;
 	}
 
-	if (!pgddb::ddb::DidWrites()) {
+	if (!pgduckdb::DuckDBManager::DidWrites()) {
 		return;
 	}
 

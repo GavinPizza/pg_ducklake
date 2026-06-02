@@ -99,7 +99,7 @@ Prepare(const Query *query, const char *explain_prefix) {
 
 	elog(DEBUG2, "(PGDuckDB/DuckdbPrepare) Preparing: %s", query_string);
 
-	auto con = pgddb::DuckDBManager::GetConnection();
+	auto con = pgddb::GetConnection();
 	return con->context->Prepare(query_string);
 }
 

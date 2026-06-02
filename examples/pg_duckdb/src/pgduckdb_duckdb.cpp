@@ -87,15 +87,65 @@ DisabledFileSystems() {
 	config.SetOptionByName(#ddb_option_name, duckdb::Value(duckdb_##ddb_option_name));                                 \
 	elog(DEBUG2, "[PGDuckDB] Set DuckDB option: '" #ddb_option_name "'=%s", ToString(duckdb_##ddb_option_name).c_str());
 
+duckdb::unique_ptr<DuckDBManager> DuckDBManager::instance_;
+
+bool
+DuckDBManager::IsInitialized() {
+	return instance_ != nullptr && instance_->database != nullptr;
+}
+
+DuckDBManager &
+DuckDBManager::Get() {
+	if (!instance_) {
+		instance_ = duckdb::make_uniq<DuckDBManager>();
+	}
+	if (!instance_->database) {
+		instance_->ApplyGucConfig();
+		instance_->Initialize();
+	}
+	return *instance_;
+}
+
 void
-DuckDBManager::InvalidateSecretsIfInitialized() {
-	if (!::pgddb::DuckDBManager::IsInitialized()) {
+DuckDBManager::Reset() {
+	if (!instance_) {
 		return;
 	}
-	auto *mgr = dynamic_cast<DuckDBManager *>(&::pgddb::DuckDBManager::Get());
-	if (mgr) {
-		mgr->secrets_valid_ = false;
+	instance_->connection = nullptr;
+	delete instance_->database;
+	instance_->database = nullptr;
+}
+
+duckdb::unique_ptr<duckdb::QueryResult>
+DuckDBManager::QueryOrThrow(const std::string &query) {
+	return ::pgddb::DuckDBManager::QueryOrThrow(*Get().GetConnection(), query);
+}
+
+void
+DuckDBManager::ApplyGucConfig() {
+	// LHS = inherited base instance members; RHS = pg_duckdb GUC globals.
+	duckdb_temp_directory = pgduckdb::duckdb_temp_directory;
+	duckdb_extension_directory = pgduckdb::duckdb_extension_directory;
+	duckdb_max_temp_directory_size = pgduckdb::duckdb_max_temp_directory_size;
+	duckdb_maximum_memory = pgduckdb::duckdb_maximum_memory;
+	duckdb_threads = pgduckdb::duckdb_threads;
+}
+
+bool
+DuckDBManager::DidWrites() {
+	if (!IsInitialized()) {
+		return false;
 	}
+	auto *conn = Get().GetConnectionUnsafe();
+	return ::pgddb::ddb::DidWrites(*conn->context);
+}
+
+void
+DuckDBManager::InvalidateSecretsIfInitialized() {
+	if (!IsInitialized()) {
+		return;
+	}
+	Get().secrets_valid_ = false;
 }
 
 void
@@ -165,16 +215,16 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	duckdb::ExtensionInstallInfo extension_install_info;
 	extension_active_load->FinishLoad(extension_install_info);
 
-	DuckDBQueryOrThrow(context, "SET default_collation =" +
+	QueryOrThrow(context, "SET default_collation =" +
 	                                duckdb::KeywordHelper::WriteQuoted(duckdb_default_collation));
-	DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
-	DuckDBQueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
+	QueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
+	QueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
 
 	if (IsMotherDuckEnabled()) {
 		auto timeout = FindMotherDuckBackgroundCatalogRefreshInactivityTimeout();
 		if (timeout != nullptr) {
 			auto quoted_timeout = duckdb::KeywordHelper::WriteQuoted(timeout);
-			DuckDBQueryOrThrow(context,
+			QueryOrThrow(context,
 			                   "SET motherduck_background_catalog_refresh_inactivity_timeout=" + quoted_timeout);
 		}
 	}
@@ -189,12 +239,12 @@ void
 DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
 	std::string disabled_filesystems = DisabledFileSystems();
 	if (disabled_filesystems != "") {
-		DuckDBQueryOrThrow(context,
+		QueryOrThrow(context,
 		                   "SET disabled_filesystems=" + duckdb::KeywordHelper::WriteQuoted(disabled_filesystems));
 	}
 
 	if (strlen(duckdb_azure_transport_option_type) > 0) {
-		DuckDBQueryOrThrow(context, "SET azure_transport_option_type=" +
+		QueryOrThrow(context, "SET azure_transport_option_type=" +
 		                                duckdb::KeywordHelper::WriteQuoted(duckdb_azure_transport_option_type));
 	}
 
@@ -225,18 +275,18 @@ void
 DuckDBManager::LoadSecrets(duckdb::ClientContext &context) {
 	auto queries = InvokeCPPFunc(::pgduckdb::pg::ListDuckDBCreateSecretQueries);
 	foreach_ptr(char, query, queries) {
-		DuckDBQueryOrThrow(context, query);
+		QueryOrThrow(context, query);
 	}
 }
 
 void
 DuckDBManager::DropSecrets(duckdb::ClientContext &context) {
 	auto secrets =
-	    DuckDBQueryOrThrow(context, "SELECT name FROM duckdb_secrets() WHERE name LIKE 'pgduckdb_secret_%';");
+	    QueryOrThrow(context, "SELECT name FROM duckdb_secrets() WHERE name LIKE 'pgduckdb_secret_%';");
 	while (auto chunk = secrets->Fetch()) {
 		for (size_t i = 0, s = chunk->size(); i < s; ++i) {
 			auto drop_secret_cmd = duckdb::StringUtil::Format("DROP SECRET %s;", chunk->GetValue(0, i).ToString());
-			DuckDBQueryOrThrow(context, drop_secret_cmd);
+			QueryOrThrow(context, drop_secret_cmd);
 		}
 	}
 }
@@ -246,7 +296,7 @@ DuckDBManager::LoadExtensions(duckdb::ClientContext &context) {
 	auto duckdb_extensions = ReadDuckdbExtensions();
 	for (auto &extension : duckdb_extensions) {
 		if (extension.autoload) {
-			DuckDBQueryOrThrow(context, ::pgduckdb::ddb::LoadExtensionQuery(extension.name));
+			QueryOrThrow(context, ::pgduckdb::ddb::LoadExtensionQuery(extension.name));
 		}
 	}
 }
@@ -255,19 +305,18 @@ void
 DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
 	auto duckdb_extensions = ReadDuckdbExtensions();
 	for (auto &extension : duckdb_extensions) {
-		DuckDBQueryOrThrow(context, ::pgduckdb::ddb::InstallExtensionQuery(extension.name, extension.repository));
+		QueryOrThrow(context, ::pgduckdb::ddb::InstallExtensionQuery(extension.name, extension.repository));
 	}
 }
 
-} // namespace pgduckdb
-
-namespace pgddb {
-
-// pg_duckdb's binding for libpgddb's manager hook. Ownership is handed off
-// to libpgddb's cached static (one per backend, per dylib).
-duckdb::unique_ptr<DuckDBManager>
-GetManagerInstance() {
-	return duckdb::make_uniq<pgduckdb::DuckDBManager>();
+static duckdb::Connection *
+GetConnectionForScan(bool force_transaction) {
+	return DuckDBManager::Get().GetConnection(force_transaction);
 }
 
-} // namespace pgddb
+void
+InitDuckDBManager() {
+	::pgddb::pgddb_get_connection_hook = GetConnectionForScan;
+}
+
+} // namespace pgduckdb

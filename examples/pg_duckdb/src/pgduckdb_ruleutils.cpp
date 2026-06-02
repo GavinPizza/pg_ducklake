@@ -3,6 +3,7 @@
 #include "pgddb/pgddb_table_am.hpp"
 #include "pgddb/pgddb_types.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgddb/pg/relations.hpp"
 #include "pgddb/pg/locale.hpp"
 
@@ -484,7 +485,7 @@ pgduckdb_db_and_schema(const char *postgres_schema_name, const char *duckdb_tabl
 
 	if (strcmp("public", postgres_schema_name) == 0) {
 		/* Use the "main" schema in DuckDB for tables in the public schema in Postgres */
-		auto dbname = pgddb::DuckDBManager::Get().GetDefaultDBName().c_str();
+		auto dbname = pgduckdb::DuckDBManager::Get().GetDefaultDBName().c_str();
 		return list_make2((void *)dbname, (void *)"main");
 	}
 
@@ -498,7 +499,7 @@ pgduckdb_db_and_schema(const char *postgres_schema_name, const char *duckdb_tabl
 	}
 
 	if (!pgddb::IsDuckdbSchemaName(postgres_schema_name)) {
-		auto dbname = pgddb::DuckDBManager::Get().GetDefaultDBName().c_str();
+		auto dbname = pgduckdb::DuckDBManager::Get().GetDefaultDBName().c_str();
 		return list_make2((void *)dbname, (void *)postgres_schema_name);
 	}
 

@@ -1,17 +1,45 @@
-// pg_vortex's binding for libpgddb's manager hook. The base
-// pgddb::DuckDBManager is fine as-is: no GUCs, no MotherDuck, no extension
-// table, no secrets, no postgres_role gate. The default hook bodies do
-// nothing, which is what a read-only consumer wants. If pg_vortex grows
-// custom DuckDB setup later (e.g., LOAD vortex on startup), subclass here
-// and return that instance instead.
+// pg_vortex's DuckDBManager singleton + connection-hook install.
 
-#include "pgddb/pgddb_duckdb.hpp"
+#include "pg_vortex/pgvortex_duckdb.hpp"
 
-namespace pgddb {
+namespace pg_vortex {
 
-duckdb::unique_ptr<DuckDBManager>
-GetManagerInstance() {
-	return duckdb::make_uniq<DuckDBManager>();
+duckdb::unique_ptr<DuckDBManager> DuckDBManager::instance_;
+
+bool
+DuckDBManager::IsInitialized() {
+	return instance_ != nullptr && instance_->database != nullptr;
 }
 
-} // namespace pgddb
+DuckDBManager &
+DuckDBManager::Get() {
+	if (!instance_) {
+		instance_ = duckdb::make_uniq<DuckDBManager>();
+	}
+	if (!instance_->database) {
+		instance_->Initialize();
+	}
+	return *instance_;
+}
+
+void
+DuckDBManager::Reset() {
+	if (!instance_) {
+		return;
+	}
+	instance_->connection = nullptr;
+	delete instance_->database;
+	instance_->database = nullptr;
+}
+
+static duckdb::Connection *
+GetConnectionForScan(bool force_transaction) {
+	return DuckDBManager::Get().GetConnection(force_transaction);
+}
+
+void
+InitDuckDBManager() {
+	pgddb::pgddb_get_connection_hook = GetConnectionForScan;
+}
+
+} // namespace pg_vortex

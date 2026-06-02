@@ -30,6 +30,7 @@ extern "C" {
 #include "utils/ruleutils.h"
 }
 
+#include "pg_vortex/pgvortex_duckdb.hpp"
 #include "pg_vortex/vortex_node.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
@@ -179,7 +180,7 @@ Vortex_BeginCustomScan_Cpp(CustomScanState *cscanstate, EState *estate, int /*ef
 		}
 	}
 
-	state->duckdb_connection = pgddb::DuckDBManager::GetConnection();
+	state->duckdb_connection = pg_vortex::DuckDBManager::Get().GetConnection();
 	state->prepared_statement = prepared_query.release();
 	state->params = estate->es_param_list_info;
 	state->is_executed = false;

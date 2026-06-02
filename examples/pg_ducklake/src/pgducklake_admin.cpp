@@ -18,6 +18,7 @@
 // DuckDB headers parse first to avoid FATAL macro collision with postgres.h.
 #include "duckdb/common/types.hpp"
 
+#include "pgducklake/pgducklake_duckdb.hpp"
 #include "pgducklake/pgducklake_duckdb_query.hpp"
 
 #include "pgddb/pgddb_duckdb.hpp"
@@ -40,7 +41,7 @@ ducklake_recycle_ddb(PG_FUNCTION_ARGS) {
 	// transaction tied to the current PG transaction. Match pg_duckdb's
 	// guard.
 	::pgddb::pg::PreventInTransactionBlock(true, "ducklake.recycle_ddb()");
-	::pgddb::DuckDBManager::Reset();
+	pgducklake::DuckDBManager::Reset();
 	PG_RETURN_VOID();
 }
 

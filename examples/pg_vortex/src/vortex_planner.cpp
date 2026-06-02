@@ -38,6 +38,7 @@ extern "C" {
 #endif
 }
 
+#include "pg_vortex/pgvortex_duckdb.hpp"
 #include "pg_vortex/vortex_node.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgddb/vendor/pg_list.hpp"
@@ -56,7 +57,7 @@ Prepare(const Query *query, const char *explain_prefix) {
 
 	elog(DEBUG2, "(pg_vortex/Prepare) Preparing: %s", query_string);
 
-	auto con = pgddb::DuckDBManager::GetConnection();
+	auto con = pg_vortex::DuckDBManager::Get().GetConnection();
 	return con->context->Prepare(query_string);
 }
 

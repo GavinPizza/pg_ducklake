@@ -47,7 +47,7 @@ int ExecuteDuckDBQuery(const char *query, const char **errmsg_out) {
   };
 
   try {
-    auto *conn = pgducklake::DuckDBManager::GetConnection();
+    auto *conn = pgducklake::DuckDBManager::Get().GetConnection();
     auto result = conn->Query(query);
     if (result->HasError()) {
       SetError(result->GetError());

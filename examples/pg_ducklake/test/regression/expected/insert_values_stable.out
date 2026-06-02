@@ -110,9 +110,9 @@ SELECT ducklake.reset_direct_insert_stats();
 (1 row)
 
 EXPLAIN INSERT INTO ivs VALUES (NULL, NULL, (random() * 100)::int);
-                         QUERY PLAN                         
-------------------------------------------------------------
- Custom Scan (DuckDBScan)  (cost=0.00..0.00 rows=0 width=0)
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Custom Scan (DuckLakeScan)  (cost=0.00..0.00 rows=0 width=0)
    DuckDB Execution Plan: 
  
  ┌───────────────────────────┐
@@ -168,9 +168,9 @@ SELECT ducklake.reset_direct_insert_stats();
 (1 row)
 
 EXPLAIN INSERT INTO ivs SELECT NULL::timestamp, NULL::date, 200 FROM ivs_src;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Custom Scan (DuckDBScan)  (cost=0.00..0.00 rows=0 width=0)
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Custom Scan (DuckLakeScan)  (cost=0.00..0.00 rows=0 width=0)
    DuckDB Execution Plan: 
  
  ┌───────────────────────────┐

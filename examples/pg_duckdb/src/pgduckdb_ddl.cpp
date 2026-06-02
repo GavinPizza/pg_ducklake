@@ -1,5 +1,6 @@
 #include "pgddb/pgddb_planner.hpp"
 #include "pgddb/pgddb_utils.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
@@ -884,8 +885,7 @@ DuckdbHandleRenameViewPre(RenameStmt *stmt) {
 
 	pgduckdb::ClaimCurrentCommandId();
 
-	auto connection = pgddb::DuckDBManager::GetConnection(true);
-	pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, pgddb_get_rename_relationdef(relation_oid, stmt));
+	pgduckdb::DuckDBManager::QueryOrThrow(pgddb_get_rename_relationdef(relation_oid, stmt));
 	RelationClose(rel);
 
 	/* Now we need to replace the Postgres view to reference the new name in the duckdb.view(...) call */
@@ -990,8 +990,7 @@ DuckdbHandleViewStmtPre(Node *parsetree, PlannedStmt *pstmt, const char *query_s
 
 	/* We're doing a cross-database writes, so want to use a transaction to
 	 * limit the duration of inconsistency. */
-	auto connection = pgddb::DuckDBManager::GetConnection(true);
-	pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, create_view_string);
+	pgduckdb::DuckDBManager::QueryOrThrow(create_view_string);
 	return true;
 }
 
@@ -1001,7 +1000,7 @@ DuckdbHandleViewStmtPost(Node *parsetree) {
 
 	Relation rel = relation_openrv(stmt->view, AccessShareLock);
 	Oid relid = rel->rd_id;
-	auto default_db = pgddb::DuckDBManager::Get().GetDefaultDBName();
+	auto default_db = pgduckdb::DuckDBManager::Get().GetDefaultDBName();
 	char *postgres_schema_name = get_namespace_name(rel->rd_rel->relnamespace);
 
 	const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, "duckdb"));
@@ -1067,7 +1066,7 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 	if (IsA(parsetree, CopyStmt)) {
 		auto copy_query = PostgresFunctionGuard(MakeDuckdbCopyQuery, pstmt, query_string, query_env);
 		if (copy_query) {
-			auto res = pgddb::DuckDBManager::DuckDBQueryOrThrow(copy_query);
+			auto res = pgduckdb::DuckDBManager::QueryOrThrow(copy_query);
 			auto chunk = res->Fetch();
 			auto processed = chunk->GetValue(0, 0).GetValue<uint64_t>();
 			if (qc) {
@@ -1166,7 +1165,7 @@ DuckdbInitUtilityHook() {
 void
 DuckdbTruncateTable(Oid relation_oid) {
 	auto name = PostgresFunctionGuard(pgddb_relation_name, relation_oid);
-	pgddb::DuckDBManager::DuckDBQueryOrThrow(std::string("TRUNCATE ") + name);
+	pgduckdb::DuckDBManager::QueryOrThrow(std::string("TRUNCATE ") + name);
 }
 
 /*
@@ -1297,7 +1296,7 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 		int sec_context;
 		const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
 		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, "duckdb"));
-		auto default_db = pgddb::DuckDBManager::Get().GetDefaultDBName();
+		auto default_db = pgduckdb::DuckDBManager::Get().GetDefaultDBName();
 
 		Oid arg_types[] = {OIDOID, TEXTOID, TEXTOID, TEXTOID};
 		Datum values[] = {relid_datum, CStringGetTextDatum(duckdb_db), 0, CStringGetTextDatum(default_db.c_str())};
@@ -1366,7 +1365,7 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 
 	/* We're going to run multiple queries in DuckDB, so we need to start a
 	 * transaction to ensure ACID guarantees hold. */
-	auto connection = pgddb::DuckDBManager::GetConnection(true);
+	auto connection = pgduckdb::DuckDBManager::Get().GetConnection(true);
 	Query *ctas_query = nullptr;
 
 	if (IsA(parsetree, CreateTableAsStmt) && !ctas_skip_data) {
@@ -1374,13 +1373,13 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 		ctas_query = (Query *)stmt->query;
 	}
 
-	pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, create_table_string);
+	pgduckdb::DuckDBManager::QueryOrThrow(*connection, create_table_string);
 	if (ctas_query) {
 		const char *ctas_query_string = pgddb_get_querydef(ctas_query);
 
 		std::string insert_string =
 		    std::string("INSERT INTO ") + pgddb_relation_name(relid) + " " + ctas_query_string;
-		pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, insert_string);
+		pgduckdb::DuckDBManager::QueryOrThrow(*connection, insert_string);
 	}
 
 	PG_RETURN_NULL();
@@ -1581,7 +1580,7 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 			if (!connection) {
 				/* We're going to run multiple queries in DuckDB, so we need to
 				 * start a transaction to ensure ACID guarantees hold. */
-				connection = pgddb::DuckDBManager::GetConnection(true);
+				connection = pgduckdb::DuckDBManager::Get().GetConnection(true);
 			}
 			HeapTuple tuple = SPI_tuptable->vals[proc];
 
@@ -1591,7 +1590,7 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 			char *drop_query =
 			    psprintf("DROP %s IF EXISTS %s.%s", object_type,
 			             pgddb_db_and_schema_string(postgres_schema_name, "duckdb"), quote_identifier(table_name));
-			pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, drop_query);
+			pgduckdb::DuckDBManager::QueryOrThrow(*connection, drop_query);
 
 			deleted_duckdb_relations++;
 		}
@@ -1629,10 +1628,10 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 		if (!connection) {
 			/* We're going to run multiple queries in DuckDB, so we need to
 			 * start a transaction to ensure ACID guarantees hold. */
-			connection = pgddb::DuckDBManager::GetConnection(true);
+			connection = pgduckdb::DuckDBManager::Get().GetConnection(true);
 		}
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-		pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection,
+		pgduckdb::DuckDBManager::QueryOrThrow(*connection,
 		                             std::string("DROP TABLE pg_temp.main.") + quote_identifier(table_name));
 		pgduckdb::UnregisterDuckdbTempTable(relid);
 		deleted_duckdb_relations++;
@@ -1781,7 +1780,7 @@ DECLARE_PG_FUNCTION(duckdb_alter_table_trigger) {
 
 	/* We're going to run multiple queries in DuckDB, so we need to start a
 	 * transaction to ensure ACID guarantees hold. */
-	auto connection = pgddb::DuckDBManager::GetConnection(true);
+	auto connection = pgduckdb::DuckDBManager::Get().GetConnection(true);
 
 	EventTriggerData *trigdata = (EventTriggerData *)fcinfo->context;
 	char *alter_table_stmt_string;
@@ -1796,7 +1795,7 @@ DECLARE_PG_FUNCTION(duckdb_alter_table_trigger) {
 	}
 
 	elog(DEBUG1, "Executing: %s", alter_table_stmt_string);
-	auto res = pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, alter_table_stmt_string);
+	auto res = pgduckdb::DuckDBManager::QueryOrThrow(*connection, alter_table_stmt_string);
 
 	PG_RETURN_NULL();
 }

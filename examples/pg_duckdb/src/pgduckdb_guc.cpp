@@ -4,6 +4,7 @@
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgddb/scan/postgres_scan.hpp"
 #include "pgddb/scan/postgres_table_reader.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_guc.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgddb/pgddb_utils.hpp"
@@ -35,7 +36,7 @@ MakeDirName(const char *name) {
 template <typename T>
 bool
 GucCheckDuckDBNotInitdHook(T *, void **, GucSource) {
-	if (pgddb::DuckDBManager::IsInitialized()) {
+	if (pgduckdb::DuckDBManager::IsInitialized()) {
 		GUC_check_errmsg("Cannot set this variable after DuckDB has been initialized. Reconnect to Postgres or use "
 		                 "`duckdb.recycle_ddb()` to reset "
 		                 "the DuckDB instance.");
@@ -137,11 +138,17 @@ char *duckdb_default_collation = strdup("");
 char *duckdb_azure_transport_option_type = strdup("");
 char *duckdb_custom_user_agent = strdup("");
 
+char *duckdb_temp_directory = strdup("");
+char *duckdb_extension_directory = strdup("");
+char *duckdb_max_temp_directory_size = strdup("");
+int duckdb_maximum_memory = 0;
+int duckdb_threads = -1;
+
 void
 InitGUC() {
-	::pgddb::duckdb_maximum_memory = 4096; /* 4GB in MB */
-	::pgddb::duckdb_temp_directory = MakeDirName("temp");
-	::pgddb::duckdb_extension_directory = MakeDirName("extensions");
+	duckdb_maximum_memory = 4096; /* 4GB in MB */
+	duckdb_temp_directory = MakeDirName("temp");
+	duckdb_extension_directory = MakeDirName("extensions");
 
 	/* pg_duckdb specific GUCs */
 	DefineCustomVariable("duckdb.force_execution", "Force queries to use DuckDB execution", &duckdb_force_execution,
@@ -199,33 +206,33 @@ InitGUC() {
 	    &duckdb_autoload_known_extensions, PGC_SUSET);
 
 	DefineCustomDuckDBVariable("duckdb.max_memory", "The maximum memory DuckDB can use in MB (e.g., 4096 for 4GB)",
-	                           &::pgddb::duckdb_maximum_memory, 0, INT_MAX, PGC_SUSET, GUC_UNIT_MB);
+	                           &duckdb_maximum_memory, 0, INT_MAX, PGC_SUSET, GUC_UNIT_MB);
 	DefineCustomDuckDBVariable(
 	    "duckdb.memory_limit",
 	    "The maximum memory DuckDB can use in MB (e.g., 4096 for 4GB), alias for duckdb.max_memory",
-	    &::pgddb::duckdb_maximum_memory, 0, INT_MAX, PGC_SUSET, GUC_UNIT_MB);
+	    &duckdb_maximum_memory, 0, INT_MAX, PGC_SUSET, GUC_UNIT_MB);
 
 	DefineCustomDuckDBVariable(
 	    "duckdb.temporary_directory",
 	    "Set the directory to which DuckDB write temp files, alias for duckdb.temporary_directory",
-	    &::pgddb::duckdb_temp_directory, PGC_SUSET);
+	    &duckdb_temp_directory, PGC_SUSET);
 
 	DefineCustomDuckDBVariable(
 	    "duckdb.max_temp_directory_size",
 	    "The maximum amount of data stored inside DuckDB's 'temp_directory' (when set) (e.g., 1GB), "
 	    "alias for duckdb.max_temp_directory_size",
-	    &::pgddb::duckdb_max_temp_directory_size, PGC_SUSET);
+	    &duckdb_max_temp_directory_size, PGC_SUSET);
 
 	DefineCustomDuckDBVariable(
 	    "duckdb.extension_directory",
 	    "Set the directory to where DuckDB stores extensions in, alias for duckdb.extension_directory",
-	    &::pgddb::duckdb_extension_directory, PGC_SUSET);
+	    &duckdb_extension_directory, PGC_SUSET);
 
 	DefineCustomDuckDBVariable("duckdb.threads", "Maximum number of DuckDB threads per Postgres backend.",
-	                           &::pgddb::duckdb_threads, -1, 1024, PGC_SUSET);
+	                           &duckdb_threads, -1, 1024, PGC_SUSET);
 	DefineCustomDuckDBVariable("duckdb.worker_threads",
 	                           "Maximum number of DuckDB threads per Postgres backend, alias for duckdb.threads",
-	                           &::pgddb::duckdb_threads, -1, 1024, PGC_SUSET);
+	                           &duckdb_threads, -1, 1024, PGC_SUSET);
 
 	DefineCustomDuckDBVariable("duckdb.default_collation",
 	                           "The default collation to use for DuckDB queries, e.g., 'en_us'",
@@ -272,7 +279,7 @@ DuckAssignTimezone_Cpp(const char *tz) {
 		return;
 	}
 
-	if (!pgddb::DuckDBManager::IsInitialized()) {
+	if (!pgduckdb::DuckDBManager::IsInitialized()) {
 		return;
 	}
 
@@ -281,8 +288,8 @@ DuckAssignTimezone_Cpp(const char *tz) {
 	// transaction context to be active in Postgres to be able to call
 	// RefreshConnectionState, and GUCs can be changed outside of transaction
 	// blocks (for instance by being reverted due to SET LOCAL or by SIGHUP)
-	auto connection = pgddb::DuckDBManager::GetConnectionUnsafe();
-	pgddb::DuckDBManager::DuckDBQueryOrThrow(*connection, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(tz));
+	auto connection = pgduckdb::DuckDBManager::Get().GetConnectionUnsafe();
+	pgduckdb::DuckDBManager::QueryOrThrow(*connection, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(tz));
 	elog(DEBUG2, "[PGDuckDB] Set DuckDB option: 'TimeZone'=%s", tz);
 }
 

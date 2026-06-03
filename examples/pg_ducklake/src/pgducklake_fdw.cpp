@@ -703,7 +703,7 @@ void InitFDW() {
   // "<catalog>.<schema>.<rel>" string for foreign tables backed by
   // ducklake_fdw. Each FDW server is ATTACHed in DuckDB as fdw_db_*;
   // the hook returns the fully-quoted alias.
-  pgddb_relation_name_hook = GetDucklakeForeignTableName;
+  Register_pgddb_relation_name(GetDucklakeForeignTableName);
 
   prev_fdw_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
   ProcessUtility_hook = DucklakeFdwUtilityHook;

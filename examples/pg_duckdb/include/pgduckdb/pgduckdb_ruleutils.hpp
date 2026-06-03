@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pgddb/pgddb_ddl.hpp"
+
 extern "C" {
 #include "postgres.h"
 #include "nodes/parsenodes.h"
@@ -11,6 +13,13 @@ namespace pgduckdb {
 /* Installs pg_duckdb's ruleutils hook impls into libpgddb. Called from _PG_init. */
 void InitRuleutilsHooks();
 
+// pg_duckdb's DDL deparser: layers the MotherDuck persistence/ownership policy
+// onto libpgddb's CREATE TABLE deparser.
+class Ruleutils : public pgddb::DuckdbRuleutils {
+protected:
+	void validate_create_table(Relation relation) override;
+};
+
 } // namespace pgduckdb
 
 extern "C" {
@@ -18,9 +27,9 @@ extern "C" {
 /*
  * pgduckdb_get_viewdef stays in pg_duckdb: it has pg_duckdb-specific view
  * handling that pg_ducklake does not exercise. The CREATE TABLE / ALTER
- * TABLE / RENAME deparsers moved to libpgddb's pgddb_get_tabledef family
- * (see pgddb/pgddb_ruleutils.h); pg_duckdb's policy is installed via
- * pgddb_validate_create_table_hook in InitRuleutilsHooks.
+ * TABLE / RENAME deparsers moved to the pgddb::DuckdbRuleutils class (see
+ * pgddb/pgddb_ddl.hpp); pg_duckdb layers its MotherDuck persistence/ownership
+ * policy on via the pgduckdb::Ruleutils::validate_create_table override above.
  */
 char *pgduckdb_get_viewdef(const ViewStmt *stmt, const char *postgres_schema_name, const char *view_name,
                            const char *duckdb_query_string);

@@ -885,7 +885,7 @@ DuckdbHandleRenameViewPre(RenameStmt *stmt) {
 
 	pgduckdb::ClaimCurrentCommandId();
 
-	pgduckdb::DuckDBManager::QueryOrThrow(pgddb_get_rename_relationdef(relation_oid, stmt));
+	pgduckdb::DuckDBManager::QueryOrThrow(pgduckdb::Ruleutils().get_rename_relationdef(relation_oid, stmt));
 	RelationClose(rel);
 
 	/* Now we need to replace the Postgres view to reference the new name in the duckdb.view(...) call */
@@ -1357,11 +1357,11 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 	}
 
 	/*
-	 * pgddb_get_tabledef does a bunch of checks to see if creating the
+	 * get_tabledef does a bunch of checks to see if creating the
 	 * table is supported. So, we do call that function first, before creating
 	 * the DuckDB connection and possibly transactions.
 	 */
-	std::string create_table_string(pgddb_get_tabledef(relid));
+	std::string create_table_string(pgduckdb::Ruleutils().get_tabledef(relid));
 
 	/* We're going to run multiple queries in DuckDB, so we need to start a
 	 * transaction to ensure ACID guarantees hold. */
@@ -1783,18 +1783,18 @@ DECLARE_PG_FUNCTION(duckdb_alter_table_trigger) {
 	auto connection = pgduckdb::DuckDBManager::Get().GetConnection(true);
 
 	EventTriggerData *trigdata = (EventTriggerData *)fcinfo->context;
-	char *alter_table_stmt_string;
+	std::string alter_table_stmt_string;
 	if (IsA(trigdata->parsetree, AlterTableStmt)) {
 		AlterTableStmt *alter_table_stmt = (AlterTableStmt *)trigdata->parsetree;
-		alter_table_stmt_string = pgddb_get_alter_tabledef(relid, alter_table_stmt);
+		alter_table_stmt_string = pgduckdb::Ruleutils().get_alter_tabledef(relid, alter_table_stmt);
 	} else if (IsA(trigdata->parsetree, RenameStmt)) {
 		RenameStmt *rename_stmt = (RenameStmt *)trigdata->parsetree;
-		alter_table_stmt_string = pgddb_get_rename_relationdef(relid, rename_stmt);
+		alter_table_stmt_string = pgduckdb::Ruleutils().get_rename_relationdef(relid, rename_stmt);
 	} else {
 		elog(ERROR, "Unexpected parsetree type: %d", nodeTag(trigdata->parsetree));
 	}
 
-	elog(DEBUG1, "Executing: %s", alter_table_stmt_string);
+	elog(DEBUG1, "Executing: %s", alter_table_stmt_string.c_str());
 	auto res = pgduckdb::DuckDBManager::QueryOrThrow(*connection, alter_table_stmt_string);
 
 	PG_RETURN_NULL();

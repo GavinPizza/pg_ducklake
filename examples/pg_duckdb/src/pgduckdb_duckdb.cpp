@@ -203,10 +203,10 @@ DuckDBManager::ConnectionString() {
 void
 DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
-	// DuckDB v1.5 removed direct push_back / index-assign access on these
-	// vectors; use the new Register helpers. See duckdb/pg_duckdb#1025.
-	duckdb::StorageExtension::Register(dbconfig, "pgduckdb",
-	                                   duckdb::make_shared_ptr<::pgddb::PostgresStorageExtension>());
+	// The "pgduckdb" PostgresStorageExtension is registered + attached by the
+	// kernel's DuckDBManager::Initialize. DuckDB v1.5 removed direct push_back /
+	// index-assign access on these vectors; use the new Register helpers (see
+	// duckdb/pg_duckdb#1025).
 	duckdb::OptimizerExtension::Register(dbconfig, UnsupportedTypeOptimizer::GetOptimizerExtension());
 
 	auto &extension_manager = database->instance->GetExtensionManager();
@@ -217,7 +217,6 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 
 	QueryOrThrow(context, "SET default_collation =" +
 	                                duckdb::KeywordHelper::WriteQuoted(duckdb_default_collation));
-	QueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
 	QueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
 
 	if (IsMotherDuckEnabled()) {

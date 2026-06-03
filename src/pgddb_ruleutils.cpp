@@ -1,5 +1,8 @@
 #include "duckdb.hpp"
 
+#include <vector>
+
+#include "pgddb/pgddb_ddl.hpp"
 #include "pgddb/pg/locale.hpp"
 #include "pgddb/pg/relations.hpp"
 #include "pgddb/pg/string_utils.hpp"
@@ -16,6 +19,7 @@ extern "C" {
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_type.h"
 #include "commands/tablecmds.h"
 #include "lib/stringinfo.h"
 #include "nodes/nodeFuncs.h"
@@ -41,26 +45,203 @@ extern "C" {
 bool outermost_query = true;
 
 /*
- * Hook globals. Default NULL; consumers install impls via their _PG_init
- * (e.g. pgduckdb::InitRuleutilsHooks()). The thin null-check wrappers in
- * include/pgddb/pgddb_ruleutils.h fall through to a sensible default
- * (false/NULL/unchanged input) when no consumer is registered.
+ * Registered deparser hooks. Each extension point keeps a list; consumers append
+ * to it in _PG_init via the Register_pgddb_* functions. The wrappers below apply
+ * any generic kernel rule, then iterate the list until one hook handles the node.
+ * The Register_* / wrapper symbols get C linkage + default visibility from their
+ * declarations in pgddb_ruleutils.h (so a shared kernel can export them).
  */
-pgddb_function_name_hook_t pgddb_function_name_hook = nullptr;
-pgddb_relation_name_hook_t pgddb_relation_name_hook = nullptr;
-pgddb_column_type_name_hook_t pgddb_column_type_name_hook = nullptr;
-pgddb_is_fake_type_hook_t pgddb_is_fake_type_hook = nullptr;
-pgddb_var_is_row_hook_t pgddb_var_is_row_hook = nullptr;
-pgddb_subscript_var_hook_t pgddb_subscript_var_hook = nullptr;
-pgddb_func_returns_row_hook_t pgddb_func_returns_row_hook = nullptr;
-pgddb_replace_subquery_with_view_hook_t pgddb_replace_subquery_with_view_hook = nullptr;
-pgddb_show_type_hook_t pgddb_show_type_hook = nullptr;
-pgddb_reconstruct_star_step_hook_t pgddb_reconstruct_star_step_hook = nullptr;
-pgddb_strip_first_subscript_hook_t pgddb_strip_first_subscript_hook = nullptr;
-pgddb_subscript_has_custom_alias_hook_t pgddb_subscript_has_custom_alias_hook = nullptr;
-pgddb_write_row_refname_hook_t pgddb_write_row_refname_hook = nullptr;
-pgddb_db_and_schema_hook_t pgddb_db_and_schema_hook = nullptr;
-pgddb_validate_create_table_hook_t pgddb_validate_create_table_hook = nullptr;
+static std::vector<pgddb_function_name_hook_t> g_function_name_hooks;
+static std::vector<pgddb_relation_name_hook_t> g_relation_name_hooks;
+static std::vector<pgddb_is_fake_type_hook_t> g_is_fake_type_hooks;
+static std::vector<pgddb_var_is_duckdb_row_hook_t> g_var_is_duckdb_row_hooks;
+static std::vector<pgddb_duckdb_subscript_var_hook_t> g_duckdb_subscript_var_hooks;
+static std::vector<pgddb_func_returns_duckdb_row_hook_t> g_func_returns_duckdb_row_hooks;
+static std::vector<pgddb_replace_subquery_with_view_hook_t> g_replace_subquery_with_view_hooks;
+static std::vector<pgddb_show_type_hook_t> g_show_type_hooks;
+static std::vector<pgddb_reconstruct_star_step_hook_t> g_reconstruct_star_step_hooks;
+static std::vector<pgddb_strip_first_subscript_hook_t> g_strip_first_subscript_hooks;
+static std::vector<pgddb_subscript_has_custom_alias_hook_t> g_subscript_has_custom_alias_hooks;
+// db_and_schema: object-scoped resolvers. Relations none claims fall back to the
+// kernel's "pgduckdb" storage catalog (see pgddb_db_and_schema_string).
+static std::vector<pgddb_db_and_schema_hook_t> g_db_and_schema_hooks;
+
+void
+Register_pgddb_function_name(pgddb_function_name_hook_t fn) {
+	g_function_name_hooks.push_back(fn);
+}
+void
+Register_pgddb_relation_name(pgddb_relation_name_hook_t fn) {
+	g_relation_name_hooks.push_back(fn);
+}
+void
+Register_pgddb_is_fake_type(pgddb_is_fake_type_hook_t fn) {
+	g_is_fake_type_hooks.push_back(fn);
+}
+void
+Register_pgddb_var_is_duckdb_row(pgddb_var_is_duckdb_row_hook_t fn) {
+	g_var_is_duckdb_row_hooks.push_back(fn);
+}
+void
+Register_pgddb_duckdb_subscript_var(pgddb_duckdb_subscript_var_hook_t fn) {
+	g_duckdb_subscript_var_hooks.push_back(fn);
+}
+void
+Register_pgddb_func_returns_duckdb_row(pgddb_func_returns_duckdb_row_hook_t fn) {
+	g_func_returns_duckdb_row_hooks.push_back(fn);
+}
+void
+Register_pgddb_replace_subquery_with_view(pgddb_replace_subquery_with_view_hook_t fn) {
+	g_replace_subquery_with_view_hooks.push_back(fn);
+}
+void
+Register_pgddb_show_type(pgddb_show_type_hook_t fn) {
+	g_show_type_hooks.push_back(fn);
+}
+void
+Register_pgddb_reconstruct_star_step(pgddb_reconstruct_star_step_hook_t fn) {
+	g_reconstruct_star_step_hooks.push_back(fn);
+}
+void
+Register_pgddb_strip_first_subscript(pgddb_strip_first_subscript_hook_t fn) {
+	g_strip_first_subscript_hooks.push_back(fn);
+}
+void
+Register_pgddb_subscript_has_custom_alias(pgddb_subscript_has_custom_alias_hook_t fn) {
+	g_subscript_has_custom_alias_hooks.push_back(fn);
+}
+void
+Register_pgddb_db_and_schema(pgddb_db_and_schema_hook_t fn) {
+	g_db_and_schema_hooks.push_back(fn);
+}
+
+/* --- dispatch wrappers called by the vendored deparser --- */
+
+char *
+pgddb_function_name(Oid funcid, bool *use_variadic_p) {
+	for (auto fn : g_function_name_hooks) {
+		char *result = fn(funcid, use_variadic_p);
+		if (result) {
+			return result;
+		}
+	}
+	return NULL;
+}
+
+bool
+pgddb_is_fake_type(Oid type_oid) {
+	for (auto fn : g_is_fake_type_hooks) {
+		if (fn(type_oid)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
+pgddb_var_is_duckdb_row(Var *var) {
+	for (auto fn : g_var_is_duckdb_row_hooks) {
+		if (fn(var)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+Var *
+pgddb_duckdb_subscript_var(Expr *expr) {
+	for (auto fn : g_duckdb_subscript_var_hooks) {
+		Var *result = fn(expr);
+		if (result) {
+			return result;
+		}
+	}
+	return NULL;
+}
+
+bool
+pgddb_func_returns_duckdb_row(RangeTblFunction *rtfunc) {
+	for (auto fn : g_func_returns_duckdb_row_hooks) {
+		if (fn(rtfunc)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
+pgddb_replace_subquery_with_view(Query *query, StringInfo buf) {
+	for (auto fn : g_replace_subquery_with_view_hooks) {
+		if (fn(query, buf)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int
+pgddb_show_type(Const *constval, int original_showtype) {
+	// Generic kernel rule: suppress a bare ::numeric (no typmod) cast. DuckDB
+	// defaults plain ::numeric to DECIMAL(18,3), which overflows wide literals;
+	// without the cast DuckDB parses the literal as VARCHAR and coerces it to the
+	// target column type. Applies to every consumer, so it lives here, not a hook.
+	if (constval && constval->consttype == NUMERICOID && constval->consttypmod == -1) {
+		return -1;
+	}
+	for (auto fn : g_show_type_hooks) {
+		int result = fn(constval, original_showtype);
+		if (result != original_showtype) {
+			return result;
+		}
+	}
+	return original_showtype;
+}
+
+bool
+pgddb_reconstruct_star_step(StarReconstructionContext *ctx, ListCell *tle_cell) {
+	for (auto fn : g_reconstruct_star_step_hooks) {
+		if (fn(ctx, tle_cell)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+SubscriptingRef *
+pgddb_strip_first_subscript(SubscriptingRef *sbsref, StringInfo buf) {
+	for (auto fn : g_strip_first_subscript_hooks) {
+		SubscriptingRef *result = fn(sbsref, buf);
+		if (result != sbsref) {
+			// A hook acted (stripped and wrote into buf).
+			return result;
+		}
+	}
+	return sbsref;
+}
+
+bool
+pgddb_subscript_has_custom_alias(Plan *plan, List *rtable, Var *subscript_var, char *colname) {
+	for (auto fn : g_subscript_has_custom_alias_hooks) {
+		if (fn(plan, rtable, subscript_var, colname)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Row reference expansion is generic (was identical in every consumer): emit
+// `<ref>.*` at the top level so DuckDB returns the underlying columns, else the
+// bare alias. Called by the deparser once a var_is_row / func_returns_row hook
+// has matched.
+char *
+pgddb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
+	appendStringInfoString(buf, quote_identifier(refname));
+	if (is_top_level) {
+		appendStringInfoString(buf, ".*");
+		return NULL;
+	}
+	return refname;
+}
 
 /*
  * Generic table-AM name lookup: relam Oid -> pg_am.amname. Used by
@@ -83,18 +264,28 @@ get_relation_table_am_name(Oid relam) {
 }
 
 /*
- * pgddb_db_and_schema_string returns "db.schema" for the given PG schema
- * and the relation's table-AM name. Dispatches through
- * pgddb_db_and_schema_hook for the (db_name, schema_name) policy.
+ * pgddb_db_and_schema_string returns "db.schema" for the given PG schema and the
+ * relation's table-AM name. Tries each object-scoped resolver in registration
+ * order (each claims only its own table AM); relations that none claim fall
+ * through to the optional catch-all resolver (typically a storage extension that
+ * reads plain PG heap relations).
  */
 const char *
 pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_am_name) {
-	if (!pgddb_db_and_schema_hook) {
-		elog(ERROR, "pgddb_db_and_schema_hook is not installed; consumer must call InitRuleutilsHooks()");
+	// Try each object-scoped resolver (each claims only its own table AM). Any
+	// relation none claims is read through the kernel's "pgduckdb" storage
+	// catalog, which DuckDBManager::Initialize always registers + attaches. The
+	// "pgduckdb" name is internal to DuckDB and never user-visible.
+	const char *db_name = "pgduckdb";
+	const char *schema_name = postgres_schema_name;
+	for (auto fn : g_db_and_schema_hooks) {
+		List *db_and_schema = fn(postgres_schema_name, table_am_name);
+		if (db_and_schema) {
+			db_name = (const char *)linitial(db_and_schema);
+			schema_name = (const char *)lsecond(db_and_schema);
+			break;
+		}
 	}
-	List *db_and_schema = pgddb_db_and_schema_hook(postgres_schema_name, table_am_name);
-	const char *db_name = (const char *)linitial(db_and_schema);
-	const char *schema_name = (const char *)lsecond(db_and_schema);
 	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
 }
 
@@ -103,8 +294,8 @@ pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_a
  */
 char *
 pgddb_relation_name(Oid relation_oid) {
-	if (pgddb_relation_name_hook) {
-		char *overridden = pgddb_relation_name_hook(relation_oid);
+	for (auto fn : g_relation_name_hooks) {
+		char *overridden = fn(relation_oid);
 		if (overridden)
 			return overridden;
 	}
@@ -288,25 +479,28 @@ cookConstraint(ParseState *pstate, Node *raw_constraint, char *relname) {
 	return expr;
 }
 
+} // extern "C"
+
+namespace pgddb {
+
 /*
- * pgddb_get_tabledef returns the DuckDB CREATE TABLE statement for the
+ * DuckdbRuleutils::get_tabledef returns the DuckDB CREATE TABLE statement for the
  * given relation. The schema, default values, NOT NULL and CHECK
  * constraints are included; UNIQUE/PRIMARY KEY constraints (which would
  * trigger PG index creation) are not.
  *
- * Consumer-specific persistence/ownership policy is delegated to
- * pgddb_validate_create_table_hook. The catalog name in the resulting
- * CREATE TABLE is whatever the relation's table AM was registered as in
- * pgddb's table-AM registry (pg_duckdb registers "duckdb",
- * pg_ducklake registers "pgducklake", ...).
+ * Consumer-specific persistence/ownership policy is delegated to the virtual
+ * validate_create_table() override. The catalog name in the resulting CREATE
+ * TABLE is whatever the relation's table AM was registered as in pgddb's
+ * table-AM registry (pg_duckdb registers "duckdb", pg_ducklake "ducklake", ...).
  *
  * Originally pgduckdb_get_tabledef in pg_duckdb; inspired by
  * pg_get_tableschemadef_string from the patch Jelte submitted to
  * Postgres in 2023:
  * https://www.postgresql.org/message-id/CAGECzQSqdDHO_s8=CPTb2+4eCLGUscdh=KjYGTunhvrwcC7ZSQ@mail.gmail.com
  */
-char *
-pgddb_get_tabledef(Oid relation_oid) {
+std::string
+DuckdbRuleutils::get_tabledef(Oid relation_oid) {
 	Relation relation = relation_open(relation_oid, AccessShareLock);
 	const char *relation_name = pgddb_relation_name(relation_oid);
 	const char *postgres_schema_name = get_namespace_name_or_temp(relation->rd_rel->relnamespace);
@@ -327,9 +521,7 @@ pgddb_get_tabledef(Oid relation_oid) {
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("DuckDB tables cannot be used as a partition")));
 	}
 
-	if (pgddb_validate_create_table_hook) {
-		pgddb_validate_create_table_hook(relation);
-	}
+	validate_create_table(relation);
 
 	appendStringInfo(&buffer, "CREATE SCHEMA IF NOT EXISTS %s; ", db_and_schema);
 
@@ -360,7 +552,7 @@ pgddb_get_tabledef(Oid relation_oid) {
 		auto duck_type = pgddb::ConvertPostgresToDuckColumnType(column);
 		pgddb::GetPostgresDuckDBType(duck_type, true);
 
-		const char *column_type_name = pgddb_column_type_name(column->atttypid, column->atttypmod);
+		const char *column_type_name = this->column_type_name(column->atttypid, column->atttypmod);
 		if (column_type_name == NULL)
 			column_type_name = format_type_with_typemod(column->atttypid, column->atttypmod);
 
@@ -443,16 +635,16 @@ pgddb_get_tabledef(Oid relation_oid) {
 
 	relation_close(relation, AccessShareLock);
 
-	return buffer.data;
+	return std::string(buffer.data);
 }
 
 /*
- * pgddb_get_rename_relationdef returns the DuckDB ALTER TABLE ... RENAME
- * (or RENAME COLUMN) statement for the given relation. Catalog prefix
+ * DuckdbRuleutils::get_rename_relationdef returns the DuckDB ALTER TABLE ...
+ * RENAME (or RENAME COLUMN) statement for the given relation. Catalog prefix
  * comes from the relation's registered table-AM name.
  */
-char *
-pgddb_get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stmt) {
+std::string
+DuckdbRuleutils::get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stmt) {
 	if (rename_stmt->renameType != OBJECT_TABLE && rename_stmt->renameType != OBJECT_VIEW &&
 	    rename_stmt->renameType != OBJECT_COLUMN) {
 		elog(ERROR, "Only renaming tables and columns is supported in DuckDB");
@@ -484,16 +676,16 @@ pgddb_get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stmt) {
 
 	relation_close(relation, AccessShareLock);
 
-	return buffer.data;
+	return std::string(buffer.data);
 }
 
 /*
- * pgddb_get_alter_tabledef returns the DuckDB ALTER TABLE command(s) for
- * the given table. DuckDB does not support multiple ALTER subcommands in a
+ * DuckdbRuleutils::get_alter_tabledef returns the DuckDB ALTER TABLE command(s)
+ * for the given table. DuckDB does not support multiple ALTER subcommands in a
  * single statement, so each subcommand is emitted as its own ALTER TABLE.
  */
-char *
-pgddb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
+std::string
+DuckdbRuleutils::get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 	Relation relation = relation_open(relation_oid, AccessShareLock);
 	const char *relation_name = pgddb_relation_name(relation_oid);
 
@@ -744,6 +936,6 @@ pgddb_get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {
 
 	relation_close(relation, AccessShareLock);
 
-	return buffer.data;
+	return std::string(buffer.data);
 }
 }

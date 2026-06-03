@@ -6106,7 +6106,7 @@ get_target_list(List *targetList, deparse_context *context,
 			* This makes sure we don't add Postgres its bad default alias to the
 			* duckdb.row type.
 			*/
-		bool duckdb_skip_as = pgddb_var_is_row(var);
+		bool duckdb_skip_as = pgddb_var_is_duckdb_row(var);
 
 		/*
 			* For r['abc'] expressions we don't want the column name to be r, but
@@ -6115,7 +6115,7 @@ get_target_list(List *targetList, deparse_context *context,
 			* to the column name are still valid.
 			*/
 		if (!duckdb_skip_as && outermost_targetlist) {
-				Var *subscript_var = pgddb_subscript_var(tle->expr);
+				Var *subscript_var = pgddb_duckdb_subscript_var(tle->expr);
 				if (subscript_var) {
 						/*
 							* This cannot be moved to pgduckdb_ruleutils, because of
@@ -7492,7 +7492,7 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 			elog(ERROR, "invalid attnum %d for relation \"%s\"",
 				 attnum, rte->eref->aliasname);
 
-		if (pgddb_var_is_row(var)) {
+		if (pgddb_var_is_duckdb_row(var)) {
 				return pgddb_write_row_refname(context->buf, refname, istoplevel);
 		}
 
@@ -11522,7 +11522,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 		/* Print the relation alias, if needed */
 		get_rte_alias(rte, varno, false, context);
 
-		if (pgddb_func_returns_row(rtfunc1)) {
+		if (pgddb_func_returns_duckdb_row(rtfunc1)) {
 			/*
 			 * We never want to print column aliases for functions that return
 			 * a duckdb.row. The common pattern is for people to not provide an

@@ -56,6 +56,11 @@ extern "C" {
 #include "pgddb/pgddb_ruleutils.h"
 }
 
+// pgducklake::Ruleutils (the DDL deparser with the variant->VARIANT override).
+// pgddb_ddl.hpp is postgres.h-free, and postgres.h is already included above,
+// so this is safe after the extern "C" block.
+#include "pgducklake/pgducklake_types.hpp"
+
 /* ================================================================
  * Variant type OID cache (used by create/alter table triggers)
  * ================================================================ */
@@ -596,7 +601,7 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
   SPI_finish();
 
   // Generate CREATE TABLE DDL for DuckDB
-  std::string create_table_ddl(pgddb_get_tabledef(relid));
+  std::string create_table_ddl(pgducklake::Ruleutils().get_tabledef(relid));
   elog(DEBUG1, "Creating DuckLake table: %s", create_table_ddl.c_str());
 
   // Execute CREATE TABLE in DuckDB.
@@ -819,17 +824,17 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
   AtEOXact_GUC(false, save_nestlevel);
   SPI_finish();
 
-  /* Generate DDL using pg_duckdb's ruleutils functions */
-  char *ddl_str;
+  /* Generate DDL using the kernel's DuckdbRuleutils deparser */
+  std::string ddl_str;
   if (IsA(parsetree, RenameStmt)) {
-    ddl_str = pgddb_get_rename_relationdef(relid, (RenameStmt *)parsetree);
+    ddl_str = pgducklake::Ruleutils().get_rename_relationdef(relid, (RenameStmt *)parsetree);
   } else if (IsA(parsetree, AlterTableStmt)) {
-    ddl_str = pgddb_get_alter_tabledef(relid, (AlterTableStmt *)parsetree);
+    ddl_str = pgducklake::Ruleutils().get_alter_tabledef(relid, (AlterTableStmt *)parsetree);
   } else {
     elog(ERROR, "Unexpected parsetree type in ALTER TABLE trigger: %d", nodeTag(parsetree));
   }
 
-  elog(DEBUG1, "ALTER TABLE DDL for DuckLake: %s", ddl_str);
+  elog(DEBUG1, "ALTER TABLE DDL for DuckLake: %s", ddl_str.c_str());
 
   pgducklake::DuckDBQueryOrThrow(ddl_str);
 

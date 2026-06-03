@@ -5,6 +5,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 
+#include "pgddb/catalog/pgddb_storage.hpp"
 #include "pgddb/pg/guc.hpp"
 #include "pgddb/pg/transactions.hpp"
 #include "pgddb/utility/signal_guard.hpp"
@@ -114,6 +115,18 @@ DuckDBManager::Initialize() {
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);
 	QueryOrThrow(context, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(pg_time_zone));
+
+	// Register the Postgres storage extension and attach it as the "pgduckdb"
+	// catalog so DuckDB can read PG heap relations. The name is internal to
+	// DuckDB (never user-visible), so it is fixed here rather than per-consumer.
+	// The deparser's db_and_schema fallback (pgddb_ruleutils.cpp) routes every
+	// relation no consumer resolver claims to this catalog.
+	{
+		auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
+		duckdb::StorageExtension::Register(dbconfig, "pgduckdb",
+		                                   duckdb::make_shared_ptr<PostgresStorageExtension>());
+	}
+	QueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
 
 	OnPostInit(context);
 }

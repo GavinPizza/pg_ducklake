@@ -134,28 +134,10 @@ static void InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTabl
   pfree(atttypid);
 }
 
-/*
- * RAII guard for libpgddb's GlobalProcessLock. DuckLake metadata reads run
- * on a DuckDB worker thread that shares the PG backend with other DuckDB
- * threads. We must hold this lock while calling any PG API (SPI, snapshots,
- * etc.) to prevent concurrent access from other DuckDB threads.
- */
-class GlobalProcessLockGuard {
-public:
-  GlobalProcessLockGuard() {
-    ::pgddb::GlobalProcessLock::GetLock().lock();
-  }
-  ~GlobalProcessLockGuard() {
-    ::pgddb::GlobalProcessLock::GetLock().unlock();
-  }
-  GlobalProcessLockGuard(const GlobalProcessLockGuard &) = delete;
-  GlobalProcessLockGuard &operator=(const GlobalProcessLockGuard &) = delete;
-};
-
 static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::string &query) {
   elog(DEBUG1, "Creating SPI result for query: %s", query.c_str());
 
-  GlobalProcessLockGuard global_lock;
+  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();
@@ -291,7 +273,7 @@ static void SubstituteCatalogPlaceholders(duckdb::string &query) {
 static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
   elog(DEBUG1, "CreateSPIExecuteInSubtransaction: %s", query.c_str());
 
-  GlobalProcessLockGuard global_lock;
+  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();
@@ -527,7 +509,7 @@ bool PgDuckLakeMetadataManager::IsInitialized() {
  * would cause infinite recursion.
  */
 void PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
-  GlobalProcessLockGuard global_lock;
+    std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();

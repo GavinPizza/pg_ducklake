@@ -52,6 +52,8 @@ Datum ConvertToStringDatum(const duckdb::Value &value);
 // type switch happens once per batch rather than once per cell.
 using PostgresToDuckValueFn = void (*)(duckdb::Vector &result, Datum value, duckdb::idx_t offset);
 
+PostgresToDuckValueFn GetPostgresToDuckValueFn(Oid attr_type, duckdb::Vector &result);
+
 // Type extension hooks. Each extension point keeps a list of registered hooks. The
 // kernel handles built-in Postgres types first, then tries each registered hook in
 // registration order until one handles the type (returns true). A consumer extension

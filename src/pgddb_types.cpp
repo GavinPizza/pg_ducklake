@@ -1840,7 +1840,7 @@ ConvertPostgresParameterToDuckValue(Datum value, Oid postgres_type) {
 	}
 }
 
-static PostgresToDuckValueFn
+PostgresToDuckValueFn
 GetPostgresToDuckValueFn(Oid attr_type, duckdb::Vector &result) {
 	auto &type = result.GetType();
 	switch (type.id()) {

@@ -50,15 +50,6 @@ extern "C" {
 
 namespace pgducklake {
 
-// Captured at install time, called as fallthrough if not ours.
-static pgddb_is_fake_type_hook_t prev_is_fake_type_hook = nullptr;
-static pgddb_show_type_hook_t prev_show_type_hook = nullptr;
-static pgddb_var_is_row_hook_t prev_var_is_row_hook = nullptr;
-static pgddb_func_returns_row_hook_t prev_func_returns_row_hook = nullptr;
-static pgddb_write_row_refname_hook_t prev_write_row_refname_hook = nullptr;
-static pgddb_strip_first_subscript_hook_t prev_strip_first_subscript_hook = nullptr;
-static pgddb_column_type_name_hook_t prev_column_type_name_hook = nullptr;
-
 // Resolve a ducklake.<name> type's OID. Cached in a static after first
 // resolution -- pg_type rows don't move during a backend's lifetime.
 // Returns InvalidOid before CREATE EXTENSION pg_ducklake.
@@ -153,38 +144,28 @@ static bool ConvertDuckToPostgresValueHook(Oid pg_oid, duckdb::Value &value, Tup
 }
 
 // --------------------------------------------------------------------------
-// pgddb_ruleutils.h hooks: duckdb_row deparse -> "<refname>.*"
+// pgddb_ruleutils.h hooks: duckdb_row / variant deparse. Each declines (false /
+// unchanged input / NULL) for nodes that aren't pg_ducklake's, so the kernel
+// falls through to the next registered hook or its built-in default.
 // --------------------------------------------------------------------------
 
 static bool IsFakeTypeHook(Oid type_oid) {
-  if (!OidIsValid(type_oid))
-    return prev_is_fake_type_hook ? prev_is_fake_type_hook(type_oid) : false;
-  if (type_oid == DucklakeDuckdbRowOid() || type_oid == DucklakeDuckdbStructOid() ||
-      type_oid == DucklakeVariantOid())
-    return true;
-  return prev_is_fake_type_hook ? prev_is_fake_type_hook(type_oid) : false;
+  return OidIsValid(type_oid) && (type_oid == DucklakeDuckdbRowOid() || type_oid == DucklakeDuckdbStructOid() ||
+                                  type_oid == DucklakeVariantOid());
 }
 
-// get_const_expr otherwise tacks "::ducklake.variant" onto every literal
-// whose target column is variant, and DuckDB can't resolve that type.
-// Returning -1 forces the deparser to suppress the cast.
-//
-// Also suppress `::numeric` with no typmod: DuckDB defaults plain `::numeric`
-// to DECIMAL(18,3), which overflows for INSERT VALUES of large literals
-// (e.g. 1.78e16) into a wider DECIMAL(p,s) column. Without the cast, DuckDB
-// parses the quoted value as VARCHAR and coerces to the column type.
+// get_const_expr otherwise tacks "::ducklake.variant" onto every literal whose
+// target column is variant, and DuckDB can't resolve that type. Returning -1
+// suppresses the cast. (The generic bare-::numeric suppression now lives in the
+// kernel's pgddb_show_type, so it is not repeated here.)
 static int ShowTypeHook(Const *constval, int original_showtype) {
   if (constval && IsFakeTypeHook(constval->consttype))
     return -1;
-  if (constval && constval->consttype == NUMERICOID && constval->consttypmod == -1)
-    return -1;
-  return prev_show_type_hook ? prev_show_type_hook(constval, original_showtype) : original_showtype;
+  return original_showtype;
 }
 
 static bool VarIsRowHook(Var *var) {
-  if (var && var->vartype == DucklakeDuckdbRowOid())
-    return true;
-  return prev_var_is_row_hook ? prev_var_is_row_hook(var) : false;
+  return var && var->vartype == DucklakeDuckdbRowOid();
 }
 
 static bool FuncReturnsRowHook(RangeTblFunction *rtfunc) {
@@ -193,33 +174,22 @@ static bool FuncReturnsRowHook(RangeTblFunction *rtfunc) {
     if (fexpr->funcresulttype == DucklakeDuckdbRowOid())
       return true;
   }
-  return prev_func_returns_row_hook ? prev_func_returns_row_hook(rtfunc) : false;
-}
-
-// Top-level: emit `<refname>.*` so DuckDB returns all underlying columns
-// instead of packing them into a STRUCT. Non-top-level (e.g. r['col']):
-// just return the alias unchanged.
-static char *WriteRowRefnameHook(StringInfo buf, char *refname, bool is_top_level) {
-  appendStringInfoString(buf, quote_identifier(refname));
-  if (is_top_level) {
-    appendStringInfoString(buf, ".*");
-    return NULL;
-  }
-  return refname;
+  return false;
 }
 
 // Deparse `r['col']` on a duckdb_row Var as `r.col` for DuckDB. r is a
 // function alias in the FROM clause whose underlying table function
 // expands to real columns, so dot-access is the natural DuckDB syntax.
 // Returns the SubscriptingRef with the first index stripped (so any
-// trailing nested subscripts still print as `[...]`).
+// trailing nested subscripts still print as `[...]`), or the input sbsref
+// unchanged to decline.
 static SubscriptingRef *StripFirstSubscriptHook(SubscriptingRef *sbsref, StringInfo buf) {
   if (!sbsref || !IsA(sbsref->refexpr, Var)) {
-    return prev_strip_first_subscript_hook ? prev_strip_first_subscript_hook(sbsref, buf) : sbsref;
+    return sbsref;
   }
   Var *var = (Var *)sbsref->refexpr;
   if (var->vartype != DucklakeDuckdbRowOid()) {
-    return prev_strip_first_subscript_hook ? prev_strip_first_subscript_hook(sbsref, buf) : sbsref;
+    return sbsref;
   }
   if (sbsref->refupperindexpr == NIL) {
     return sbsref;
@@ -239,16 +209,18 @@ static SubscriptingRef *StripFirstSubscriptHook(SubscriptingRef *sbsref, StringI
   return shorter;
 }
 
-// Map ducklake.variant to "VARIANT" in lib's CREATE TABLE deparser so
+// Map ducklake.variant to "VARIANT" in the kernel's CREATE TABLE deparser so
 // DuckDB sees the native DuckDB type and stores the column as
 // LogicalTypeId::VARIANT instead of silently falling back to VARCHAR.
 // This is what lets the round-trip through GetPostgresDuckDBTypeHook above
-// see a VARIANT LogicalType for variant columns.
-static char *ColumnTypeNameHook(Oid type_oid, int32_t typemod) {
+// see a VARIANT LogicalType for variant columns. It is a DuckdbRuleutils
+// virtual override (not a registration hook) because the CREATE TABLE deparser
+// is invoked directly by pg_ducklake's DDL path via pgducklake::Ruleutils.
+char *Ruleutils::column_type_name(Oid type_oid, int32_t /*typemod*/) {
   if (OidIsValid(type_oid) && type_oid == DucklakeVariantOid()) {
     return pstrdup("VARIANT");
   }
-  return prev_column_type_name_hook ? prev_column_type_name_hook(type_oid, typemod) : NULL;
+  return NULL;
 }
 
 void InitTypeHooks() {
@@ -258,26 +230,15 @@ void InitTypeHooks() {
   pgddb::Register_GetPostgresDuckDBType(GetPostgresDuckDBTypeHook);
   pgddb::Register_ConvertDuckToPostgresValue(ConvertDuckToPostgresValueHook);
 
-  prev_is_fake_type_hook = pgddb_is_fake_type_hook;
-  pgddb_is_fake_type_hook = IsFakeTypeHook;
-
-  prev_show_type_hook = pgddb_show_type_hook;
-  pgddb_show_type_hook = ShowTypeHook;
-
-  prev_var_is_row_hook = pgddb_var_is_row_hook;
-  pgddb_var_is_row_hook = VarIsRowHook;
-
-  prev_func_returns_row_hook = pgddb_func_returns_row_hook;
-  pgddb_func_returns_row_hook = FuncReturnsRowHook;
-
-  prev_write_row_refname_hook = pgddb_write_row_refname_hook;
-  pgddb_write_row_refname_hook = WriteRowRefnameHook;
-
-  prev_strip_first_subscript_hook = pgddb_strip_first_subscript_hook;
-  pgddb_strip_first_subscript_hook = StripFirstSubscriptHook;
-
-  prev_column_type_name_hook = pgddb_column_type_name_hook;
-  pgddb_column_type_name_hook = ColumnTypeNameHook;
+  // Register pg_ducklake's deparser (ruleutils) hooks. Row-refname `.*` expansion
+  // and the bare-::numeric cast suppression are now generic in the kernel.
+  Register_pgddb_is_fake_type(IsFakeTypeHook);
+  Register_pgddb_show_type(ShowTypeHook);
+  Register_pgddb_var_is_duckdb_row(VarIsRowHook);
+  Register_pgddb_func_returns_duckdb_row(FuncReturnsRowHook);
+  Register_pgddb_strip_first_subscript(StripFirstSubscriptHook);
+  // The variant->VARIANT CREATE TABLE mapping is a DuckdbRuleutils virtual
+  // override (pgducklake::Ruleutils::column_type_name), not a registration hook.
 }
 
 } // namespace pgducklake

@@ -440,43 +440,19 @@ pgduckdb_strip_first_subscript(SubscriptingRef *sbsref, StringInfo buf) {
 }
 
 /*
- * Writes the refname to the buf in a way that results in the correct output
- * for the duckdb.row type.
+ * db.schema resolution. Object-scoped: claims only relations on the "duckdb"
+ * table AM and returns NULL otherwise, so the kernel falls back to its
+ * "pgduckdb" storage catalog for heap/view/etc. (Row-reference `.*` expansion is
+ * now handled generically by the kernel, so pg_duckdb no longer needs a
+ * write_row_refname hook.)
  *
- * Returns the "attname" that should be passed back to the caller of
- * get_variable().
- */
-static char *
-pgduckdb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
-	appendStringInfoString(buf, quote_identifier(refname));
-
-	if (is_top_level) {
-		/*
-		 * If the duckdb.row is at the top level target list of a select, then
-		 * we want to generate r.*, to unpack all the columns instead of
-		 * returning a STRUCT from the query.
-		 *
-		 * Since we use .* there is no attname.
-		 */
-		appendStringInfoString(buf, ".*");
-		return NULL;
-	}
-
-	/*
-	 * In any other case, we want to simply use the alias of the TargetEntry.
-	 */
-	return refname;
-}
-
-/*
- * Given a postgres schema name, this returns a list of two elements: the first
- * is the DuckDB database name and the second is the duckdb schema name. These
- * are not escaped yet.
+ * Returns a list of two elements: the DuckDB database name and the duckdb schema
+ * name. These are not escaped yet.
  */
 List *
 pgduckdb_db_and_schema(const char *postgres_schema_name, const char *duckdb_table_am_name) {
 	if (duckdb_table_am_name == nullptr || strcmp("duckdb", duckdb_table_am_name) != 0) {
-		return list_make2((void *)"pgduckdb", (void *)postgres_schema_name);
+		return nullptr; // not a duckdb-AM table; kernel falls back to the "pgduckdb" catalog
 	}
 
 	if (strcmp("pg_temp", postgres_schema_name) == 0) {
@@ -585,14 +561,14 @@ pgduckdb_get_viewdef(const ViewStmt *stmt, const char *postgres_schema_name, con
 namespace pgduckdb {
 
 /*
- * pgddb_validate_create_table_hook impl: replicates pg_duckdb's persistence /
- * ownership policy from the upstream pgduckdb_get_tabledef body. TEMP tables
- * are allowed; PERMANENT tables must be owned by the MotherDuck postgres
- * role; UNLOGGED tables are rejected.
+ * Ruleutils::validate_create_table override: replicates pg_duckdb's
+ * persistence / ownership policy from the upstream pgduckdb_get_tabledef body.
+ * TEMP tables are allowed; PERMANENT tables must be owned by the MotherDuck
+ * postgres role; UNLOGGED tables are rejected. Invoked by the kernel's
+ * DuckdbRuleutils::get_tabledef just before the CREATE TABLE is generated.
  */
-static void
-ValidateDuckdbCreateTable(void *relation_voidp) {
-	Relation relation = (Relation)relation_voidp;
+void
+Ruleutils::validate_create_table(Relation relation) {
 	if (relation->rd_rel->relpersistence == RELPERSISTENCE_TEMP) {
 		return;
 	}
@@ -606,19 +582,21 @@ ValidateDuckdbCreateTable(void *relation_voidp) {
 
 void
 InitRuleutilsHooks() {
-	pgddb_function_name_hook = pgduckdb_function_name;
-	pgddb_is_fake_type_hook = pgduckdb_is_fake_type;
-	pgddb_var_is_row_hook = pgduckdb_var_is_duckdb_row;
-	pgddb_subscript_var_hook = pgduckdb_duckdb_subscript_var;
-	pgddb_func_returns_row_hook = pgduckdb_func_returns_duckdb_row;
-	pgddb_replace_subquery_with_view_hook = pgduckdb_replace_subquery_with_view;
-	pgddb_show_type_hook = pgduckdb_show_type;
-	pgddb_reconstruct_star_step_hook = pgduckdb_reconstruct_star_step;
-	pgddb_strip_first_subscript_hook = pgduckdb_strip_first_subscript;
-	pgddb_subscript_has_custom_alias_hook = pgduckdb_subscript_has_custom_alias;
-	pgddb_write_row_refname_hook = pgduckdb_write_row_refname;
-	pgddb_db_and_schema_hook = pgduckdb_db_and_schema;
-	pgddb_validate_create_table_hook = ValidateDuckdbCreateTable;
+	Register_pgddb_function_name(pgduckdb_function_name);
+	Register_pgddb_is_fake_type(pgduckdb_is_fake_type);
+	Register_pgddb_var_is_duckdb_row(pgduckdb_var_is_duckdb_row);
+	Register_pgddb_duckdb_subscript_var(pgduckdb_duckdb_subscript_var);
+	Register_pgddb_func_returns_duckdb_row(pgduckdb_func_returns_duckdb_row);
+	Register_pgddb_replace_subquery_with_view(pgduckdb_replace_subquery_with_view);
+	Register_pgddb_show_type(pgduckdb_show_type);
+	Register_pgddb_reconstruct_star_step(pgduckdb_reconstruct_star_step);
+	Register_pgddb_strip_first_subscript(pgduckdb_strip_first_subscript);
+	Register_pgddb_subscript_has_custom_alias(pgduckdb_subscript_has_custom_alias);
+	// Row-refname `.*` expansion is handled generically by the kernel (no hook).
+	Register_pgddb_db_and_schema(pgduckdb_db_and_schema); // object-scoped: the "duckdb" table AM
+	// Heap/view/etc fall back to the kernel's "pgduckdb" storage catalog.
+	// CREATE TABLE validation is a DuckdbRuleutils virtual override (Ruleutils),
+	// not a registration hook -- the consumer invokes get_tabledef directly.
 }
 
 } // namespace pgduckdb

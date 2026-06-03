@@ -131,20 +131,19 @@ public:
 };
 
 // libpgddb manager binding. Subclasses pgddb::DuckDBManager and overrides
-// OnPostInit so the first DuckDBQueryOrThrow() in a backend brings up DuckDB
-// with pg_ducklake's PostgresStorageExtension registered under "pgducklake"
-// (DuckLake's ATTACH connection string asks for it), loads the DuckLake +
+// OnPostInit so the first DuckDBQueryOrThrow() in a backend brings up DuckDB:
+// the kernel's Initialize has already registered + attached the "pgduckdb"
+// PostgresStorageExtension catalog, and OnPostInit then loads the DuckLake +
 // postgres_scanner static extensions, registers the wrapper macros, and
-// attaches the catalog -- all in process, no registered callback.
+// attaches the DuckLake catalog -- all in process, no registered callback.
 namespace pgducklake {
 
 void
 DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
-	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
+	// The "pgduckdb" PostgresStorageExtension is registered + attached by the
+	// kernel's DuckDBManager::Initialize, before this runs.
 	database->LoadStaticExtension<duckdb::DucklakeExtension>();
     database->LoadStaticExtension<PostgresScannerExtension>();
-	duckdb::StorageExtension::Register(dbconfig, PGDUCKLAKE_PG_STORAGE_CATALOG,
-	                                   duckdb::make_shared_ptr<::pgddb::PostgresStorageExtension>());
 	pgducklake::ResetDirectInsertCaches();
     pgducklake::RegisterTimeTravelFunction(*context.db);
     pgducklake::RegisterWrapperMacros(*context.db);
@@ -155,13 +154,6 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
     pgducklake::RegisterFlushInlinedDataFunction(*context.db);
 
   ducklake_attach_catalog();
-	/*
-	 * Now ATTACH the storage catalog so queries can resolve
-	 * `<storage_catalog>.schema.table` references. Mirrors upstream
-	 * pg_duckdb's `ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)`.
-	 */
-	QueryOrThrow(context,
-	                   "ATTACH DATABASE '" PGDUCKLAKE_PG_STORAGE_CATALOG "' (TYPE " PGDUCKLAKE_PG_STORAGE_CATALOG ")");
 }
 
 void
@@ -229,52 +221,18 @@ InitDuckDBManager() {
 namespace pgducklake {
 
 /*
- * pgddb_db_and_schema_hook impl: route the relation to the right DuckDB
- * catalog based on its table-AM.
- *
- *   ducklake AM   -> PGDUCKLAKE_DUCKDB_CATALOG    (DuckLake catalog)
- *   anything else -> PGDUCKLAKE_PG_STORAGE_CATALOG (PostgresStorageExtension)
- *
- * The companion storage catalog is ATTACHed in OnPostInit and lets DuckDB
- * queries reach PG heap tables, foreign tables, and views. Schema name is
- * the PG schema name unchanged in both cases. No MotherDuck /
- * multi-database routing applies in pg_ducklake.
+ * pgddb_db_and_schema_hook impl. Object-scoped: claims only relations on the
+ * ducklake table AM (PGDUCKLAKE_TABLE_AM, registered in pgducklake_table.cpp),
+ * routing them to PGDUCKLAKE_DUCKDB_CATALOG (the DuckLake catalog). Returns
+ * nullptr for anything else, so the kernel falls back to its "pgduckdb" storage
+ * catalog (PostgresStorageExtension) for PG heap tables, foreign tables, and
+ * views. No MotherDuck / multi-database routing applies in pg_ducklake.
  */
 static List *
 DbAndSchemaForDucklake(const char *postgres_schema_name, const char *table_am_name) {
-	// pgducklake_table.cpp registers the ducklake AM under
-	// PGDUCKLAKE_TABLE_AM. Any other relation (PG heap, foreign table,
-	// view) returns nullptr or a different identifier; route those to the
-	// PostgresStorageExtension catalog so DuckDB can still read them.
 	if (table_am_name == nullptr || strcmp(PGDUCKLAKE_TABLE_AM, table_am_name) != 0)
-		return list_make2((void *)PGDUCKLAKE_PG_STORAGE_CATALOG, (void *)postgres_schema_name);
+		return nullptr;
 	return list_make2((void *)PGDUCKLAKE_DUCKDB_CATALOG, (void *)postgres_schema_name);
-}
-
-/*
- * pgddb_column_type_name_hook impl: the standard PG deparser writes
- * `ducklake.variant` for a variant column, which DuckDB resolves as
- * type "variant" in schema "ducklake" -- which doesn't exist. Map it
- * to plain VARCHAR; field extraction works through the pg_variant_extract*
- * scalar macros (registered in pgducklake_functions.cpp) that parse the
- * underlying JSON-as-text representation. Matches what
- * ConvertPostgresToBaseDuckColumnTypeHook returns for the same OID.
- *
- * Returns NULL for non-variant types so the deparser falls through to
- * PG's format_type_with_typemod.
- */
-static char *
-DucklakeColumnTypeName(Oid type_oid, int32_t /*typemod*/) {
-	if (!OidIsValid(type_oid))
-		return nullptr;
-	Oid ducklake_nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, /*missing_ok=*/true);
-	if (!OidIsValid(ducklake_nsp))
-		return nullptr;
-	Oid variant_oid =
-	    GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid, PointerGetDatum("variant"), ObjectIdGetDatum(ducklake_nsp));
-	if (type_oid == variant_oid)
-		return pstrdup("VARCHAR");
-	return nullptr;
 }
 
 /*
@@ -302,9 +260,10 @@ DucklakeFunctionName(Oid function_oid, bool *use_variadic_p) {
 
 void
 InitRuleutilsHooks() {
-	pgddb_db_and_schema_hook = DbAndSchemaForDucklake;
-	pgddb_function_name_hook = DucklakeFunctionName;
-	pgddb_column_type_name_hook = DucklakeColumnTypeName;
+	Register_pgddb_db_and_schema(DbAndSchemaForDucklake); // object-scoped: ducklake table AM
+	// Heap/view/foreign relations fall back to the kernel's "pgduckdb" storage catalog.
+	Register_pgddb_function_name(DucklakeFunctionName);
+	// column_type_name (variant -> VARIANT) is registered in pgducklake_types.cpp.
 }
 
 /*

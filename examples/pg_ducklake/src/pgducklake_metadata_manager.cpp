@@ -11,7 +11,7 @@
 
 #include "pgducklake/pgducklake_metadata_manager.hpp"
 #include "pgddb/pgddb_types.hpp"
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 // DuckDB headers first
 #include "duckdb/common/allocator.hpp"
@@ -32,8 +32,8 @@
 #include "common/ducklake_util.hpp"
 
 // Our vendored type conversion utilities
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/guc.hpp"
 
 // PostgreSQL headers
 extern "C" {

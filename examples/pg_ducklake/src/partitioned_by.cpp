@@ -1,15 +1,15 @@
 /*
- * pgducklake_partition.cpp -- Partition procs: ducklake.set_partition / reset_partition.
+ * partitioned_by.cpp -- Partition procs: ducklake.set_partition / reset_partition.
  *
  * @scope extension: ducklake.set_partition, ducklake.reset_partition procs
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
 
 #include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
 
-#include "pgducklake/pgducklake_table.hpp"
+#include "pgducklake/ducklake_table.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 #include <string>

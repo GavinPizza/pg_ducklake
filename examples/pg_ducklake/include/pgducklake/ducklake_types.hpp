@@ -18,7 +18,7 @@ public:
 
 	// Validate a CREATE INDEX ... USING ducklake_sorted and deparse it to the
 	// "ALTER TABLE <rel> SET SORTED BY (...)" statement. Defined in
-	// pgducklake_sorted_by.cpp.
+	// sorted_by.cpp.
 	static std::string get_create_sorted_index_def(IndexStmt *stmt);
 
 protected:

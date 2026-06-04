@@ -1,5 +1,5 @@
 /*
- * pgducklake_freeze.cpp -- Export DuckLake metadata to a standalone .ducklake file.
+ * freeze.cpp -- Export DuckLake metadata to a standalone .ducklake file.
  *
  * @scope extension: proc ducklake.freeze
  *
@@ -14,8 +14,8 @@
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {

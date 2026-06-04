@@ -1,5 +1,5 @@
 /*
- * pgducklake_direct_insert.cpp
+ * direct_insert.cpp
  *
  * @scope backend: register custom scan node methods; cached ducklake AM OID
  * @scope duckdb-instance: per-statement scan state (snapshot, row IDs)
@@ -21,11 +21,11 @@
 
 #include "duckdb.hpp"
 
-#include "pgducklake/pgducklake_direct_insert.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
+#include "pgducklake/direct_insert.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/guc.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 #include <cstring>
 #include <unordered_map>
@@ -1732,7 +1732,7 @@ static void DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 /* ================================================================
  * Direct-insert outcome counters (shared memory)
  *
- * Mirrors the shmem init pattern used by src/pgducklake_maintenance.cpp.
+ * Mirrors the shmem init pattern used by src/maintenance_worker.cpp.
  * ================================================================ */
 
 namespace {

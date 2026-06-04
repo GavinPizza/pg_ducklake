@@ -5,8 +5,8 @@
  * callback registration, and pg_ducklake hook initialization.
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
 

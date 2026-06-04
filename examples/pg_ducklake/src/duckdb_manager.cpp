@@ -1,5 +1,5 @@
 /*
- * pgducklake_duckdb.cpp -- DuckLake catalog lifecycle in DuckDB
+ * duckdb_manager.cpp -- DuckLake catalog lifecycle in DuckDB
  *
  * Manages the "pgducklake" DuckLake catalog attached inside DuckDB.
  * Three lifecycles exist:
@@ -17,7 +17,7 @@
  *
  *   DROP + CREATE EXTENSION (DuckDB already alive):
  *     DROP EXTENSION pg_ducklake
- *       -> DucklakeUtilityHook        [pgducklake_hooks.cpp]
+ *       -> DucklakeUtilityHook        [hooks.cpp]
  *           -> ducklake_detach_catalog()
  *     CREATE EXTENSION pg_ducklake
  *       -> ducklake_initialize()
@@ -35,10 +35,10 @@
  *     (metadata manager already registered in _PG_init, no re-registration)
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_functions.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/functions.hpp"
+#include "pgducklake/guc.hpp"
 
 #include "pgddb/catalog/pgddb_storage.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
@@ -215,7 +215,7 @@ namespace pgducklake {
 
 /*
  * pgddb_db_and_schema_hook impl. Object-scoped: claims only relations on the
- * ducklake table AM (PGDUCKLAKE_TABLE_AM, registered in pgducklake_table.cpp),
+ * ducklake table AM (PGDUCKLAKE_TABLE_AM, registered in ducklake_table.cpp),
  * routing them to PGDUCKLAKE_DUCKDB_CATALOG (the DuckLake catalog). Returns
  * nullptr for anything else, so the kernel falls back to its "pgduckdb" storage
  * catalog (PostgresStorageExtension) for PG heap tables, foreign tables, and
@@ -256,7 +256,7 @@ InitRuleutilsHooks() {
 	Register_pgddb_db_and_schema(DbAndSchemaForDucklake); // object-scoped: ducklake table AM
 	// Heap/view/foreign relations fall back to the kernel's "pgduckdb" storage catalog.
 	Register_pgddb_function_name(DucklakeFunctionName);
-	// column_type_name (variant -> VARIANT) is registered in pgducklake_types.cpp.
+	// column_type_name (variant -> VARIANT) is registered in ducklake_types.cpp.
 }
 
 /*

@@ -1,5 +1,5 @@
 /*
- * pgducklake_copy_from.cpp -- COPY FROM STDIN into inlined DuckLake tables.
+ * copy_from.cpp -- COPY FROM STDIN into inlined DuckLake tables.
  *
  * @scope backend: COPY FROM STDIN handler for inlined DuckLake tables
  *
@@ -16,8 +16,8 @@
 /* DuckDB headers must parse before postgres.h (FATAL macro conflict). */
 #include "pgducklake/pgducklake_metadata_manager.hpp"
 
-#include "pgducklake/pgducklake_copy_from.hpp"
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/copy_from.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 extern "C" {
 #include "postgres.h"

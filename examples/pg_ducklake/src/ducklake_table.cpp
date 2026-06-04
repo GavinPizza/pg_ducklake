@@ -1,5 +1,5 @@
 /*
- * pgducklake_table.cpp -- Table lifecycle: AM handler + DDL event triggers.
+ * ducklake_table.cpp -- Table lifecycle: AM handler + DDL event triggers.
  *
  * @scope extension: ducklake table AM handler, DDL event triggers
  *   (ducklake_create_table_trigger, ducklake_drop_table_trigger,
@@ -11,10 +11,10 @@
  * PostgreSQL to DuckDB.
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 #include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
 
@@ -59,7 +59,7 @@ extern "C" {
 // pgducklake::Ruleutils (the DDL deparser with the variant->VARIANT override).
 // pgddb_ddl.hpp is postgres.h-free, and postgres.h is already included above,
 // so this is safe after the extern "C" block.
-#include "pgducklake/pgducklake_types.hpp"
+#include "pgducklake/ducklake_types.hpp"
 
 /* ================================================================
  * Table Access Method callbacks

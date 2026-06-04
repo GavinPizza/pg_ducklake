@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * pgducklake_maintenance.hpp -- DuckLake background maintenance worker.
+ * maintenance_worker.hpp -- DuckLake background maintenance worker.
  *
  * Provides a launcher/worker architecture for periodic table maintenance
  * (flush inlined data, rewrite data files, merge files, expire snapshots,

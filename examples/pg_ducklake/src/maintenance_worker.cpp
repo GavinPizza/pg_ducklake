@@ -1,5 +1,5 @@
 /*
- * pgducklake_maintenance.cpp -- Background maintenance worker for DuckLake.
+ * maintenance_worker.cpp -- Background maintenance worker for DuckLake.
  *
  * @scope backend: register shmem hooks and launcher background worker
  *
@@ -25,10 +25,10 @@
  * stay in-process.
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_maintenance.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/maintenance_worker.hpp"
 
 #include <duckdb/parser/keyword_helper.hpp>
 

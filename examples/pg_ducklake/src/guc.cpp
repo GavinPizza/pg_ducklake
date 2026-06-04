@@ -1,5 +1,5 @@
 /*
- * pgducklake_guc.cpp -- DuckLake GUC definitions and registration.
+ * guc.cpp -- DuckLake GUC definitions and registration.
  *
  * @scope backend: register GUCs
  *
@@ -7,8 +7,8 @@
  * _PG_init().
  */
 
-#include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_maintenance.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/maintenance_worker.hpp"
 
 extern "C" {
 #include "postgres.h"

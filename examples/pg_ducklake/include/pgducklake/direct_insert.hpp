@@ -1,5 +1,5 @@
 /*
- * pgducklake_direct_insert.hpp
+ * direct_insert.hpp
  *
  * Direct insert optimization for INSERT patterns into inlined DuckLake tables.
  *

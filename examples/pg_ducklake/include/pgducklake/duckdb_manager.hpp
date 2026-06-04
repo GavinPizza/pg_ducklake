@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * pgducklake_duckdb.hpp -- C++ interface for DuckDB/DuckLake operations
+ * duckdb_manager.hpp -- C++ interface for DuckDB/DuckLake operations
  *
  * Provides functions for DuckLake extension lifecycle management and the
  * pg_ducklake-flavored DuckDBManager subclass.

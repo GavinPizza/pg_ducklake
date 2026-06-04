@@ -1,5 +1,5 @@
 /*
- * pgducklake_fdw.cpp -- Foreign Data Wrapper for DuckLake tables
+ * ducklake_fdw.cpp -- Foreign Data Wrapper for DuckLake tables
  *
  * @scope extension: ducklake_fdw handler and validator
  * @scope backend: register external table check, relation name callback,
@@ -33,8 +33,8 @@
 
 #include "pgddb/pgddb_duckdb.hpp"
 #include "pgddb/pgddb_types.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_fdw.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/ducklake_fdw.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {

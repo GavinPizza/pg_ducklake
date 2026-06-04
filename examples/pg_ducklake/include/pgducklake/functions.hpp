@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * pgducklake_functions.hpp -- DuckLake function exposing.
+ * functions.hpp -- DuckLake function exposing.
  *
  * Registers wrapper table macros in DuckDB's system.main catalog that
  * bridge PG function names to ducklake_<name>(catalog, ...) globals.

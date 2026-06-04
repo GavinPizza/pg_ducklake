@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * pgducklake_time_travel.hpp — Time-travel query support for DuckLake tables
+ * time_travel.hpp — Time-travel query support for DuckLake tables
  *
  * Declares the DuckDB table function `time_travel(table_name, version/timestamp)`
  * that enables querying DuckLake tables at historical snapshots.

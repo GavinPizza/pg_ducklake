@@ -1,5 +1,5 @@
 /*
- * pgducklake_sync.cpp -- Reverse sync framework: DuckDB metadata -> PG catalog.
+ * catalog_sync.cpp -- Reverse sync framework: DuckDB metadata -> PG catalog.
  *
  * @scope backend: syncing_from_metadata guard bool
  * @scope duckdb-instance: ducklake_snapshot_trigger
@@ -9,14 +9,14 @@
  * sync_handlers array.
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 #include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
 
-#include "pgducklake/pgducklake_sorted_by.hpp"
-#include "pgducklake/pgducklake_table.hpp"
+#include "pgducklake/sorted_by.hpp"
+#include "pgducklake/ducklake_table.hpp"
 
 #include "pgddb/utility/cpp_wrapper.hpp"
 

@@ -1,5 +1,5 @@
 /*
- * pgducklake_table.hpp -- Table lifecycle: AM handler, DDL triggers, sync.
+ * ducklake_table.hpp -- Table lifecycle: AM handler, DDL triggers, sync.
  *
  * Declares EnsureDuckLakeTable (used by partition and sorted_by procs)
  * and table sync handlers (used by the snapshot trigger framework).

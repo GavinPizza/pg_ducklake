@@ -1,5 +1,5 @@
 /*
- * pgducklake_sync.hpp -- Sync framework: DuckDB metadata -> PG catalog.
+ * catalog_sync.hpp -- Sync framework: DuckDB metadata -> PG catalog.
  *
  * Declares the syncing_from_metadata guard and the SyncHandler type.
  */

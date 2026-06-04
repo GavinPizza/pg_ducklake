@@ -1,5 +1,5 @@
 /*
- * pgducklake_hooks.cpp -- Planner and utility hooks.
+ * hooks.cpp -- Planner and utility hooks.
  *
  * @scope backend: install planner and utility hooks
  *
@@ -9,7 +9,7 @@
  * - rewrites variant -> / ->> operators into variant_extract() FuncExpr nodes
  *   so pg_duckdb deparses them as function calls, not operator syntax
  * - rewrites regclass overloads of ducklake functions into text-arg versions
- * - delegates INSERT UNNEST planning optimization to pgducklake_direct_insert
+ * - delegates INSERT UNNEST planning optimization to direct_insert
  *
  * Utility hook:
  * - catches explicit COMMIT utility statements and commits DuckDB early
@@ -26,15 +26,15 @@
 #include "pgddb/pgddb_planner.hpp"
 #include "pgddb/pgddb_table_am.hpp"
 
-#include "pgducklake/pgducklake_copy_from.hpp"
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_direct_insert.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
-#include "pgducklake/pgducklake_fdw.hpp"
-#include "pgducklake/pgducklake_functions.hpp"
-#include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_sorted_by.hpp"
-#include "pgducklake/pgducklake_types.hpp"
+#include "pgducklake/copy_from.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/direct_insert.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/ducklake_fdw.hpp"
+#include "pgducklake/functions.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/sorted_by.hpp"
+#include "pgducklake/ducklake_types.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
 
 #include <string>
@@ -520,7 +520,7 @@ bool IsDucklakeOnlyProcedure(Oid funcid) {
  *   SELECT r['col1']::type1 AS col1, ... FROM ducklake.duckdb_query('<sql>') r
  * so PG sees explicit typed columns at CREATE VIEW time. The planner
  * routes SELECT-on-view back through the duckdb_query() stub, and
- * pgddb's strip_first_subscript hook (installed in pgducklake_types.cpp)
+ * pgddb's strip_first_subscript hook (installed in ducklake_types.cpp)
  * renders r['col'] as r.col for DuckDB.
  *
  * As a side benefit, planning at CREATE VIEW time means an invalid

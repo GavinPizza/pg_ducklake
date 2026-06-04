@@ -1,5 +1,5 @@
 /*
- * pgducklake_types.cpp -- libpgddb type and row-deparse hooks.
+ * ducklake_types.cpp -- libpgddb type and row-deparse hooks.
  *
  * @scope backend: install GetPostgresDuckDBType + ConvertDuckToPostgresValue
  *                 + the row-deparse hooks (var_is_row, func_returns_row,
@@ -36,8 +36,8 @@
 #include <string>
 #include <vector>
 
-#include "pgducklake/pgducklake_types.hpp"
-#include "pgducklake/pgducklake_defs.hpp"
+#include "pgducklake/ducklake_types.hpp"
+#include "pgducklake/constants.hpp"
 
 extern "C" {
 #include "postgres.h"

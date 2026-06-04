@@ -1,5 +1,5 @@
 /*
- * pgducklake_sorted_by.hpp
+ * sorted_by.hpp
  *
  * Sorted index AM handler, CREATE/DROP INDEX interception, and pg_class
  * sync helpers for ducklake_sorted.
@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "pgducklake/pgducklake_sync.hpp"
+#include "pgducklake/catalog_sync.hpp"
 
 #include <string>
 #include <vector>

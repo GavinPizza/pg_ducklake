@@ -30,7 +30,7 @@ each backend process independently initializes its own state.
 | ------------------ | ----------------------------------------------------- |
 | PG extension       | sql/pg_ducklake--\*.sql                               |
 | PG backend process | src/pgducklake.cpp (`_PG_init`)                       |
-| DuckDB instance    | src/pgducklake_duckdb.cpp (`DuckDBManager::OnPostInit`) |
+| DuckDB instance    | src/duckdb_manager.cpp (`DuckDBManager::OnPostInit`) |
 
 #### 1. PG extension
 
@@ -69,7 +69,7 @@ inlined data, expire snapshots) and compaction (rewrite data files,
 merge adjacent files, cleanup old files). VACUUM on ducklake tables
 is a no-op; all maintenance goes through the background worker.
 
-See `src/pgducklake_maintenance.cpp` for the implementation.
+See `src/maintenance_worker.cpp` for the implementation.
 
 #### @scope convention
 
@@ -86,7 +86,7 @@ These tags are the source of truth for per-file classification.
 
 ### DDL path
 
-DDL is executed by PostgreSQL, then `ducklake_<ddl>_trigger` is called to handle DDL operations (see @src/pgducklake_table.cpp).
+DDL is executed by PostgreSQL, then `ducklake_<ddl>_trigger` is called to handle DDL operations (see @src/ducklake_table.cpp).
 Event triggers check events and synchronize corresponding DuckDB objects in `PGDUCKLAKE_DUCKDB_CATALOG`.
 
 ### DML path

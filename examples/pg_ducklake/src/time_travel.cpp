@@ -1,5 +1,5 @@
 /*
- * pgducklake_time_travel.cpp -- DuckDB table function for time-travel queries
+ * time_travel.cpp -- DuckDB table function for time-travel queries
  *
  * @scope duckdb-instance: build the time_travel table function set
  *   (registered on the instance by RegisterDucklakeFunctions)
@@ -18,8 +18,8 @@
  * input.table_function with the resolved scan function.
  */
 
-#include "pgducklake/pgducklake_time_travel.hpp"
-#include "pgducklake/pgducklake_defs.hpp"
+#include "pgducklake/time_travel.hpp"
+#include "pgducklake/constants.hpp"
 
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"

@@ -1,5 +1,5 @@
 /*
- * pgducklake_functions.cpp -- DuckLake function exposing.
+ * functions.cpp -- DuckLake function exposing.
  *
  * @scope backend: register DuckDB-only function names with pg_duckdb
  * @scope duckdb-instance: register wrapper macros, maintenance and
@@ -42,9 +42,9 @@
  *     -> TableFunctionSet bind replaces with ducklake_cleanup_old_files()
  */
 
-#include "pgducklake/pgducklake_functions.hpp"
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_time_travel.hpp"
+#include "pgducklake/functions.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/time_travel.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
@@ -419,7 +419,7 @@ void RegisterDucklakeFunctions(DatabaseInstance &db) {
   }
 
   // time_travel(...): query a DuckLake table at a historical snapshot
-  // (built in pgducklake_time_travel.cpp).
+  // (built in time_travel.cpp).
   auto time_travel = GetTimeTravelFunctions();
   RegisterTableFunctionSet(db, time_travel);
 

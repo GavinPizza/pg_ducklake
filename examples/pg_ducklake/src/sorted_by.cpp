@@ -1,11 +1,11 @@
 /*
- * pgducklake_sorted_by.cpp -- ducklake_sorted index AM, procedures, and sync.
+ * sorted_by.cpp -- ducklake_sorted index AM, procedures, and sync.
  *
  * @scope extension: ducklake_sorted index AM, procs ducklake.set_sort
  *   and ducklake.reset_sort
  * @scope backend: sort_synced_from_pg guard bool
  * @scope duckdb-instance: sync sorted indexes between DuckDB and pg_class.
- *   SyncSortKeys is registered as a sync handler with pgducklake_sync.cpp.
+ *   SyncSortKeys is registered as a sync handler with catalog_sync.cpp.
  *
  * Provides a minimal IndexAmRoutine so that CREATE INDEX ... USING
  * ducklake_sorted registers a real pg_class entry. The index stores no data
@@ -14,19 +14,19 @@
  *
  * Also contains: ducklake.set_sort/reset_sort SQL procedures,
  * HandleCreateSortedIndex, HandleDropSortedIndex, FindSortedIndexDrops,
- * SyncSortKeys, and pg_class sync helpers called from pgducklake_hooks.cpp
- * and pgducklake_sync.cpp.
+ * SyncSortKeys, and pg_class sync helpers called from hooks.cpp
+ * and catalog_sync.cpp.
  */
 
-#include "pgducklake/pgducklake_defs.hpp"
-#include "pgducklake/pgducklake_duckdb.hpp"
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
 
 #include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
 
-#include "pgducklake/pgducklake_table.hpp"
+#include "pgducklake/ducklake_table.hpp"
 
-#include "pgducklake/pgducklake_sorted_by.hpp"
-#include "pgducklake/pgducklake_types.hpp"
+#include "pgducklake/sorted_by.hpp"
+#include "pgducklake/ducklake_types.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 #include <string>

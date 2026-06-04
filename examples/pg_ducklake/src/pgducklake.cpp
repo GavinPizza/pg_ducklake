@@ -10,7 +10,6 @@
 #include "storage/ducklake_metadata_manager.hpp"
 
 #include "pgducklake/pgducklake_direct_insert.hpp"
-#include "pgducklake/pgducklake_direct_insert_stats.hpp"
 #include "pgducklake/pgducklake_duckdb.hpp"
 #include "pgducklake/pgducklake_fdw.hpp"
 #include "pgducklake/pgducklake_functions.hpp"

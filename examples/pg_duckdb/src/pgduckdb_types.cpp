@@ -131,18 +131,12 @@ ConvertDuckToPostgresValue(Oid pg_oid, duckdb::Value &value, TupleTableSlot *slo
 	return false;
 }
 
-static bool
-ConvertUnsupportedNumericToDouble(void) {
-	return duckdb_convert_unsupported_numeric_to_double;
-}
-
 void
 InitTypeHooks() {
 	pgddb::Register_ConvertPostgresToBaseDuckColumnType(ConvertPostgresToBaseDuckColumnType);
 	pgddb::Register_GetPostgresDuckDBType(GetPostgresDuckDBType);
 	pgddb::Register_GetPostgresArrayDuckDBType(GetPostgresArrayDuckDBType);
 	pgddb::Register_ConvertDuckToPostgresValue(ConvertDuckToPostgresValue);
-	pgddb::Register_ConvertUnsupportedNumericToDouble(ConvertUnsupportedNumericToDouble);
 }
 
 } // namespace pgduckdb

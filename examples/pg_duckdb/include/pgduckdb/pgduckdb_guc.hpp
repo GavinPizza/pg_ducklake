@@ -7,7 +7,6 @@ void InitGUCHooks();
 extern bool duckdb_force_execution;
 extern bool duckdb_unsafe_allow_execution_inside_functions;
 extern bool duckdb_unsafe_allow_mixed_transactions;
-extern bool duckdb_convert_unsupported_numeric_to_double;
 extern int duckdb_threads;
 extern int duckdb_maximum_memory;
 extern char *duckdb_disabled_filesystems;

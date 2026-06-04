@@ -94,10 +94,8 @@ typedef bool (*GetPostgresToDuckValueFn_hook_t)(Oid attr_type, duckdb::Vector &r
 extern "C" __attribute__((visibility("default"))) void
 Register_GetPostgresToDuckValueFn(GetPostgresToDuckValueFn_hook_t fn);
 
-// Policy: unsupported-precision NUMERIC -> DOUBLE. The kernel returns true if any
-// registered hook opts in (default: false, i.e. throw an UnsupportedPostgresType).
-typedef bool (*ConvertUnsupportedNumericToDouble_hook_t)(void);
-extern "C" __attribute__((visibility("default"))) void
-Register_ConvertUnsupportedNumericToDouble(ConvertUnsupportedNumericToDouble_hook_t fn);
+// When true, an unsupported-precision NUMERIC maps to DOUBLE instead of being
+// rejected as an UnsupportedPostgresType. Default false; per-consumer copy.
+extern bool convert_unsupported_numeric_to_double;
 
 } // namespace pgddb

@@ -2,6 +2,7 @@
 #include <climits>
 
 #include "pgddb/pgddb_duckdb.hpp"
+#include "pgddb/pgddb_types.hpp"
 #include "pgddb/scan/postgres_scan.hpp"
 #include "pgddb/scan/postgres_table_reader.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
@@ -123,7 +124,6 @@ DefineCustomDuckDBVariable(const char *name, const char *short_desc, T *var, T m
 bool duckdb_force_execution = false;
 bool duckdb_unsafe_allow_execution_inside_functions = false;
 bool duckdb_unsafe_allow_mixed_transactions = false;
-bool duckdb_convert_unsupported_numeric_to_double = false;
 char *duckdb_motherduck_session_hint = strdup("");
 char *duckdb_postgres_role = strdup("");
 bool duckdb_force_motherduck_views = false;
@@ -163,7 +163,7 @@ InitGUC() {
 
 	DefineCustomVariable("duckdb.convert_unsupported_numeric_to_double",
 	                     "Convert NUMERIC types of unsupported precision to DOUBLE",
-	                     &duckdb_convert_unsupported_numeric_to_double);
+	                     &::pgddb::convert_unsupported_numeric_to_double);
 
 	DefineCustomVariable("duckdb.log_pg_explain", "Logs the EXPLAIN plan of a Postgres scan at the NOTICE log level",
 	                     &::pgddb::duckdb_log_pg_explain);

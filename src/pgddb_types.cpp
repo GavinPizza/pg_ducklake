@@ -47,7 +47,8 @@ static std::vector<GetPostgresDuckDBType_hook_t> g_duck_to_pg_hooks;
 static std::vector<GetPostgresArrayDuckDBType_hook_t> g_duck_to_pg_array_hooks;
 static std::vector<ConvertDuckToPostgresValue_hook_t> g_duck_value_to_pg_hooks;
 static std::vector<GetPostgresToDuckValueFn_hook_t> g_pg_to_duck_value_fn_hooks;
-static std::vector<ConvertUnsupportedNumericToDouble_hook_t> g_unsupported_numeric_to_double_hooks;
+
+bool convert_unsupported_numeric_to_double = false; // see pgddb_types.hpp
 
 extern "C" __attribute__((visibility("default"))) void
 Register_ConvertPostgresToBaseDuckColumnType(ConvertPostgresToBaseDuckColumnType_hook_t fn) {
@@ -68,22 +69,6 @@ Register_ConvertDuckToPostgresValue(ConvertDuckToPostgresValue_hook_t fn) {
 extern "C" __attribute__((visibility("default"))) void
 Register_GetPostgresToDuckValueFn(GetPostgresToDuckValueFn_hook_t fn) {
 	g_pg_to_duck_value_fn_hooks.push_back(fn);
-}
-extern "C" __attribute__((visibility("default"))) void
-Register_ConvertUnsupportedNumericToDouble(ConvertUnsupportedNumericToDouble_hook_t fn) {
-	g_unsupported_numeric_to_double_hooks.push_back(fn);
-}
-
-// True if any registered hook opts in to converting an unsupported-precision NUMERIC
-// to DOUBLE instead of throwing (default: false).
-static bool
-ConvertUnsupportedNumericToDouble() {
-	for (auto fn : g_unsupported_numeric_to_double_hooks) {
-		if (fn()) {
-			return true;
-		}
-	}
-	return false;
 }
 
 NumericVar FromNumeric(Numeric num);
@@ -1211,7 +1196,7 @@ ConvertPostgresToBaseDuckColumnType(Form_pg_attribute &attribute) {
 		 * https://duckdb.org/docs/stable/sql/data_types/numeric.html#fixed-point-decimals
 		 */
 		if (type_modifier == -1 || precision < 1 || precision > 38 || scale < 0 || scale > 38 || scale > precision) {
-			if (ConvertUnsupportedNumericToDouble()) {
+			if (convert_unsupported_numeric_to_double) {
 				auto extra_type_info = duckdb::make_shared_ptr<NumericAsDouble>();
 				return duckdb::LogicalType(duckdb::LogicalTypeId::DOUBLE, std::move(extra_type_info));
 			}

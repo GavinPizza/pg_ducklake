@@ -19,10 +19,5 @@
 // recognize ducklake-AM relations.
 #define PGDUCKLAKE_TABLE_AM "ducklake"
 
-namespace pgducklake {
-// Install the table-AM name hook into libpgddb. Called from _PG_init.
-void InitTableAmHook();
-} // namespace pgducklake
-
 // Index access method.
 #define PGDUCKLAKE_SORTED_AM "ducklake_sorted"

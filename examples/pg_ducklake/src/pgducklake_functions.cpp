@@ -108,6 +108,14 @@ DECLARE_PG_FUNCTION(duckdb_only_function) {
   elog(ERROR, "Function '%s' only works with DuckDB execution", function_name);
 }
 
+// ducklake_only_procedure: the procedure twin of duckdb_only_function. The CALL
+// is caught by the utility hook (IsDucklakeOnlyProcedure) and routed to DuckDB;
+// if this body runs the routing was missed, so error loudly.
+DECLARE_PG_FUNCTION(ducklake_only_procedure) {
+  char *proc_name = DatumGetCString(DirectFunctionCall1(regprocout, ObjectIdGetDatum(fcinfo->flinfo->fn_oid)));
+  elog(ERROR, "Procedure '%s' only works with DuckDB execution", proc_name);
+}
+
 // ducklake_function_mapping: marker stub for the regclass overloads of
 // table-scoped functions (e.g. ducklake.flush_inlined_data(scope regclass)),
 // declared with `AS 'MODULE_PATHNAME', 'ducklake_function_mapping'`. The

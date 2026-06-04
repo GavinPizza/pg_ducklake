@@ -50,8 +50,6 @@ struct DirectInsertContext {
 // DirectInsertScanState is defined in the implementation file to avoid
 // requiring full CustomScanState definition
 
-void RegisterDirectInsertNode();
-
 PlannedStmt *TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params);
 
 /* Clear session-level caches.  Must be called on DuckDB instance recycle
@@ -90,9 +88,6 @@ enum DirectInsertReason {
   DI_R_RETRY,
   DI_R_NUM,
 };
-
-/* Register shmem request + startup hooks. Call from _PG_init. */
-void InitDirectInsertStatsShmem();
 
 /* Bump counter; safe to call from any backend after ShmemStartup ran. */
 void DirectInsertStatsBump(DirectInsertPattern pattern, DirectInsertReason reason);

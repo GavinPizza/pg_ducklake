@@ -21,7 +21,4 @@ extern bool maintenance_flush_inlined_data;
 extern bool maintenance_expire_snapshots;
 extern bool maintenance_cleanup_old_files;
 
-/* Register all DuckLake GUCs — call from _PG_init() */
-void RegisterGUCs();
-
 } // namespace pgducklake

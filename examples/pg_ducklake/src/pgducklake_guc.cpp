@@ -36,7 +36,7 @@ bool maintenance_flush_inlined_data = true;
 bool maintenance_expire_snapshots = true;
 bool maintenance_cleanup_old_files = false;
 
-void RegisterGUCs() {
+void InitGUCs() {
   DefineCustomStringVariable("ducklake.default_table_path",
                              "Default directory path for DuckLake tables. If set, tables will be "
                              "created under this path.",

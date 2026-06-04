@@ -10,13 +10,3 @@
 
 /* Hard cap on concurrent maintenance workers (GUC max bound) */
 #define DUCKLAKE_MAX_MAINTENANCE_WORKERS 8
-
-namespace pgducklake {
-
-/* Hook shmem_request + shmem_startup for shared worker state. Call from _PG_init(). */
-void InitMaintenanceShmem();
-
-/* Register the launcher as a static background worker. Call from _PG_init(). */
-void RegisterMaintenanceLauncher();
-
-} // namespace pgducklake

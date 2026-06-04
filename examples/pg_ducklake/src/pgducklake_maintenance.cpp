@@ -588,7 +588,8 @@ PGDLLEXPORT void ducklake_maintenance_launcher_main(Datum main_arg) {
 
 namespace pgducklake {
 
-void InitMaintenanceShmem() {
+void InitMaintenanceWorker() {
+  /* Hook shmem_request + shmem_startup for shared worker state. */
 #if PG_VERSION_NUM >= 150000
   prev_shmem_request_hook = shmem_request_hook;
   shmem_request_hook = ShmemRequest;
@@ -598,9 +599,8 @@ void InitMaintenanceShmem() {
 
   prev_shmem_startup_hook = shmem_startup_hook;
   shmem_startup_hook = ShmemStartup;
-}
 
-void RegisterMaintenanceLauncher() {
+  /* Register the launcher as a static background worker. */
   BackgroundWorker worker;
   MemSet(&worker, 0, sizeof(BackgroundWorker));
   worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;

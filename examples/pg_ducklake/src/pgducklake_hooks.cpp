@@ -26,7 +26,6 @@
 #include "pgddb/pgddb_planner.hpp"
 #include "pgddb/pgddb_table_am.hpp"
 
-#include "pgducklake/pgducklake_hooks.hpp"
 #include "pgducklake/pgducklake_copy_from.hpp"
 #include "pgducklake/pgducklake_defs.hpp"
 #include "pgducklake/pgducklake_direct_insert.hpp"

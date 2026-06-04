@@ -12,7 +12,6 @@
 struct Query; /* forward-declare PostgreSQL Query node */
 
 namespace pgducklake {
-void InitFDW();
 void RegisterForeignTablesInQuery(Query *query);
 // Returns true if any RTE in the query references a ducklake_fdw foreign
 // table. Used by the planner hook to route foreign-table queries through

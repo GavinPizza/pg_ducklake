@@ -86,7 +86,7 @@ These tags are the source of truth for per-file classification.
 
 ### DDL path
 
-DDL is executed by PostgreSQL, then `ducklake_<ddl>_trigger` is called to handle DDL operations (see @src/pgducklake_ddl.cpp).
+DDL is executed by PostgreSQL, then `ducklake_<ddl>_trigger` is called to handle DDL operations (see @src/pgducklake_table.cpp).
 Event triggers check events and synchronize corresponding DuckDB objects in `PGDUCKLAKE_DUCKDB_CATALOG`.
 
 ### DML path

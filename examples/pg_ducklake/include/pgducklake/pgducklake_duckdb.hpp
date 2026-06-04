@@ -31,9 +31,6 @@ private:
 	static duckdb::unique_ptr<DuckDBManager> instance_;
 };
 
-// Installs pgddb_get_connection_hook; called from _PG_init.
-void InitDuckDBManager();
-
 /*
  * Execute a query against the pg_ducklake DuckDB connection and return its
  * result, throwing a duckdb exception on error. Mirrors pg_duckdb's
@@ -71,17 +68,6 @@ void ducklake_detach_catalog();
 void ducklake_attach_catalog();
 
 namespace pgducklake {
-
-/* Installs pg_ducklake's libpgddb ruleutils hooks (pgddb_db_and_schema_hook)
- * so pgddb_get_tabledef etc. resolve the DuckDB catalog/schema correctly
- * for ducklake-AM tables. Called from _PG_init. */
-void InitRuleutilsHooks();
-
-/* Register PG XactCallback that mirrors PG PRE_COMMIT/ABORT to DuckDB's
- * DuckLake transaction. Without this, DuckDB never commits its in-memory
- * transaction state and subsequent statements see stale snapshots. Called
- * from _PG_init. */
-void RegisterXactCallback();
 
 /*
  * Toggle the SUBXACT_EVENT_START_SUB guard. Set true around code paths that

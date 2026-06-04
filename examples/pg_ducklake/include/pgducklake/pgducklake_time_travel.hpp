@@ -9,13 +9,8 @@
 
 #include "duckdb/function/function_set.hpp"
 
-namespace duckdb {
-class DatabaseInstance;
-}
-
 namespace pgducklake {
 
 duckdb::TableFunctionSet GetTimeTravelFunctions();
-void RegisterTimeTravelFunction(duckdb::DatabaseInstance &db);
 
 } // namespace pgducklake

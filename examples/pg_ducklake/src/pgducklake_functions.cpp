@@ -44,6 +44,7 @@
 
 #include "pgducklake/pgducklake_functions.hpp"
 #include "pgducklake/pgducklake_defs.hpp"
+#include "pgducklake/pgducklake_time_travel.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
@@ -168,18 +169,8 @@ static const DefaultTableMacro pg_ducklake_wrapper_macros[] = {
    {"schema_name", "table_name", "start_snapshot", "end_snapshot", nullptr},
    {{nullptr, nullptr}},
    "FROM ducklake_table_changes('" PGDUCKLAKE_DUCKDB_CATALOG "', schema_name, table_name, start_snapshot, end_snapshot)"},
-  {nullptr, nullptr, {nullptr}, {{nullptr, nullptr}}, nullptr}
 };
 // clang-format on
-
-void RegisterWrapperMacros(DatabaseInstance &db) {
-  auto &catalog = Catalog::GetSystemCatalog(db);
-  auto transaction = CatalogTransaction::GetSystemTransaction(db);
-  for (int i = 0; pg_ducklake_wrapper_macros[i].name != nullptr; i++) {
-    auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(pg_ducklake_wrapper_macros[i]);
-    catalog.CreateFunction(transaction, *info);
-  }
-}
 
 /*
  * Register scalar macros for variant field extraction.
@@ -211,18 +202,8 @@ static const DefaultMacro pg_ducklake_scalar_macros[] = {
    "json_extract_string(v::VARCHAR, concat('$[', i, ']'))"},
   {DEFAULT_SCHEMA, "pg_variant_extract_json_idx", {"v", "i", nullptr}, {{nullptr, nullptr}},
    "json_extract(v::VARCHAR, concat('$[', i, ']'))::VARCHAR"},
-  {nullptr, nullptr, {nullptr}, {{nullptr, nullptr}}, nullptr}
 };
 // clang-format on
-
-void RegisterScalarMacros(DatabaseInstance &db) {
-  auto &catalog = Catalog::GetSystemCatalog(db);
-  auto transaction = CatalogTransaction::GetSystemTransaction(db);
-  for (int i = 0; pg_ducklake_scalar_macros[i].name != nullptr; i++) {
-    auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(pg_ducklake_scalar_macros[i]);
-    catalog.CreateFunction(transaction, *info);
-  }
-}
 
 /*
  * Shared helpers for table function wrappers.
@@ -305,24 +286,11 @@ static unique_ptr<FunctionData> CleanupIntervalBind(ClientContext &context, Tabl
   return func.bind(context, input, return_types, names);
 }
 
-void RegisterCleanupFunction(DatabaseInstance &db) {
-  TableFunctionSet set("cleanup_old_files");
-  set.AddFunction(TableFunction({}, UnreachableExecute, CleanupOldFilesNoArgsBind, UnreachableInit));
-  set.AddFunction(TableFunction({LogicalType::INTERVAL}, UnreachableExecute, CleanupIntervalBind, UnreachableInit));
-  RegisterTableFunctionSet(db, set);
-}
-
 /* cleanup_orphaned_files(): no-args only; same cleanup_all=true prologue, but
  * delegates to the differently-named upstream ducklake_delete_orphaned_files. */
 static unique_ptr<FunctionData> OrphanedNoArgsBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
   return CleanupAllBind(context, input, return_types, names, "ducklake_delete_orphaned_files");
-}
-
-void RegisterCleanupOrphanedFilesFunction(DatabaseInstance &db) {
-  TableFunctionSet set("cleanup_orphaned_files");
-  set.AddFunction(TableFunction({}, UnreachableExecute, OrphanedNoArgsBind, UnreachableInit));
-  RegisterTableFunctionSet(db, set);
 }
 
 /*
@@ -420,12 +388,51 @@ static void RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name,
   RegisterTableFunctionSet(db, set);
 }
 
-void RegisterCompactionFunctions(DatabaseInstance &db) {
+/*
+ * Register all of pg_ducklake's DuckLake-function bridges on a fresh DuckDB
+ * instance (called from DuckDBManager::OnPostInit): the wrapper table macros
+ * and scalar macros (system.main.<name> -> ducklake_<name>(catalog, ...)),
+ * plus the overloaded TableFunctionSets that DuckDB macros can't express.
+ */
+void RegisterDucklakeFunctions(DatabaseInstance &db) {
+  auto &catalog = Catalog::GetSystemCatalog(db);
+  auto transaction = CatalogTransaction::GetSystemTransaction(db);
+
+  // Wrapper table macros: system.main.<name>(...) -> ducklake_<name>(catalog, ...).
+  for (const auto &macro : pg_ducklake_wrapper_macros) {
+    auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(macro);
+    catalog.CreateFunction(transaction, *info);
+  }
+
+  // Scalar macros: virtual-column accessors + variant field extraction.
+  for (const auto &macro : pg_ducklake_scalar_macros) {
+    auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(macro);
+    catalog.CreateFunction(transaction, *info);
+  }
+
+  // time_travel(...): query a DuckLake table at a historical snapshot
+  // (built in pgducklake_time_travel.cpp).
+  auto time_travel = GetTimeTravelFunctions();
+  RegisterTableFunctionSet(db, time_travel);
+
+  // cleanup_old_files(): no-args + interval overloads (.bind pattern).
+  {
+    TableFunctionSet set("cleanup_old_files");
+    set.AddFunction(TableFunction({}, UnreachableExecute, CleanupOldFilesNoArgsBind, UnreachableInit));
+    set.AddFunction(TableFunction({LogicalType::INTERVAL}, UnreachableExecute, CleanupIntervalBind, UnreachableInit));
+    RegisterTableFunctionSet(db, set);
+  }
+
+  // cleanup_orphaned_files(): no-args only (.bind pattern).
+  {
+    TableFunctionSet set("cleanup_orphaned_files");
+    set.AddFunction(TableFunction({}, UnreachableExecute, OrphanedNoArgsBind, UnreachableInit));
+    RegisterTableFunctionSet(db, set);
+  }
+
+  // Compaction + flush: bind_operator sets (no-args + (text, text)).
   RegisterBindOperatorSet(db, "merge_adjacent_files", MergeNoArgsBind, MergeTableArgsBind);
   RegisterBindOperatorSet(db, "rewrite_data_files", RewriteNoArgsBind, RewriteTableArgsBind);
-}
-
-void RegisterFlushInlinedDataFunction(DatabaseInstance &db) {
   RegisterBindOperatorSet(db, "flush_inlined_data", FlushNoArgsBind, FlushTableArgsBind);
 }
 

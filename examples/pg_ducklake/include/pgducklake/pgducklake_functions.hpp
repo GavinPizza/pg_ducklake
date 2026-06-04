@@ -17,12 +17,10 @@ class DatabaseInstance;
 
 namespace pgducklake {
 
-void RegisterWrapperMacros(duckdb::DatabaseInstance &db);
-void RegisterScalarMacros(duckdb::DatabaseInstance &db);
-void RegisterCleanupFunction(duckdb::DatabaseInstance &db);
-void RegisterCleanupOrphanedFilesFunction(duckdb::DatabaseInstance &db);
-void RegisterCompactionFunctions(duckdb::DatabaseInstance &db);
-void RegisterFlushInlinedDataFunction(duckdb::DatabaseInstance &db);
+// Register all DuckLake-function bridges (wrapper + scalar macros and the
+// overloaded TableFunctionSets) on a fresh DuckDB instance. Called from
+// DuckDBManager::OnPostInit.
+void RegisterDucklakeFunctions(duckdb::DatabaseInstance &db);
 
 /*
  * Returns true if the function with the given OID lives in the ducklake

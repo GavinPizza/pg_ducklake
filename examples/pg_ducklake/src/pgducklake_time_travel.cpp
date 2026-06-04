@@ -1,7 +1,8 @@
 /*
  * pgducklake_time_travel.cpp -- DuckDB table function for time-travel queries
  *
- * @scope duckdb-instance: register time_travel table function
+ * @scope duckdb-instance: build the time_travel table function set
+ *   (registered on the instance by RegisterDucklakeFunctions)
  *
  * Implements time_travel() as a DuckDB table function with three calling
  * conventions:
@@ -26,7 +27,6 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
 namespace duckdb {
@@ -97,14 +97,6 @@ TableFunctionSet GetTimeTravelFunctions() {
   set.AddFunction(TableFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::TIMESTAMP_TZ},
                                 TimeTravelExecute, TimeTravelSchemaTableBind, TimeTravelInit));
   return set;
-}
-
-void RegisterTimeTravelFunction(DatabaseInstance &db) {
-  auto functions = GetTimeTravelFunctions();
-  CreateTableFunctionInfo info(functions);
-  auto &catalog = Catalog::GetSystemCatalog(db);
-  auto transaction = CatalogTransaction::GetSystemTransaction(db);
-  catalog.CreateTableFunction(transaction, info);
 }
 
 } // namespace pgducklake

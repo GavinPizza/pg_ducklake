@@ -39,7 +39,6 @@
 #include "pgducklake/pgducklake_duckdb.hpp"
 #include "pgducklake/pgducklake_functions.hpp"
 #include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_time_travel.hpp"
 
 #include "pgddb/catalog/pgddb_storage.hpp"
 #include "pgddb/pgddb_duckdb.hpp"
@@ -145,13 +144,7 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	database->LoadStaticExtension<duckdb::DucklakeExtension>();
     database->LoadStaticExtension<PostgresScannerExtension>();
 	pgducklake::ResetDirectInsertCaches();
-    pgducklake::RegisterTimeTravelFunction(*context.db);
-    pgducklake::RegisterWrapperMacros(*context.db);
-    pgducklake::RegisterScalarMacros(*context.db);
-    pgducklake::RegisterCleanupFunction(*context.db);
-    pgducklake::RegisterCleanupOrphanedFilesFunction(*context.db);
-    pgducklake::RegisterCompactionFunctions(*context.db);
-    pgducklake::RegisterFlushInlinedDataFunction(*context.db);
+    pgducklake::RegisterDucklakeFunctions(*context.db);
 
   ducklake_attach_catalog();
 }

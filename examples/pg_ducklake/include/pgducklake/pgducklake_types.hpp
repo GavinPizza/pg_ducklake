@@ -22,6 +22,11 @@ public:
 	// Deparse a CALL of a ducklake-only procedure into the DuckDB statement
 	static std::string get_calldef(CallStmt *call);
 
+	// Validate a CREATE INDEX ... USING ducklake_sorted and deparse it to the
+	// "ALTER TABLE <rel> SET SORTED BY (...)" statement. Defined in
+	// pgducklake_sorted_by.cpp.
+	static std::string get_create_sorted_index_def(IndexStmt *stmt);
+
 protected:
 	char *column_type_name(Oid type_oid, int32_t typemod) override;
 };

@@ -49,6 +49,7 @@ struct ParamListInfoData;
 typedef struct ParamListInfoData *ParamListInfo;
 
 struct CallStmt;
+struct IndexStmt;
 struct PlannedStmt;
 
 typedef char *Pointer;

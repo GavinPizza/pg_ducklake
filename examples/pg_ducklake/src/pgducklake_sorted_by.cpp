@@ -26,6 +26,7 @@
 #include "pgducklake/pgducklake_table.hpp"
 
 #include "pgducklake/pgducklake_sorted_by.hpp"
+#include "pgducklake/pgducklake_types.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 #include <string>
@@ -370,11 +371,7 @@ std::string NodeToSQL(Node *node) {
 
 } // anonymous namespace
 
-void HandleCreateSortedIndex(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
-                             ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
-                             DestReceiver *dest, QueryCompletion *qc, ProcessUtility_hook_type prev_hook) {
-  IndexStmt *stmt = castNode(IndexStmt, pstmt->utilityStmt);
-
+std::string Ruleutils::get_create_sorted_index_def(IndexStmt *stmt) {
   if (stmt->concurrent)
     ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                     errmsg("CONCURRENTLY is not supported for ducklake_sorted indexes")));
@@ -438,13 +435,22 @@ void HandleCreateSortedIndex(PlannedStmt *pstmt, const char *query_string, bool 
       sort_spec += " NULLS LAST";
   }
 
+  return std::string("ALTER TABLE ") + pgddb_relation_name(relid) + " SET SORTED BY (" + sort_spec + ")";
+}
+
+void HandleCreateSortedIndex(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
+                             ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
+                             DestReceiver *dest, QueryCompletion *qc, ProcessUtility_hook_type prev_hook) {
+  IndexStmt *stmt = castNode(IndexStmt, pstmt->utilityStmt);
+
+  // Validate + deparse before PG creates the index, so a bad spec is rejected
+  // up front.
+  std::string query = Ruleutils::get_create_sorted_index_def(stmt);
+
   prev_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 
   if (syncing_from_metadata)
     return;
-
-  std::string query =
-      std::string("ALTER TABLE ") + pgddb_relation_name(relid) + " SET SORTED BY (" + sort_spec + ")";
 
   elog(DEBUG1, "ducklake_sorted: %s", query.c_str());
 

@@ -14,8 +14,9 @@ void InitTypeHooks();
 
 // Lookup OIDs for the pseudo-types declared in pg_ducklake--*.sql.
 // Returns InvalidOid before CREATE EXTENSION runs. Cached per-process.
-Oid LookupDucklakeDuckdbRowOid();
-Oid LookupDucklakeDuckdbStructOid();
+Oid DuckdbRowOid();
+Oid DuckdbStructOid();
+Oid VariantOid();
 
 class Ruleutils : public pgddb::DuckdbRuleutils {
 public:

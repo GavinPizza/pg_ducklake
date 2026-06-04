@@ -73,25 +73,17 @@ static Oid LookupDucklakeType(const char *type_name, Oid *cache) {
   return type_oid;
 }
 
-Oid LookupDucklakeDuckdbRowOid() {
+Oid DuckdbRowOid() {
   static Oid cached = InvalidOid;
   return LookupDucklakeType("duckdb_row", &cached);
 }
 
-Oid LookupDucklakeDuckdbStructOid() {
+Oid DuckdbStructOid() {
   static Oid cached = InvalidOid;
   return LookupDucklakeType("duckdb_struct", &cached);
 }
 
-static Oid DucklakeDuckdbRowOid() {
-  return LookupDucklakeDuckdbRowOid();
-}
-
-static Oid DucklakeDuckdbStructOid() {
-  return LookupDucklakeDuckdbStructOid();
-}
-
-static Oid DucklakeVariantOid() {
+Oid VariantOid() {
   static Oid cached = InvalidOid;
   return LookupDucklakeType("variant", &cached);
 }
@@ -109,7 +101,7 @@ static Oid DucklakeVariantOid() {
 // "variant" string (DuckDB's prepared-statement layer returns VARCHAR
 // regardless).
 static bool ConvertPostgresToBaseDuckColumnTypeHook(Oid pg_oid, duckdb::LogicalType &out) {
-  if (OidIsValid(pg_oid) && pg_oid == DucklakeVariantOid()) {
+  if (OidIsValid(pg_oid) && pg_oid == VariantOid()) {
     out = duckdb::LogicalType::VARIANT();
     return true;
   }
@@ -121,7 +113,7 @@ static bool GetPostgresDuckDBTypeHook(const duckdb::LogicalType &type, Oid &out)
   case duckdb::LogicalTypeId::STRUCT:
   case duckdb::LogicalTypeId::UNION:
   case duckdb::LogicalTypeId::MAP: {
-    Oid struct_oid = DucklakeDuckdbStructOid();
+    Oid struct_oid = DuckdbStructOid();
     if (OidIsValid(struct_oid)) {
       out = struct_oid;
       return true;
@@ -129,7 +121,7 @@ static bool GetPostgresDuckDBTypeHook(const duckdb::LogicalType &type, Oid &out)
     return false;
   }
   case duckdb::LogicalTypeId::VARIANT: {
-    Oid variant_oid = DucklakeVariantOid();
+    Oid variant_oid = VariantOid();
     if (OidIsValid(variant_oid)) {
       out = variant_oid;
       return true;
@@ -143,7 +135,7 @@ static bool GetPostgresDuckDBTypeHook(const duckdb::LogicalType &type, Oid &out)
 
 static bool ConvertDuckToPostgresValueHook(Oid pg_oid, duckdb::Value &value, TupleTableSlot *slot, uint64_t col) {
   if (OidIsValid(pg_oid) &&
-      (pg_oid == DucklakeDuckdbStructOid() || pg_oid == DucklakeVariantOid())) {
+      (pg_oid == DuckdbStructOid() || pg_oid == VariantOid())) {
     slot->tts_values[col] = pgddb::ConvertToStringDatum(value);
     return true;
   }
@@ -157,8 +149,8 @@ static bool ConvertDuckToPostgresValueHook(Oid pg_oid, duckdb::Value &value, Tup
 // --------------------------------------------------------------------------
 
 static bool IsFakeTypeHook(Oid type_oid) {
-  return OidIsValid(type_oid) && (type_oid == DucklakeDuckdbRowOid() || type_oid == DucklakeDuckdbStructOid() ||
-                                  type_oid == DucklakeVariantOid());
+  return OidIsValid(type_oid) && (type_oid == DuckdbRowOid() || type_oid == DuckdbStructOid() ||
+                                  type_oid == VariantOid());
 }
 
 // get_const_expr otherwise tacks "::ducklake.variant" onto every literal whose
@@ -172,13 +164,13 @@ static int ShowTypeHook(Const *constval, int original_showtype) {
 }
 
 static bool VarIsRowHook(Var *var) {
-  return var && var->vartype == DucklakeDuckdbRowOid();
+  return var && var->vartype == DuckdbRowOid();
 }
 
 static bool FuncReturnsRowHook(RangeTblFunction *rtfunc) {
   if (rtfunc && rtfunc->funcexpr && IsA(rtfunc->funcexpr, FuncExpr)) {
     FuncExpr *fexpr = castNode(FuncExpr, rtfunc->funcexpr);
-    if (fexpr->funcresulttype == DucklakeDuckdbRowOid())
+    if (fexpr->funcresulttype == DuckdbRowOid())
       return true;
   }
   return false;
@@ -195,7 +187,7 @@ static SubscriptingRef *StripFirstSubscriptHook(SubscriptingRef *sbsref, StringI
     return sbsref;
   }
   Var *var = (Var *)sbsref->refexpr;
-  if (var->vartype != DucklakeDuckdbRowOid()) {
+  if (var->vartype != DuckdbRowOid()) {
     return sbsref;
   }
   if (sbsref->refupperindexpr == NIL) {
@@ -224,7 +216,7 @@ static SubscriptingRef *StripFirstSubscriptHook(SubscriptingRef *sbsref, StringI
 // virtual override (not a registration hook) because the CREATE TABLE deparser
 // is invoked directly by pg_ducklake's DDL path via pgducklake::Ruleutils.
 char *Ruleutils::column_type_name(Oid type_oid, int32_t /*typemod*/) {
-  if (OidIsValid(type_oid) && type_oid == DucklakeVariantOid()) {
+  if (OidIsValid(type_oid) && type_oid == VariantOid()) {
     return pstrdup("VARIANT");
   }
   return NULL;
@@ -369,4 +361,13 @@ DECLARE_PG_FUNCTION(duckdb_struct_out) {
 DECLARE_PG_FUNCTION(duckdb_struct_subscript) {
   PG_RETURN_POINTER(&pgddb::pg::duckdb_struct_subscript_routines);
 }
+
+DECLARE_PG_FUNCTION(ducklake_variant_in) {
+  return DirectFunctionCall1(textin, PG_GETARG_DATUM(0));
+}
+
+DECLARE_PG_FUNCTION(ducklake_variant_out) {
+  return DirectFunctionCall1(textout, PG_GETARG_DATUM(0));
+}
+
 }

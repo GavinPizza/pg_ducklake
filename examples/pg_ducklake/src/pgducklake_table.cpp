@@ -62,27 +62,6 @@ extern "C" {
 #include "pgducklake/pgducklake_types.hpp"
 
 /* ================================================================
- * Variant type OID cache (used by create/alter table triggers)
- * ================================================================ */
-
-namespace pgducklake {
-
-static Oid variant_type_oid = InvalidOid;
-
-Oid GetVariantTypeOid() {
-  if (!OidIsValid(variant_type_oid)) {
-    Oid nsp_oid = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, true);
-    if (OidIsValid(nsp_oid)) {
-      variant_type_oid =
-          GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid, CStringGetDatum("variant"), ObjectIdGetDatum(nsp_oid));
-    }
-  }
-  return variant_type_oid;
-}
-
-} // namespace pgducklake
-
-/* ================================================================
  * Table Access Method callbacks
  * ================================================================ */
 
@@ -546,7 +525,7 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
   auto is_ducklake_table = SPI_processed > 0;
   if (!is_ducklake_table) {
     /* Reject variant columns on non-ducklake tables */
-    Oid variant_oid = pgducklake::GetVariantTypeOid();
+    Oid variant_oid = pgducklake::VariantOid();
     if (OidIsValid(variant_oid)) {
       StringInfoData check_sql;
       initStringInfo(&check_sql);
@@ -791,7 +770,7 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 
   if (SPI_processed == 0) {
     /* Reject variant columns added to non-ducklake tables */
-    Oid variant_oid = pgducklake::GetVariantTypeOid();
+    Oid variant_oid = pgducklake::VariantOid();
     if (OidIsValid(variant_oid)) {
       StringInfoData check_sql;
       initStringInfo(&check_sql);

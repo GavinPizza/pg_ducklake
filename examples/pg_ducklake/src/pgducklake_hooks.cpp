@@ -66,9 +66,6 @@ extern "C" {
 #include "pgddb/pgddb_ruleutils.h"
 }
 
-/* Include after PG headers so Oid is defined. */
-#include "pgducklake/pgducklake_variant.hpp"
-
 namespace {
 
 planner_hook_type prev_planner_hook = NULL;
@@ -221,7 +218,7 @@ default_mutate:
 }
 
 static Query *RewriteVariantOperators(Query *parse) {
-  Oid variant_oid = pgducklake::GetVariantTypeOid();
+  Oid variant_oid = pgducklake::VariantOid();
   if (!OidIsValid(variant_oid))
     return parse;
 
@@ -535,7 +532,7 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
   if (!stmt || !stmt->query)
     return;
 
-  Oid duckdb_row_oid = pgducklake::LookupDucklakeDuckdbRowOid();
+  Oid duckdb_row_oid = pgducklake::DuckdbRowOid();
   if (!OidIsValid(duckdb_row_oid))
     return;
 

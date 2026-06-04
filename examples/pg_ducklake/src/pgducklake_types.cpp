@@ -29,6 +29,13 @@
 // of pgddb_ruleutils.h, which includes postgres.h via its own extern "C".
 #include "pgddb/pgddb_types.hpp"
 
+// KeywordHelper for the CALL deparser (Ruleutils::get_calldef) -- a DuckDB
+// header, so it must parse before postgres.h (FATAL macro collision).
+#include <duckdb/parser/keyword_helper.hpp>
+
+#include <string>
+#include <vector>
+
 #include "pgducklake/pgducklake_types.hpp"
 #include "pgducklake/pgducklake_defs.hpp"
 
@@ -221,6 +228,93 @@ char *Ruleutils::column_type_name(Oid type_oid, int32_t /*typemod*/) {
     return pstrdup("VARIANT");
   }
   return NULL;
+}
+
+// Render a CALL argument Datum as a DuckDB SQL literal. Numeric types print
+// bare; everything else is single-quoted via DuckDB's KeywordHelper.
+static std::string DatumToSqlLiteral(Datum value, Oid type_oid, bool isnull) {
+  if (isnull)
+    return "NULL";
+
+  Oid typoutput;
+  bool typisvarlena;
+  getTypeOutputInfo(type_oid, &typoutput, &typisvarlena);
+  char *val_str = OidOutputFunctionCall(typoutput, value);
+
+  std::string result;
+  switch (type_oid) {
+  case BOOLOID:
+  case INT2OID:
+  case INT4OID:
+  case INT8OID:
+  case FLOAT4OID:
+  case FLOAT8OID:
+  case NUMERICOID:
+    result = val_str;
+    break;
+  default:
+    result = duckdb::KeywordHelper::WriteQuoted(val_str);
+    break;
+  }
+
+  pfree(val_str);
+  return result;
+}
+
+// Deparse a CALL of a ducklake-only procedure into the DuckDB statement
+// "CALL pgducklake.<proc>(args, named => ...)". See Ruleutils in the header.
+std::string Ruleutils::get_calldef(CallStmt *call) {
+  FuncExpr *funcexpr = call->funcexpr;
+
+  char *proc_name = get_func_name(funcexpr->funcid);
+  if (!proc_name)
+    elog(ERROR, "could not find procedure with OID %u", funcexpr->funcid);
+
+  std::vector<std::string> positional_args;
+  std::string named_params;
+  ListCell *lc;
+
+  foreach (lc, funcexpr->args) {
+    Node *arg = (Node *)lfirst(lc);
+
+    if (!IsA(arg, Const))
+      ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("non-constant arguments are not supported in "
+                                                                     "DuckDB-routed procedures")));
+
+    Const *c = (Const *)arg;
+
+    if (c->consttype == REGCLASSOID && !c->constisnull) {
+      Oid relid = DatumGetObjectId(c->constvalue);
+      char *table_name = get_rel_name(relid);
+      if (!table_name)
+        elog(ERROR, "could not find relation with OID %u", relid);
+      char *schema_name = get_namespace_name(get_rel_namespace(relid));
+      if (!schema_name)
+        elog(ERROR, "could not find namespace for relation with OID %u", relid);
+
+      named_params += ", table_name => " + duckdb::KeywordHelper::WriteQuoted(table_name);
+      named_params += ", schema => " + duckdb::KeywordHelper::WriteQuoted(schema_name);
+    } else if (c->consttype == REGNAMESPACEOID && !c->constisnull) {
+      Oid nspid = DatumGetObjectId(c->constvalue);
+      char *schema_name = get_namespace_name(nspid);
+      if (!schema_name)
+        elog(ERROR, "could not find namespace with OID %u", nspid);
+
+      named_params += ", schema => " + duckdb::KeywordHelper::WriteQuoted(schema_name);
+    } else {
+      positional_args.push_back(DatumToSqlLiteral(c->constvalue, c->consttype, c->constisnull));
+    }
+  }
+
+  std::string args_joined;
+  for (size_t i = 0; i < positional_args.size(); i++) {
+    if (i > 0)
+      args_joined += ", ";
+    args_joined += positional_args[i];
+  }
+
+  return "CALL " PGDUCKLAKE_DUCKDB_CATALOG "." + duckdb::KeywordHelper::WriteOptionallyQuoted(proc_name) + "(" +
+         args_joined + named_params + ")";
 }
 
 void InitTypeHooks() {

@@ -1,10 +1,7 @@
 #pragma once
 
 #include "pgddb/pgddb_ddl.hpp"
-
-extern "C" {
-#include "postgres.h"
-}
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
 
@@ -20,9 +17,11 @@ void InitTypeHooks();
 Oid LookupDucklakeDuckdbRowOid();
 Oid LookupDucklakeDuckdbStructOid();
 
-// pg_ducklake's DDL deparser: maps ducklake.variant -> "VARIANT" in the CREATE
-// TABLE deparser so DuckLake stores variant columns as the native DuckDB type.
 class Ruleutils : public pgddb::DuckdbRuleutils {
+public:
+	// Deparse a CALL of a ducklake-only procedure into the DuckDB statement
+	static std::string get_calldef(CallStmt *call);
+
 protected:
 	char *column_type_name(Oid type_oid, int32_t typemod) override;
 };

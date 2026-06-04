@@ -48,6 +48,7 @@ typedef unsigned int Oid;
 struct ParamListInfoData;
 typedef struct ParamListInfoData *ParamListInfo;
 
+struct CallStmt;
 struct PlannedStmt;
 
 typedef char *Pointer;

@@ -27,7 +27,6 @@
 #include "pgddb/pgddb_table_am.hpp"
 
 #include "pgducklake/pgducklake_hooks.hpp"
-#include "pgducklake/pgducklake_call_handler.hpp"
 #include "pgducklake/pgducklake_copy_from.hpp"
 #include "pgducklake/pgducklake_defs.hpp"
 #include "pgducklake/pgducklake_direct_insert.hpp"
@@ -417,7 +416,7 @@ static bool QueryReferencesDucklakeOnlyFunc(Node *node, void *context) {
 #endif
 }
 
-PlannedStmt *DucklakePlannerHook(Query *parse, const char *query_string, int cursor_options,
+static PlannedStmt *DucklakePlannerHook(Query *parse, const char *query_string, int cursor_options,
                                  ParamListInfo bound_params) {
   if (pgducklake::enable_direct_insert) {
     PlannedStmt *direct_insert_plan = pgducklake::TryCreateDirectInsertPlan(parse, bound_params);
@@ -612,7 +611,7 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
   MemoryContextSwitchTo(oldcontext);
 }
 
-void DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
+static void DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
                          ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
                          DestReceiver *dest, QueryCompletion *qc) {
   if (IsCommitUtilityStmt(pstmt) && pgducklake::DuckDBManager::IsInitialized()) {
@@ -629,7 +628,19 @@ void DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read
   if (IsA(parsetree, CallStmt)) {
     CallStmt *call = castNode(CallStmt, parsetree);
     if (call->funcexpr && IsDucklakeOnlyProcedure(call->funcexpr->funcid)) {
-      pgducklake::HandleDuckdbCall(call, query_string);
+      // Deparse the CALL to DuckDB SQL and run it. DuckDBQueryOrThrow expects a
+      // snapshot (set in the planner/executor); the utility hook fires before
+      // any planner pass, so push one for the duration of the call.
+      std::string query = pgducklake::Ruleutils::get_calldef(call);
+      elog(DEBUG2, "[PGDuckLake] Executing CALL: %s", query.c_str());
+      PushActiveSnapshot(GetTransactionSnapshot());
+      try {
+        pgducklake::DuckDBQueryOrThrow(query);
+      } catch (const std::exception &e) {
+        PopActiveSnapshot();
+        ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("%s", pgducklake::DuckDBErrorMessage(e).c_str())));
+      }
+      PopActiveSnapshot();
       if (qc)
         SetQueryCompletion(qc, CMDTAG_CALL, 0);
       return;

@@ -230,6 +230,10 @@ void InitTypeHooks() {
   pgddb::Register_GetPostgresDuckDBType(GetPostgresDuckDBTypeHook);
   pgddb::Register_ConvertDuckToPostgresValue(ConvertDuckToPostgresValueHook);
 
+  // DuckLake catalog queries return unsupported-precision NUMERICs (e.g. SUM()
+  // aggregates in the count(*) row-count optimization) that must map to DOUBLE.
+  pgddb::convert_unsupported_numeric_to_double = true;
+
   // Register pg_ducklake's deparser (ruleutils) hooks. Row-refname `.*` expansion
   // and the bare-::numeric cast suppression are now generic in the kernel.
   Register_pgddb_is_fake_type(IsFakeTypeHook);

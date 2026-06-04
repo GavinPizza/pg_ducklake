@@ -10,6 +10,7 @@
  */
 
 #include "pgducklake/pgducklake_metadata_manager.hpp"
+#include "pgddb/pgddb_types.hpp"
 #include "pgducklake/pgducklake_sync.hpp"
 
 // DuckDB headers first
@@ -33,7 +34,6 @@
 // Our vendored type conversion utilities
 #include "pgducklake/pgducklake_defs.hpp"
 #include "pgducklake/pgducklake_guc.hpp"
-#include "pgducklake/pgducklake_pg_types.hpp"
 
 // PostgreSQL headers
 extern "C" {
@@ -97,10 +97,12 @@ static void InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTabl
   /* Cache per-column attribute metadata outside the row loop. */
   auto attlen = (int16 *)palloc(natts * sizeof(int16));
   auto atttypid = (Oid *)palloc(natts * sizeof(Oid));
+  auto column_append = (pgddb::PostgresToDuckValueFn *)palloc(natts * sizeof(pgddb::PostgresToDuckValueFn));
   for (int col = 0; col < natts; col++) {
     auto attr = TupleDescAttr(tupdesc, col);
     attlen[col] = attr->attlen;
     atttypid[col] = attr->atttypid;
+    column_append[col] = pgddb::GetPostgresToDuckValueFn(attr->atttypid, output.data[col]);
   }
 
   for (int row = 0; row < num_tuples; row++) {
@@ -109,53 +111,26 @@ static void InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTabl
 
     for (int col = 0; col < natts; col++) {
       auto &result = output.data[col];
+      auto &array_mask = duckdb::FlatVector::Validity(result);
 
       if (nulls[col]) {
-        auto &array_mask = duckdb::FlatVector::Validity(result);
         array_mask.SetInvalid(row);
       } else {
         Datum datum = values[col];
-
-        if (attlen[col] == -1) {
-          bool should_free = false;
-          Datum detoasted_value = DetoastPostgresDatum(reinterpret_cast<varlena *>(datum), &should_free);
-          ConvertPostgresToDuckValue(atttypid[col], detoasted_value, result, row);
-          if (should_free) {
-            pfree(DatumGetPointer(detoasted_value));
-          }
-        } else {
-          ConvertPostgresToDuckValue(atttypid[col], datum, result, row);
-        }
+        column_append[col](result, datum, row);
       }
     }
   }
 
   pfree(attlen);
   pfree(atttypid);
+  pfree(column_append);
 }
-
-/*
- * RAII guard for libpgddb's GlobalProcessLock. DuckLake metadata reads run
- * on a DuckDB worker thread that shares the PG backend with other DuckDB
- * threads. We must hold this lock while calling any PG API (SPI, snapshots,
- * etc.) to prevent concurrent access from other DuckDB threads.
- */
-class GlobalProcessLockGuard {
-public:
-  GlobalProcessLockGuard() {
-    ::pgddb::GlobalProcessLock::GetLock().lock();
-  }
-  ~GlobalProcessLockGuard() {
-    ::pgddb::GlobalProcessLock::GetLock().unlock();
-  }
-  GlobalProcessLockGuard(const GlobalProcessLockGuard &) = delete;
-  GlobalProcessLockGuard &operator=(const GlobalProcessLockGuard &) = delete;
-};
 
 static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::string &query) {
   elog(DEBUG1, "Creating SPI result for query: %s", query.c_str());
 
-  GlobalProcessLockGuard global_lock;
+  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();
@@ -232,7 +207,7 @@ static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::str
     names.push_back(NameStr(attr->attname));
 
     // Convert Postgres type to DuckDB type
-    types.push_back(ConvertPostgresToDuckColumnType(attr));
+    types.push_back(pgddb::ConvertPostgresToDuckColumnType(attr));
   }
 
   // Create a ColumnDataCollection to store the results
@@ -291,7 +266,7 @@ static void SubstituteCatalogPlaceholders(duckdb::string &query) {
 static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
   elog(DEBUG1, "CreateSPIExecuteInSubtransaction: %s", query.c_str());
 
-  GlobalProcessLockGuard global_lock;
+  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();
@@ -527,7 +502,7 @@ bool PgDuckLakeMetadataManager::IsInitialized() {
  * would cause infinite recursion.
  */
 void PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
-  GlobalProcessLockGuard global_lock;
+  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
   pgddb::PostgresScopedStackReset scoped_stack_reset;
 
   SPI_connect();

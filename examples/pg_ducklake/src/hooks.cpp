@@ -19,25 +19,20 @@
  *   a subsequent CREATE EXTENSION can re-attach a fresh catalog
  */
 
-/* libpgddb planner pulls in duckdb.hpp -- must parse before any header
- * that defines PG's FATAL macro (i.e. before anything that includes
- * postgres.h). pgducklake_{copy_from,direct_insert,sorted_by}.hpp
- * do, so this stays at the top. */
-#include "pgddb/pgddb_planner.hpp"
-#include "pgddb/pgddb_table_am.hpp"
-
-#include "pgducklake/copy_from.hpp"
 #include "pgducklake/constants.hpp"
+#include "pgducklake/copy_from.hpp"
 #include "pgducklake/direct_insert.hpp"
 #include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/ducklake_fdw.hpp"
+#include "pgducklake/ducklake_types.hpp"
 #include "pgducklake/functions.hpp"
 #include "pgducklake/guc.hpp"
 #include "pgducklake/sorted_by.hpp"
-#include "pgducklake/ducklake_types.hpp"
-#include "pgddb/pgddb_duckdb.hpp"
 
 #include <string>
+
+#include "pgddb/pgddb_planner.hpp"
+#include "pgddb/pgddb_table_am.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -45,6 +40,7 @@ extern "C" {
 #include "access/relation.h"
 #include "access/table.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_proc.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -53,7 +49,6 @@ extern "C" {
 #include "parser/analyze.h"
 #include "parser/parse_func.h"
 #include "tcop/tcopprot.h"
-#include "catalog/pg_proc.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -666,8 +661,11 @@ static void DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bo
   if (IsA(parsetree, IndexStmt)) {
     IndexStmt *idx = castNode(IndexStmt, parsetree);
     if (idx->accessMethod && strcmp(idx->accessMethod, PGDUCKLAKE_SORTED_AM) == 0) {
-      pgducklake::HandleCreateSortedIndex(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc,
-                                          prev_process_utility_hook);
+      // Validate + deparse before PG creates the index (rejects a bad spec up
+      // front), let PG create the catalog index, then apply the sort to DuckDB.
+      std::string query = pgducklake::Ruleutils::get_create_sorted_index_def(idx);
+      prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+      pgducklake::ApplyCreateSortedIndex(query);
       return;
     }
   }

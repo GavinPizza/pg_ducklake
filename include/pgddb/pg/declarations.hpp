@@ -49,6 +49,8 @@ struct ParamListInfoData;
 typedef struct ParamListInfoData *ParamListInfo;
 
 struct CallStmt;
+struct CopyStmt;
+struct DropStmt;
 struct IndexStmt;
 struct PlannedStmt;
 

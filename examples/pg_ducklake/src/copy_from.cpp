@@ -13,11 +13,9 @@
  * end_snapshot BIGINT, <user_col1> <type1>, ...).
  */
 
-/* DuckDB headers must parse before postgres.h (FATAL macro conflict). */
-#include "pgducklake/pgducklake_metadata_manager.hpp"
-
-#include "pgducklake/copy_from.hpp"
 #include "pgducklake/catalog_sync.hpp"
+#include "pgducklake/copy_from.hpp"
+#include "pgducklake/pgducklake_metadata_manager.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -108,7 +106,7 @@ static Relation OpenInlinedDataTable(uint64_t table_id, uint64_t schema_version,
   return table_open(relid, lockmode);
 }
 
-uint64 DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
+uint64_t DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
   Relation user_rel = table_openrv(stmt->relation, RowExclusiveLock);
   Oid user_relid = RelationGetRelid(user_rel);
 

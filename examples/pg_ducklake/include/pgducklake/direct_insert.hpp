@@ -1,3 +1,5 @@
+#pragma once
+
 /*
  * direct_insert.hpp
  *
@@ -13,21 +15,7 @@
  * data table when ducklake.enable_direct_insert = true.
  */
 
-#pragma once
-
-#include <stdint.h>
-
-extern "C" {
-#include "postgres.h"
-
-#include "fmgr.h"
-#include "nodes/params.h"
-#include "nodes/parsenodes.h"
-#include "nodes/pg_list.h"
-#include "nodes/plannodes.h"
-
-#include "optimizer/planner.h"
-}
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
 
@@ -107,13 +95,3 @@ const char *DirectInsertPatternName(DirectInsertPattern pattern);
 const char *DirectInsertReasonName(DirectInsertReason reason);
 
 } // namespace pgducklake
-
-extern "C" {
-
-/* SRF: (pattern text, reason text, count bigint). */
-Datum ducklake_direct_insert_stats(PG_FUNCTION_ARGS);
-
-/* Zero all counters. */
-Datum ducklake_reset_direct_insert_stats(PG_FUNCTION_ARGS);
-
-} // extern "C"

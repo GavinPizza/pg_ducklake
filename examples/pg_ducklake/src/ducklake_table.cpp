@@ -11,23 +11,22 @@
  * PostgreSQL to DuckDB.
  */
 
+#include "pgducklake/catalog_sync.hpp"
 #include "pgducklake/constants.hpp"
 #include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/ducklake_types.hpp"
 #include "pgducklake/guc.hpp"
-#include "pgducklake/catalog_sync.hpp"
-
-#include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
-
-#include "pgddb/utility/cpp_wrapper.hpp"
-#include "pgddb/pgddb_table_am.hpp"
 
 #include <string>
 #include <vector>
 
+#include "pgddb/pgddb_table_am.hpp"
+
+#include <common/ducklake_types.hpp>
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
-#include "common/ducklake_types.hpp"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -55,11 +54,6 @@ extern "C" {
 
 #include "pgddb/pgddb_ruleutils.h"
 }
-
-// pgducklake::Ruleutils (the DDL deparser with the variant->VARIANT override).
-// pgddb_ddl.hpp is postgres.h-free, and postgres.h is already included above,
-// so this is safe after the extern "C" block.
-#include "pgducklake/ducklake_types.hpp"
 
 /* ================================================================
  * Table Access Method callbacks

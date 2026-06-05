@@ -9,18 +9,14 @@
  * sync_handlers array.
  */
 
-#include "pgducklake/constants.hpp"
-#include "pgducklake/guc.hpp"
 #include "pgducklake/catalog_sync.hpp"
-
-#include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
-
-#include "pgducklake/sorted_by.hpp"
 #include "pgducklake/ducklake_table.hpp"
-
-#include "pgddb/utility/cpp_wrapper.hpp"
+#include "pgducklake/guc.hpp"
+#include "pgducklake/sorted_by.hpp"
 
 #include <string>
+
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"

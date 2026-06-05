@@ -30,9 +30,9 @@
 #include "pgducklake/guc.hpp"
 #include "pgducklake/maintenance_worker.hpp"
 
-#include <duckdb/parser/keyword_helper.hpp>
-
 #include <string>
+
+#include <duckdb/parser/keyword_helper.hpp>
 
 extern "C" {
 #include "postgres.h"

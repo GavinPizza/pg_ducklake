@@ -18,16 +18,16 @@
  * input.table_function with the resolved scan function.
  */
 
-#include "pgducklake/time_travel.hpp"
 #include "pgducklake/constants.hpp"
+#include "pgducklake/time_travel.hpp"
 
-#include "storage/ducklake_scan.hpp"
-#include "duckdb/planner/tableref/bound_at_clause.hpp"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_transaction.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/parser/qualified_name.hpp"
+#include <duckdb/catalog/catalog.hpp>
+#include <duckdb/catalog/catalog_entry/table_catalog_entry.hpp>
+#include <duckdb/catalog/catalog_transaction.hpp>
+#include <duckdb/main/database.hpp>
+#include <duckdb/parser/qualified_name.hpp>
+#include <duckdb/planner/tableref/bound_at_clause.hpp>
+#include <storage/ducklake_scan.hpp>
 
 namespace duckdb {
 // Defined in ducklake_table_insertions.cpp (no public header available)

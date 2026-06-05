@@ -11,11 +11,12 @@
  *   CALL ducklake.freeze('/path/to/output.ducklake');
  */
 
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
-#include "pgducklake/constants.hpp"
-#include "pgducklake/duckdb_manager.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {

@@ -24,25 +24,18 @@
  * consumers can coexist in the same backend.
  */
 
-// pgddb_types.hpp pulls in DuckDB headers and must parse before any PG
-// header (FATAL macro collision in DuckDB's exception.hpp). Keep it ahead
-// of pgddb_ruleutils.h, which includes postgres.h via its own extern "C".
-#include "pgddb/pgddb_types.hpp"
-
-// KeywordHelper for the CALL deparser (Ruleutils::get_calldef) -- a DuckDB
-// header, so it must parse before postgres.h (FATAL macro collision).
-#include <duckdb/parser/keyword_helper.hpp>
+#include "pgducklake/constants.hpp"
+#include "pgducklake/ducklake_types.hpp"
 
 #include <string>
 #include <vector>
 
-#include "pgducklake/ducklake_types.hpp"
-#include "pgducklake/constants.hpp"
+#include "pgddb/pgddb_types.hpp"
+
+#include <duckdb/parser/keyword_helper.hpp>
 
 extern "C" {
 #include "postgres.h"
-
-#include "pgddb/pgddb_ruleutils.h"
 
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
@@ -53,6 +46,8 @@ extern "C" {
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+
+#include "pgddb/pgddb_ruleutils.h"
 }
 
 namespace pgducklake {

@@ -13,25 +13,22 @@
  * the utility hook translates into ALTER TABLE ... SET SORTED BY in DuckDB.
  *
  * Also contains: ducklake.set_sort/reset_sort SQL procedures,
- * HandleCreateSortedIndex, HandleDropSortedIndex, FindSortedIndexDrops,
+ * ApplyCreateSortedIndex, HandleDropSortedIndex, FindSortedIndexDrops,
  * SyncSortKeys, and pg_class sync helpers called from hooks.cpp
  * and catalog_sync.cpp.
  */
 
 #include "pgducklake/constants.hpp"
 #include "pgducklake/duckdb_manager.hpp"
-
-#include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
-
 #include "pgducklake/ducklake_table.hpp"
-
-#include "pgducklake/sorted_by.hpp"
 #include "pgducklake/ducklake_types.hpp"
-#include "pgddb/utility/cpp_wrapper.hpp"
+#include "pgducklake/sorted_by.hpp"
 
 #include <string>
 
 #include <duckdb/common/string_util.hpp>
+
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -45,14 +42,15 @@ extern "C" {
 #include "catalog/pg_class.h"
 #include "commands/defrem.h"
 #include "executor/spi.h"
+#include "nodes/parsenodes.h"
 #include "nodes/pathnodes.h"
 #include "nodes/value.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/snapmgr.h"
-#include "utils/array.h"
 #include "utils/syscache.h"
 
 #include "pgddb/pgddb_ruleutils.h"
@@ -438,17 +436,7 @@ std::string Ruleutils::get_create_sorted_index_def(IndexStmt *stmt) {
   return std::string("ALTER TABLE ") + pgddb_relation_name(relid) + " SET SORTED BY (" + sort_spec + ")";
 }
 
-void HandleCreateSortedIndex(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
-                             ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
-                             DestReceiver *dest, QueryCompletion *qc, ProcessUtility_hook_type prev_hook) {
-  IndexStmt *stmt = castNode(IndexStmt, pstmt->utilityStmt);
-
-  // Validate + deparse before PG creates the index, so a bad spec is rejected
-  // up front.
-  std::string query = Ruleutils::get_create_sorted_index_def(stmt);
-
-  prev_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
-
+void ApplyCreateSortedIndex(const std::string &query) {
   if (syncing_from_metadata)
     return;
 

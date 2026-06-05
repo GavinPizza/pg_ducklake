@@ -4,15 +4,12 @@
  * @scope extension: ducklake.set_partition, ducklake.reset_partition procs
  */
 
-#include "pgducklake/constants.hpp"
 #include "pgducklake/duckdb_manager.hpp"
-
-#include <duckdb/common/error_data.hpp> /* must precede postgres.h (FATAL macro) */
-
 #include "pgducklake/ducklake_table.hpp"
-#include "pgddb/utility/cpp_wrapper.hpp"
 
 #include <string>
+
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"

@@ -1,3 +1,5 @@
+#pragma once
+
 // PostgreSQL extension name
 #define PGDUCKLAKE_PG_EXTENSION "pg_ducklake"
 

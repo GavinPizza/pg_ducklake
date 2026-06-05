@@ -43,33 +43,32 @@
  *     -> TableFunctionSet bind replaces with ducklake_cleanup_old_files()
  */
 
-#include "pgducklake/functions.hpp"
 #include "pgducklake/constants.hpp"
+#include "pgducklake/functions.hpp"
 #include "pgducklake/time_travel.hpp"
 
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_transaction.hpp"
-#include "duckdb/catalog/default/default_functions.hpp"
-#include "duckdb/catalog/default/default_table_functions.hpp"
-#include "duckdb/common/types/interval.hpp"
-#include "duckdb/common/types/timestamp.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include <cstring>
+
+#include <duckdb/catalog/catalog.hpp>
+#include <duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp>
+#include <duckdb/catalog/catalog_transaction.hpp>
+#include <duckdb/catalog/default/default_functions.hpp>
+#include <duckdb/catalog/default/default_table_functions.hpp>
+#include <duckdb/common/types/interval.hpp>
+#include <duckdb/common/types/timestamp.hpp>
+#include <duckdb/main/database.hpp>
+#include <duckdb/parser/parsed_data/create_table_function_info.hpp>
 
 extern "C" {
 #include "postgres.h"
 
-#include "fmgr.h"
-
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
+#include "fmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 }
-
-#include <cstring>
 
 namespace pgducklake {
 

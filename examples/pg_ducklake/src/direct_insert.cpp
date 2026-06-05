@@ -24,16 +24,16 @@
  * the "outcome counters" section near the end of this file.
  */
 
-#include "duckdb.hpp"
-
+#include "pgducklake/catalog_sync.hpp"
 #include "pgducklake/direct_insert.hpp"
 #include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/guc.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
-#include "pgducklake/catalog_sync.hpp"
 
 #include <cstring>
 #include <unordered_map>
+
+#include <duckdb.hpp>
 
 extern "C" {
 #include "postgres.h"

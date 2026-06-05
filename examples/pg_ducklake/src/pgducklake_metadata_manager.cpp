@@ -9,33 +9,28 @@
  * SQL against the ducklake_* metadata tables in PostgreSQL.
  */
 
-#include "pgducklake/pgducklake_metadata_manager.hpp"
-#include "pgddb/pgddb_types.hpp"
 #include "pgducklake/catalog_sync.hpp"
-
-// DuckDB headers first
-#include "duckdb/common/allocator.hpp"
-#include "duckdb/common/enums/statement_type.hpp"
-#include "duckdb/common/exception.hpp"
-#include "duckdb/common/types.hpp"
-#include "duckdb/common/types/column/column_data_collection.hpp"
-#include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/common/types/value.hpp"
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
-#include <duckdb/common/string_util.hpp>
-
-// libpgddb utilities (PostgresScopedStackReset); pulls duckdb headers, so it
-// must precede postgres.h.
-#include "pgddb/pgddb_utils.hpp"
-
-#include "common/ducklake_util.hpp"
-
-// Our vendored type conversion utilities
 #include "pgducklake/constants.hpp"
 #include "pgducklake/guc.hpp"
+#include "pgducklake/pgducklake_metadata_manager.hpp"
 
-// PostgreSQL headers
+#include <cstring>
+
+#include "pgddb/pgddb_types.hpp"
+#include "pgddb/pgddb_utils.hpp"
+
+#include <common/ducklake_util.hpp>
+#include <duckdb/common/allocator.hpp>
+#include <duckdb/common/enums/statement_type.hpp>
+#include <duckdb/common/exception.hpp>
+#include <duckdb/common/string_util.hpp>
+#include <duckdb/common/types.hpp>
+#include <duckdb/common/types/column/column_data_collection.hpp>
+#include <duckdb/common/types/data_chunk.hpp>
+#include <duckdb/common/types/value.hpp>
+#include <duckdb/main/client_context.hpp>
+#include <duckdb/main/materialized_query_result.hpp>
+
 extern "C" {
 #include "postgres.h"
 
@@ -53,9 +48,9 @@ extern "C" {
 #include "utils/syscache.h"
 }
 
-// Include after PostgreSQL headers (since these also include postgres.h)
+// pgddb_process_lock.hpp transitively pulls postgres.h, so it follows the
+// PostgreSQL header block.
 #include "pgddb/pgddb_process_lock.hpp"
-#include <cstring>
 
 namespace pgducklake {
 static duckdb::StatementType ConvertSPIResultToDuckStatementType(int result) {

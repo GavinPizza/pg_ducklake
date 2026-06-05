@@ -1,14 +1,15 @@
+#pragma once
+
 /*
  * ducklake_table.hpp -- Table lifecycle: AM handler, DDL triggers, sync.
  *
  * Declares EnsureDuckLakeTable (used by partition and sorted_by procs)
  * and table sync handlers (used by the snapshot trigger framework).
  */
-#pragma once
+
+#include "pgddb/pg/declarations.hpp"
 
 extern "C" {
-#include "postgres.h"
-
 /* Validates that relid uses the ducklake table AM. Errors if not. */
 void EnsureDuckLakeTable(Oid relid);
 }

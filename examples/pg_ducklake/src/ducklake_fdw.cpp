@@ -25,22 +25,21 @@
  * and populates columns from the prepared-statement result types.
  */
 
-#include "duckdb/common/string_util.hpp"
-#include "duckdb/common/types.hpp"
-#include "duckdb/main/connection.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/main/prepared_statement.hpp"
-
-#include "pgddb/pgddb_duckdb.hpp"
-#include "pgddb/pgddb_types.hpp"
 #include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/ducklake_fdw.hpp"
+
+#include "pgddb/pgddb_types.hpp"
+
+#include <duckdb/common/string_util.hpp>
+#include <duckdb/common/types.hpp>
+#include <duckdb/main/connection.hpp>
+#include <duckdb/main/database.hpp>
+#include <duckdb/main/prepared_statement.hpp>
+
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"
-
-#include "pgddb/pgddb_ruleutils.h"
 
 #include "access/reloptions.h"
 #include "access/xact.h"
@@ -65,6 +64,8 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+
+#include "pgddb/pgddb_ruleutils.h"
 }
 
 /* ----------------------------------------------------------------

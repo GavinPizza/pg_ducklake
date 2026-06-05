@@ -40,26 +40,19 @@
 #include "pgducklake/functions.hpp"
 #include "pgducklake/guc.hpp"
 
-#include "pgddb/catalog/pgddb_storage.hpp"
-#include "pgddb/pgddb_duckdb.hpp"
-#include "pgddb/pg/transactions.hpp"
-
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/main/extension.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/storage/storage_extension.hpp"
-#include "duckdb/transaction/transaction_context.hpp"
-#include "ducklake_extension.hpp"
-
-extern "C" {
-#include "pgddb/pgddb_ruleutils.h"
-
-#include "nodes/pg_list.h"
-}
-
 #include <cstring>
 #include <filesystem>
+
+#include "pgddb/catalog/pgddb_storage.hpp"
+#include "pgddb/pg/transactions.hpp"
+
+#include <duckdb/main/client_context.hpp>
+#include <duckdb/main/database.hpp>
+#include <duckdb/main/extension.hpp>
+#include <duckdb/parser/keyword_helper.hpp>
+#include <duckdb/storage/storage_extension.hpp>
+#include <duckdb/transaction/transaction_context.hpp>
+#include <ducklake_extension.hpp>
 
 extern "C" {
 #include "postgres.h"
@@ -69,10 +62,13 @@ extern "C" {
 #include "commands/extension.h"
 #include "fmgr.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+
+#include "pgddb/pgddb_ruleutils.h"
 }
 
 void ducklake_detach_catalog() {

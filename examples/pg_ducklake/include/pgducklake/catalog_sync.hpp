@@ -22,14 +22,14 @@ extern bool skip_snapshot_sync;
  * ducklake_snapshot but has no DDL changes to reverse-sync (direct
  * insert, ExecuteCommit). */
 struct SkipSnapshotSyncGuard {
-  SkipSnapshotSyncGuard() {
-    skip_snapshot_sync = true;
-  }
-  ~SkipSnapshotSyncGuard() {
-    skip_snapshot_sync = false;
-  }
-  SkipSnapshotSyncGuard(const SkipSnapshotSyncGuard &) = delete;
-  SkipSnapshotSyncGuard &operator=(const SkipSnapshotSyncGuard &) = delete;
+	SkipSnapshotSyncGuard() {
+		skip_snapshot_sync = true;
+	}
+	~SkipSnapshotSyncGuard() {
+		skip_snapshot_sync = false;
+	}
+	SkipSnapshotSyncGuard(const SkipSnapshotSyncGuard &) = delete;
+	SkipSnapshotSyncGuard &operator=(const SkipSnapshotSyncGuard &) = delete;
 };
 
 /* Signature for per-object-type sync handlers.

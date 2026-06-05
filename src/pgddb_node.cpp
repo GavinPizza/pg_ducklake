@@ -451,7 +451,7 @@ Duckdb_ExplainCustomScan(CustomScanState *node, List * /*ancestors*/, ExplainSta
 }
 
 void
-InitNode(const char* custom_scan_name) {
+InitNode(const char *custom_scan_name) {
 	/* setup scan methods */
 	memset(&scan_methods, 0, sizeof(scan_methods));
 	scan_methods.CustomName = custom_scan_name;

@@ -792,7 +792,8 @@ DuckdbRuleutils::get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt
 			TupleDesc tupdesc = RelationGetDescr(relation);
 			Form_pg_attribute attribute = pgddb::pg::GetAttributeByName(tupdesc, column_name);
 			if (!attribute) {
-				elog(ERROR, "Column \"%s\" not found in relation \"%s\"", column_name, RelationGetRelationName(relation));
+				elog(ERROR, "Column \"%s\" not found in relation \"%s\"", column_name,
+				     RelationGetRelationName(relation));
 			}
 
 			if (cmd->def) {
@@ -938,4 +939,4 @@ DuckdbRuleutils::get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt
 
 	return std::string(buffer.data);
 }
-}
+} // namespace pgddb

@@ -53,188 +53,192 @@ extern "C" {
 #include "pgddb/pgddb_process_lock.hpp"
 
 namespace pgducklake {
-static duckdb::StatementType ConvertSPIResultToDuckStatementType(int result) {
-  switch (result) {
-  case SPI_OK_UTILITY:
-    return duckdb::StatementType::EXECUTE_STATEMENT;
-  case SPI_OK_SELECT:
-  case SPI_OK_SELINTO:
-    return duckdb::StatementType::SELECT_STATEMENT;
-  case SPI_OK_INSERT:
-  case SPI_OK_INSERT_RETURNING:
-    return duckdb::StatementType::INSERT_STATEMENT;
-  case SPI_OK_DELETE:
-  case SPI_OK_DELETE_RETURNING:
-    return duckdb::StatementType::DELETE_STATEMENT;
-  case SPI_OK_UPDATE:
-  case SPI_OK_UPDATE_RETURNING:
-    return duckdb::StatementType::UPDATE_STATEMENT;
-  default:
-    // For now, we should not use other types query in SPI.
-    return duckdb::StatementType::INVALID_STATEMENT;
-  }
+static duckdb::StatementType
+ConvertSPIResultToDuckStatementType(int result) {
+	switch (result) {
+	case SPI_OK_UTILITY:
+		return duckdb::StatementType::EXECUTE_STATEMENT;
+	case SPI_OK_SELECT:
+	case SPI_OK_SELINTO:
+		return duckdb::StatementType::SELECT_STATEMENT;
+	case SPI_OK_INSERT:
+	case SPI_OK_INSERT_RETURNING:
+		return duckdb::StatementType::INSERT_STATEMENT;
+	case SPI_OK_DELETE:
+	case SPI_OK_DELETE_RETURNING:
+		return duckdb::StatementType::DELETE_STATEMENT;
+	case SPI_OK_UPDATE:
+	case SPI_OK_UPDATE_RETURNING:
+		return duckdb::StatementType::UPDATE_STATEMENT;
+	default:
+		// For now, we should not use other types query in SPI.
+		return duckdb::StatementType::INVALID_STATEMENT;
+	}
 }
 
 /* Deform SPI tuples into a DuckDB DataChunk using pre-allocated buffers.
  * Callers pass Datum/bool arrays sized to natts so we avoid per-chunk palloc. */
-static void InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTable *tuptable, idx_t start_idx,
-                                         int num_tuples, Datum *values, bool *nulls) {
-  D_ASSERT(tuptable);
-  D_ASSERT(start_idx + num_tuples <= tuptable->numvals);
+static void
+InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTable *tuptable, idx_t start_idx, int num_tuples,
+                             Datum *values, bool *nulls) {
+	D_ASSERT(tuptable);
+	D_ASSERT(start_idx + num_tuples <= tuptable->numvals);
 
-  if (num_tuples == 0) {
-    return;
-  }
+	if (num_tuples == 0) {
+		return;
+	}
 
-  TupleDesc tupdesc = tuptable->tupdesc;
-  int natts = tupdesc->natts;
+	TupleDesc tupdesc = tuptable->tupdesc;
+	int natts = tupdesc->natts;
 
-  /* Cache per-column attribute metadata outside the row loop. */
-  auto attlen = (int16 *)palloc(natts * sizeof(int16));
-  auto atttypid = (Oid *)palloc(natts * sizeof(Oid));
-  auto column_append = (pgddb::PostgresToDuckValueFn *)palloc(natts * sizeof(pgddb::PostgresToDuckValueFn));
-  for (int col = 0; col < natts; col++) {
-    auto attr = TupleDescAttr(tupdesc, col);
-    attlen[col] = attr->attlen;
-    atttypid[col] = attr->atttypid;
-    column_append[col] = pgddb::GetPostgresToDuckValueFn(attr->atttypid, output.data[col]);
-  }
+	/* Cache per-column attribute metadata outside the row loop. */
+	auto attlen = (int16 *)palloc(natts * sizeof(int16));
+	auto atttypid = (Oid *)palloc(natts * sizeof(Oid));
+	auto column_append = (pgddb::PostgresToDuckValueFn *)palloc(natts * sizeof(pgddb::PostgresToDuckValueFn));
+	for (int col = 0; col < natts; col++) {
+		auto attr = TupleDescAttr(tupdesc, col);
+		attlen[col] = attr->attlen;
+		atttypid[col] = attr->atttypid;
+		column_append[col] = pgddb::GetPostgresToDuckValueFn(attr->atttypid, output.data[col]);
+	}
 
-  for (int row = 0; row < num_tuples; row++) {
-    HeapTuple tuple = tuptable->vals[start_idx + row];
-    heap_deform_tuple(tuple, tupdesc, values, nulls);
+	for (int row = 0; row < num_tuples; row++) {
+		HeapTuple tuple = tuptable->vals[start_idx + row];
+		heap_deform_tuple(tuple, tupdesc, values, nulls);
 
-    for (int col = 0; col < natts; col++) {
-      auto &result = output.data[col];
-      auto &array_mask = duckdb::FlatVector::Validity(result);
+		for (int col = 0; col < natts; col++) {
+			auto &result = output.data[col];
+			auto &array_mask = duckdb::FlatVector::Validity(result);
 
-      if (nulls[col]) {
-        array_mask.SetInvalid(row);
-      } else {
-        Datum datum = values[col];
-        column_append[col](result, datum, row);
-      }
-    }
-  }
+			if (nulls[col]) {
+				array_mask.SetInvalid(row);
+			} else {
+				Datum datum = values[col];
+				column_append[col](result, datum, row);
+			}
+		}
+	}
 
-  pfree(attlen);
-  pfree(atttypid);
-  pfree(column_append);
+	pfree(attlen);
+	pfree(atttypid);
+	pfree(column_append);
 }
 
-static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::string &query) {
-  elog(DEBUG1, "Creating SPI result for query: %s", query.c_str());
+static duckdb::unique_ptr<duckdb::QueryResult>
+CreateSPIResult(const duckdb::string &query) {
+	elog(DEBUG1, "Creating SPI result for query: %s", query.c_str());
 
-  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
-  pgddb::PostgresScopedStackReset scoped_stack_reset;
+	std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
+	pgddb::PostgresScopedStackReset scoped_stack_reset;
 
-  SPI_connect();
-  PushActiveSnapshot(GetTransactionSnapshot());
+	SPI_connect();
+	PushActiveSnapshot(GetTransactionSnapshot());
 
-  MemoryContext old_context = CurrentMemoryContext;
-  duckdb::string error_message;
-  bool had_error = false;
-  int ret = -1;
+	MemoryContext old_context = CurrentMemoryContext;
+	duckdb::string error_message;
+	bool had_error = false;
+	int ret = -1;
 
-  PG_TRY();
-  {
-    ret = SPI_execute(query.c_str(), false, 0);
-  }
-  PG_CATCH();
-  {
-    MemoryContextSwitchTo(old_context);
-    ErrorData *edata = CopyErrorData();
-    error_message = edata->message;
-    FreeErrorData(edata);
-    FlushErrorState();
-    had_error = true;
-  }
-  PG_END_TRY();
+	PG_TRY();
+	{
+		ret = SPI_execute(query.c_str(), false, 0);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(old_context);
+		ErrorData *edata = CopyErrorData();
+		error_message = edata->message;
+		FreeErrorData(edata);
+		FlushErrorState();
+		had_error = true;
+	}
+	PG_END_TRY();
 
-  if (had_error) {
-    PopActiveSnapshot();
-    SPI_finish();
-    duckdb::ErrorData error(duckdb::ExceptionType::IO, "SPI execution failed: " + error_message);
-    return duckdb::make_uniq<duckdb::MaterializedQueryResult>(std::move(error));
-  }
+	if (had_error) {
+		PopActiveSnapshot();
+		SPI_finish();
+		duckdb::ErrorData error(duckdb::ExceptionType::IO, "SPI execution failed: " + error_message);
+		return duckdb::make_uniq<duckdb::MaterializedQueryResult>(std::move(error));
+	}
 
-  if (ret < 0) {
-    PopActiveSnapshot();
-    SPI_finish();
-    duckdb::ErrorData error(duckdb::ExceptionType::IO,
-                            "SPI execution failed: " + duckdb::string(SPI_result_code_string(ret)));
-    return duckdb::make_uniq<duckdb::MaterializedQueryResult>(std::move(error));
-  }
+	if (ret < 0) {
+		PopActiveSnapshot();
+		SPI_finish();
+		duckdb::ErrorData error(duckdb::ExceptionType::IO,
+		                        "SPI execution failed: " + duckdb::string(SPI_result_code_string(ret)));
+		return duckdb::make_uniq<duckdb::MaterializedQueryResult>(std::move(error));
+	}
 
-  // Get the result table
-  SPITupleTable *tuptable = SPI_tuptable;
-  if (!tuptable) {
-    PopActiveSnapshot();
-    SPI_finish();
+	// Get the result table
+	SPITupleTable *tuptable = SPI_tuptable;
+	if (!tuptable) {
+		PopActiveSnapshot();
+		SPI_finish();
 
-    // Return an empty result
-    duckdb::vector<duckdb::string> names;
-    duckdb::StatementProperties properties;
-    duckdb::ClientProperties client_properties;
+		// Return an empty result
+		duckdb::vector<duckdb::string> names;
+		duckdb::StatementProperties properties;
+		duckdb::ClientProperties client_properties;
 
-    // Create an empty ColumnDataCollection instead of passing nullptr
-    auto &allocator = duckdb::Allocator::DefaultAllocator();
-    auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
+		// Create an empty ColumnDataCollection instead of passing nullptr
+		auto &allocator = duckdb::Allocator::DefaultAllocator();
+		auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
 
-    return duckdb::make_uniq<duckdb::MaterializedQueryResult>(ConvertSPIResultToDuckStatementType(ret), properties,
-                                                              names, std::move(empty_collection), client_properties);
-  }
+		return duckdb::make_uniq<duckdb::MaterializedQueryResult>(ConvertSPIResultToDuckStatementType(ret), properties,
+		                                                          names, std::move(empty_collection),
+		                                                          client_properties);
+	}
 
-  TupleDesc tupdesc = tuptable->tupdesc;
-  int num_columns = tupdesc->natts;
-  uint64 num_rows = tuptable->numvals;
+	TupleDesc tupdesc = tuptable->tupdesc;
+	int num_columns = tupdesc->natts;
+	uint64 num_rows = tuptable->numvals;
 
-  // Convert column types and names
-  duckdb::vector<duckdb::LogicalType> types;
-  duckdb::vector<duckdb::string> names;
+	// Convert column types and names
+	duckdb::vector<duckdb::LogicalType> types;
+	duckdb::vector<duckdb::string> names;
 
-  for (int i = 0; i < num_columns; i++) {
-    Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+	for (int i = 0; i < num_columns; i++) {
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 
-    D_ASSERT(!attr->attisdropped);
+		D_ASSERT(!attr->attisdropped);
 
-    // Get column name
-    names.push_back(NameStr(attr->attname));
+		// Get column name
+		names.push_back(NameStr(attr->attname));
 
-    // Convert Postgres type to DuckDB type
-    types.push_back(pgddb::ConvertPostgresToDuckColumnType(attr));
-  }
+		// Convert Postgres type to DuckDB type
+		types.push_back(pgddb::ConvertPostgresToDuckColumnType(attr));
+	}
 
-  // Create a ColumnDataCollection to store the results
-  duckdb::ClientProperties client_properties;
-  auto &allocator = duckdb::Allocator::DefaultAllocator();
-  auto collection_p = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator, types);
+	// Create a ColumnDataCollection to store the results
+	duckdb::ClientProperties client_properties;
+	auto &allocator = duckdb::Allocator::DefaultAllocator();
+	auto collection_p = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator, types);
 
-  // Allocate deform buffers once for all chunks
-  auto values = (Datum *)palloc(num_columns * sizeof(Datum));
-  auto deform_nulls = (bool *)palloc(num_columns * sizeof(bool));
+	// Allocate deform buffers once for all chunks
+	auto values = (Datum *)palloc(num_columns * sizeof(Datum));
+	auto deform_nulls = (bool *)palloc(num_columns * sizeof(bool));
 
-  // Convert SPI rows to DuckDB DataChunks and append them
-  for (idx_t row_idx = 0; row_idx < num_rows; row_idx += STANDARD_VECTOR_SIZE) {
-    idx_t chunk_size = duckdb::MinValue<int>(STANDARD_VECTOR_SIZE, num_rows - row_idx);
-    auto chunk = duckdb::make_uniq<duckdb::DataChunk>();
-    chunk->Initialize(allocator, types, chunk_size);
-    InsertSPITupleTableIntoChunk(*chunk, tuptable, row_idx, chunk_size, values, deform_nulls);
+	// Convert SPI rows to DuckDB DataChunks and append them
+	for (idx_t row_idx = 0; row_idx < num_rows; row_idx += STANDARD_VECTOR_SIZE) {
+		idx_t chunk_size = duckdb::MinValue<int>(STANDARD_VECTOR_SIZE, num_rows - row_idx);
+		auto chunk = duckdb::make_uniq<duckdb::DataChunk>();
+		chunk->Initialize(allocator, types, chunk_size);
+		InsertSPITupleTableIntoChunk(*chunk, tuptable, row_idx, chunk_size, values, deform_nulls);
 
-    chunk->SetCardinality(chunk_size);
-    collection_p->Append(*chunk);
-  }
+		chunk->SetCardinality(chunk_size);
+		collection_p->Append(*chunk);
+	}
 
-  pfree(values);
-  pfree(deform_nulls);
+	pfree(values);
+	pfree(deform_nulls);
 
-  PopActiveSnapshot();
-  SPI_finish();
+	PopActiveSnapshot();
+	SPI_finish();
 
-  // Create and return the MaterializedQueryResult
-  duckdb::StatementProperties properties;
-  return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::SELECT_STATEMENT, properties, names,
-                                                            std::move(collection_p), client_properties);
+	// Create and return the MaterializedQueryResult
+	duckdb::StatementProperties properties;
+	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::SELECT_STATEMENT, properties,
+	                                                          names, std::move(collection_p), client_properties);
 }
 
 /*
@@ -243,12 +247,14 @@ static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::str
  * DuckLake initialization (FinalizeLoad -> InitializeDuckLake -> Execute), the
  * AttachedDatabase is not yet reachable via the db_manager.
  */
-static void SubstituteCatalogPlaceholders(duckdb::string &query) {
-  query = duckdb::StringUtil::Replace(query, "{METADATA_CATALOG}", "\"" PGDUCKLAKE_PG_SCHEMA "\"");
-  query = duckdb::StringUtil::Replace(query, "{METADATA_CATALOG_NAME_IDENTIFIER}", "\"" PGDUCKLAKE_DUCKDB_CATALOG "\"");
-  query = duckdb::StringUtil::Replace(query, "{METADATA_CATALOG_NAME_LITERAL}", "'" PGDUCKLAKE_DUCKDB_CATALOG "'");
-  query = duckdb::StringUtil::Replace(query, "{METADATA_SCHEMA_NAME_LITERAL}", "'" PGDUCKLAKE_PG_SCHEMA "'");
-  query = duckdb::StringUtil::Replace(query, "{METADATA_SCHEMA_ESCAPED}", "\"" PGDUCKLAKE_PG_SCHEMA "\"");
+static void
+SubstituteCatalogPlaceholders(duckdb::string &query) {
+	query = duckdb::StringUtil::Replace(query, "{METADATA_CATALOG}", "\"" PGDUCKLAKE_PG_SCHEMA "\"");
+	query =
+	    duckdb::StringUtil::Replace(query, "{METADATA_CATALOG_NAME_IDENTIFIER}", "\"" PGDUCKLAKE_DUCKDB_CATALOG "\"");
+	query = duckdb::StringUtil::Replace(query, "{METADATA_CATALOG_NAME_LITERAL}", "'" PGDUCKLAKE_DUCKDB_CATALOG "'");
+	query = duckdb::StringUtil::Replace(query, "{METADATA_SCHEMA_NAME_LITERAL}", "'" PGDUCKLAKE_PG_SCHEMA "'");
+	query = duckdb::StringUtil::Replace(query, "{METADATA_SCHEMA_ESCAPED}", "\"" PGDUCKLAKE_PG_SCHEMA "\"");
 }
 
 /*
@@ -258,73 +264,74 @@ static void SubstituteCatalogPlaceholders(duckdb::string &query) {
  * arise from concurrent commits, rather than having a PostgreSQL longjmp
  * bypass the C++ catch block and crash the backend.
  */
-static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
-  elog(DEBUG1, "CreateSPIExecuteInSubtransaction: %s", query.c_str());
+static duckdb::unique_ptr<duckdb::QueryResult>
+CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
+	elog(DEBUG1, "CreateSPIExecuteInSubtransaction: %s", query.c_str());
 
-  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
-  pgddb::PostgresScopedStackReset scoped_stack_reset;
+	std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
+	pgddb::PostgresScopedStackReset scoped_stack_reset;
 
-  SPI_connect();
+	SPI_connect();
 
-  MemoryContext old_context = CurrentMemoryContext;
-  duckdb::string error_message;
-  bool had_error = false;
-  int ret = -1;
+	MemoryContext old_context = CurrentMemoryContext;
+	duckdb::string error_message;
+	bool had_error = false;
+	int ret = -1;
 
-  /*
-   * WORKAROUND: BeginInternalSubTransaction is intentionally NOT used here.
-   *
-   * The full xact + subxact callback infrastructure is now in place
-   * (RegisterXactCallback() in _PG_init installs both DuckLakeXactCallback
-   * and DuckLakeSubXactCallback, and DuckdbAllowSubtransaction toggles the
-   * subxact gate). Even with that machinery matching upstream pg_duckdb,
-   * opening a subtransaction here still triggers PG to raise
-   * "snapshot reference X is not owned by resource owner TopTransaction"
-   * at implicit-autocommit time. The error is sent to the client but never
-   * written to the server log, which makes it look like it comes from
-   * AtEOXact_Snapshot at parent commit -- after our subtxn release returns
-   * cleanly. Tracking down which snapshot is being unregistered against
-   * the wrong owner (and why upstream pg_ducklake doesn't hit it) is a
-   * follow-up that needs PG-internals expertise.
-   *
-   * Cost: DuckLake's FlushChanges no longer retries on unique-violation;
-   * concurrent-commit conflicts surface as top-level INSERT failures
-   * instead of being retried. The regression suite is single-writer so
-   * doesn't exercise this path.
-   */
-  PG_TRY();
-  {
-    ret = SPI_execute(query.c_str(), false, 0);
-  }
-  PG_CATCH();
-  {
-    MemoryContextSwitchTo(old_context);
-    ErrorData *edata = CopyErrorData();
-    error_message = edata->message;
-    FreeErrorData(edata);
-    FlushErrorState();
-    had_error = true;
-  }
-  PG_END_TRY();
+	/*
+	 * WORKAROUND: BeginInternalSubTransaction is intentionally NOT used here.
+	 *
+	 * The full xact + subxact callback infrastructure is now in place
+	 * (RegisterXactCallback() in _PG_init installs both DuckLakeXactCallback
+	 * and DuckLakeSubXactCallback, and DuckdbAllowSubtransaction toggles the
+	 * subxact gate). Even with that machinery matching upstream pg_duckdb,
+	 * opening a subtransaction here still triggers PG to raise
+	 * "snapshot reference X is not owned by resource owner TopTransaction"
+	 * at implicit-autocommit time. The error is sent to the client but never
+	 * written to the server log, which makes it look like it comes from
+	 * AtEOXact_Snapshot at parent commit -- after our subtxn release returns
+	 * cleanly. Tracking down which snapshot is being unregistered against
+	 * the wrong owner (and why upstream pg_ducklake doesn't hit it) is a
+	 * follow-up that needs PG-internals expertise.
+	 *
+	 * Cost: DuckLake's FlushChanges no longer retries on unique-violation;
+	 * concurrent-commit conflicts surface as top-level INSERT failures
+	 * instead of being retried. The regression suite is single-writer so
+	 * doesn't exercise this path.
+	 */
+	PG_TRY();
+	{
+		ret = SPI_execute(query.c_str(), false, 0);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(old_context);
+		ErrorData *edata = CopyErrorData();
+		error_message = edata->message;
+		FreeErrorData(edata);
+		FlushErrorState();
+		had_error = true;
+	}
+	PG_END_TRY();
 
-  if (!had_error && ret < 0) {
-    error_message = duckdb::string("SPI execute failed: ") + SPI_result_code_string(ret);
-    had_error = true;
-  }
+	if (!had_error && ret < 0) {
+		error_message = duckdb::string("SPI execute failed: ") + SPI_result_code_string(ret);
+		had_error = true;
+	}
 
-  SPI_finish();
+	SPI_finish();
 
-  if (had_error) {
-    throw duckdb::TransactionException("%s", error_message.c_str());
-  }
+	if (had_error) {
+		throw duckdb::TransactionException("%s", error_message.c_str());
+	}
 
-  duckdb::vector<duckdb::string> names;
-  duckdb::StatementProperties properties;
-  duckdb::ClientProperties client_properties;
-  auto &allocator = duckdb::Allocator::DefaultAllocator();
-  auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
-  return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::EXECUTE_STATEMENT, properties, names,
-                                                            std::move(empty_collection), client_properties);
+	duckdb::vector<duckdb::string> names;
+	duckdb::StatementProperties properties;
+	duckdb::ClientProperties client_properties;
+	auto &allocator = duckdb::Allocator::DefaultAllocator();
+	auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
+	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::EXECUTE_STATEMENT, properties,
+	                                                          names, std::move(empty_collection), client_properties);
 }
 
 PgDuckLakeMetadataManager::PgDuckLakeMetadataManager(duckdb::DuckLakeTransaction &transaction_)
@@ -340,37 +347,40 @@ PgDuckLakeMetadataManager::~PgDuckLakeMetadataManager() {
  * is not safe during initialization (the AttachedDatabase is not yet
  * reachable), but these placeholders never appear in init queries.
  */
-static void SubstitutePathPlaceholders(duckdb::string &query, duckdb::DuckLakeTransaction &transaction) {
-  if (query.find("{DATA_PATH}") == duckdb::string::npos && query.find("{METADATA_PATH}") == duckdb::string::npos) {
-    return;
-  }
-  auto &catalog = transaction.GetCatalog();
-  query =
-      duckdb::StringUtil::Replace(query, "{DATA_PATH}", duckdb::DuckLakeUtil::SQLLiteralToString(catalog.DataPath()));
-  query = duckdb::StringUtil::Replace(query, "{METADATA_PATH}",
-                                      duckdb::DuckLakeUtil::SQLLiteralToString(catalog.MetadataPath()));
+static void
+SubstitutePathPlaceholders(duckdb::string &query, duckdb::DuckLakeTransaction &transaction) {
+	if (query.find("{DATA_PATH}") == duckdb::string::npos && query.find("{METADATA_PATH}") == duckdb::string::npos) {
+		return;
+	}
+	auto &catalog = transaction.GetCatalog();
+	query =
+	    duckdb::StringUtil::Replace(query, "{DATA_PATH}", duckdb::DuckLakeUtil::SQLLiteralToString(catalog.DataPath()));
+	query = duckdb::StringUtil::Replace(query, "{METADATA_PATH}",
+	                                    duckdb::DuckLakeUtil::SQLLiteralToString(catalog.MetadataPath()));
 }
 
-duckdb::unique_ptr<duckdb::QueryResult> PgDuckLakeMetadataManager::Query(duckdb::string query) {
-  SubstitutePathPlaceholders(query, transaction);
-  SubstituteCatalogPlaceholders(query);
-  return CreateSPIResult(query);
+duckdb::unique_ptr<duckdb::QueryResult>
+PgDuckLakeMetadataManager::Query(duckdb::string query) {
+	SubstitutePathPlaceholders(query, transaction);
+	SubstituteCatalogPlaceholders(query);
+	return CreateSPIResult(query);
 }
 
 /*
  * Build a SELECT column list from the columns_to_read vector.
  * Mirrors the static GetProjection() in ducklake_metadata_manager.cpp.
  */
-static duckdb::string BuildProjection(const duckdb::vector<duckdb::string> &columns_to_read) {
-  duckdb::string result;
-  duckdb::idx_t i = 1;
-  for (auto &entry : columns_to_read) {
-    if (!result.empty()) {
-      result += ", ";
-    }
-    result += "inlined_data." + entry + " AS c" + std::to_string(i++);
-  }
-  return result;
+static duckdb::string
+BuildProjection(const duckdb::vector<duckdb::string> &columns_to_read) {
+	duckdb::string result;
+	duckdb::idx_t i = 1;
+	for (auto &entry : columns_to_read) {
+		if (!result.empty()) {
+			result += ", ";
+		}
+		result += "inlined_data." + entry + " AS c" + std::to_string(i++);
+	}
+	return result;
 }
 
 /*
@@ -382,17 +392,17 @@ static duckdb::string BuildProjection(const duckdb::vector<duckdb::string> &colu
 duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::ReadInlinedData(duckdb::DuckLakeSnapshot snapshot, const duckdb::string &inlined_table_name,
                                            const duckdb::vector<duckdb::string> &columns_to_read) {
-  auto projection = BuildProjection(columns_to_read);
-  auto query =
-      duckdb::StringUtil::Format(R"(
+	auto projection = BuildProjection(columns_to_read);
+	auto query =
+	    duckdb::StringUtil::Format(R"(
 SELECT %s
 FROM pgduckdb."%s".%s inlined_data
 WHERE %llu >= begin_snapshot AND (%llu < end_snapshot OR end_snapshot IS NULL)
 ORDER BY row_id;)",
-                                 projection, PGDUCKLAKE_PG_SCHEMA, duckdb::SQLIdentifier(inlined_table_name),
-                                 (unsigned long long)snapshot.snapshot_id, (unsigned long long)snapshot.snapshot_id);
-  elog(DEBUG1, "ReadInlinedData via DuckDB: %s", query.c_str());
-  return transaction.Query(query);
+	                               projection, PGDUCKLAKE_PG_SCHEMA, duckdb::SQLIdentifier(inlined_table_name),
+	                               (unsigned long long)snapshot.snapshot_id, (unsigned long long)snapshot.snapshot_id);
+	elog(DEBUG1, "ReadInlinedData via DuckDB: %s", query.c_str());
+	return transaction.Query(query);
 }
 
 /*
@@ -406,85 +416,87 @@ duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::ReadAllInlinedDataForFlush(duckdb::DuckLakeSnapshot snapshot,
                                                       const duckdb::string &inlined_table_name,
                                                       const duckdb::vector<duckdb::string> &columns_to_read) {
-  auto projection = BuildProjection(columns_to_read);
-  auto query = duckdb::StringUtil::Format(R"(
+	auto projection = BuildProjection(columns_to_read);
+	auto query = duckdb::StringUtil::Format(R"(
 SELECT %s
 FROM pgduckdb."%s".%s inlined_data
 WHERE %llu >= begin_snapshot
 ORDER BY row_id;)",
-                                          projection, PGDUCKLAKE_PG_SCHEMA, duckdb::SQLIdentifier(inlined_table_name),
-                                          (unsigned long long)snapshot.snapshot_id);
-  elog(DEBUG1, "ReadAllInlinedDataForFlush via DuckDB: %s", query.c_str());
-  return transaction.Query(query);
+	                                        projection, PGDUCKLAKE_PG_SCHEMA, duckdb::SQLIdentifier(inlined_table_name),
+	                                        (unsigned long long)snapshot.snapshot_id);
+	elog(DEBUG1, "ReadAllInlinedDataForFlush via DuckDB: %s", query.c_str());
+	return transaction.Query(query);
 }
 
-duckdb::unique_ptr<duckdb::QueryResult> PgDuckLakeMetadataManager::Query(duckdb::DuckLakeSnapshot snapshot,
-                                                                         duckdb::string query) {
-  DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
-  return Query(query);
+duckdb::unique_ptr<duckdb::QueryResult>
+PgDuckLakeMetadataManager::Query(duckdb::DuckLakeSnapshot snapshot, duckdb::string query) {
+	DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
+	return Query(query);
 }
 
-duckdb::unique_ptr<duckdb::QueryResult> PgDuckLakeMetadataManager::Execute(duckdb::string query) {
-  SubstitutePathPlaceholders(query, transaction);
-  SubstituteCatalogPlaceholders(query);
-  return CreateSPIResult(query);
+duckdb::unique_ptr<duckdb::QueryResult>
+PgDuckLakeMetadataManager::Execute(duckdb::string query) {
+	SubstitutePathPlaceholders(query, transaction);
+	SubstituteCatalogPlaceholders(query);
+	return CreateSPIResult(query);
 }
 
-duckdb::unique_ptr<duckdb::QueryResult> PgDuckLakeMetadataManager::Execute(duckdb::DuckLakeSnapshot snapshot,
-                                                                           duckdb::string query) {
-  DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
-  return Execute(query);
+duckdb::unique_ptr<duckdb::QueryResult>
+PgDuckLakeMetadataManager::Execute(duckdb::DuckLakeSnapshot snapshot, duckdb::string query) {
+	DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
+	return Execute(query);
 }
 
-duckdb::unique_ptr<duckdb::QueryResult> PgDuckLakeMetadataManager::ExecuteCommit(duckdb::DuckLakeSnapshot snapshot,
-                                                                                 duckdb::string query) {
-  DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
-  SubstituteCatalogPlaceholders(query);
-  /* Skip the snapshot sync trigger during commit.  The trigger exists
-   * for external DuckDB clients that write directly to the ducklake
-   * metadata tables; pg_ducklake's own commits have nothing to
-   * reverse-sync.  Running the trigger on a DuckDB worker thread
-   * crashes because PG's InterruptHoldoffCount is not thread-safe. */
-  SkipSnapshotSyncGuard sync_guard;
-  return CreateSPIExecuteInSubtransaction(query);
+duckdb::unique_ptr<duckdb::QueryResult>
+PgDuckLakeMetadataManager::ExecuteCommit(duckdb::DuckLakeSnapshot snapshot, duckdb::string query) {
+	DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
+	SubstituteCatalogPlaceholders(query);
+	/* Skip the snapshot sync trigger during commit.  The trigger exists
+	 * for external DuckDB clients that write directly to the ducklake
+	 * metadata tables; pg_ducklake's own commits have nothing to
+	 * reverse-sync.  Running the trigger on a DuckDB worker thread
+	 * crashes because PG's InterruptHoldoffCount is not thread-safe. */
+	SkipSnapshotSyncGuard sync_guard;
+	return CreateSPIExecuteInSubtransaction(query);
 }
 
-bool PgDuckLakeMetadataManager::IsInitialized() {
+bool
+PgDuckLakeMetadataManager::IsInitialized() {
 
-  auto tup = SearchSysCache1(NAMESPACENAME, CStringGetDatum(PGDUCKLAKE_PG_SCHEMA));
+	auto tup = SearchSysCache1(NAMESPACENAME, CStringGetDatum(PGDUCKLAKE_PG_SCHEMA));
 
-  if (!HeapTupleIsValid(tup))
-    return false;
+	if (!HeapTupleIsValid(tup))
+		return false;
 
-  auto nspoid = ((Form_pg_namespace)GETSTRUCT(tup))->oid;
-  ReleaseSysCache(tup);
+	auto nspoid = ((Form_pg_namespace)GETSTRUCT(tup))->oid;
+	ReleaseSysCache(tup);
 
-  auto rel = table_open(RelationRelationId, AccessShareLock);
+	auto rel = table_open(RelationRelationId, AccessShareLock);
 
-  ScanKeyData scankey;
+	ScanKeyData scankey;
 
-  ScanKeyInit(&scankey, Anum_pg_class_relnamespace, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(nspoid));
+	ScanKeyInit(&scankey, Anum_pg_class_relnamespace, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(nspoid));
 
-  auto scan = systable_beginscan(rel, ClassNameNspIndexId, /* pg_class_relname_nsp_index */
-                                 true, NULL, 1, &scankey);
+	auto scan = systable_beginscan(rel, ClassNameNspIndexId, /* pg_class_relname_nsp_index */
+	                               true, NULL, 1, &scankey);
 
-  bool found = false;
+	bool found = false;
 
-  while (HeapTupleIsValid(tup = systable_getnext(scan))) {
-    Form_pg_class classForm = (Form_pg_class)GETSTRUCT(tup);
-    const char *relname = NameStr(classForm->relname);
+	while (HeapTupleIsValid(tup = systable_getnext(scan))) {
+		Form_pg_class classForm = (Form_pg_class)GETSTRUCT(tup);
+		const char *relname = NameStr(classForm->relname);
 
-    /* Match LIKE 'ducklake_%' */
-    if (strncmp(relname, "ducklake_", 9) == 0 && classForm->relkind == RELKIND_RELATION) {
-      found = true;
-      break;
-    }
-  }
+		/* Match LIKE 'ducklake_%' */
+		if (strncmp(relname, "ducklake_", 9) == 0 && classForm->relkind == RELKIND_RELATION) {
+			found = true;
+			break;
+		}
+	}
 
-  systable_endscan(scan);
-  table_close(rel, AccessShareLock);
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
 
-  return found;
+	return found;
 }
 
 /*
@@ -496,17 +508,18 @@ bool PgDuckLakeMetadataManager::IsInitialized() {
  * GUC) since this runs inside DuckDB's ATTACH path where re-entering DuckDB
  * would cause infinite recursion.
  */
-void PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
-  std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
-  pgddb::PostgresScopedStackReset scoped_stack_reset;
+void
+PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
+	std::lock_guard<std::recursive_mutex> lock(pgddb::GlobalProcessLock::GetLock());
+	pgddb::PostgresScopedStackReset scoped_stack_reset;
 
-  SPI_connect();
-  PushActiveSnapshot(GetTransactionSnapshot());
+	SPI_connect();
+	PushActiveSnapshot(GetTransactionSnapshot());
 
-  auto save_nestlevel = NewGUCNestLevel();
-  ::SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
+	auto save_nestlevel = NewGUCNestLevel();
+	::SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
-  int ret = SPI_exec(R"(
+	int ret = SPI_exec(R"(
 		SELECT 1 FROM pg_trigger t
 		JOIN pg_class c ON t.tgrelid = c.oid
 		JOIN pg_namespace n ON c.relnamespace = n.oid
@@ -514,395 +527,403 @@ void PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
 		  AND c.relname = 'ducklake_snapshot'
 		  AND t.tgname = 'ducklake_snapshot_sync_trigger'
 		)",
-                     1);
-  if (ret != SPI_OK_SELECT)
-    elog(ERROR, "SPI_exec failed: %s", SPI_result_code_string(ret));
+	                   1);
+	if (ret != SPI_OK_SELECT)
+		elog(ERROR, "SPI_exec failed: %s", SPI_result_code_string(ret));
 
-  if (SPI_processed == 0) {
-    ret = SPI_exec(R"(
+	if (SPI_processed == 0) {
+		ret = SPI_exec(R"(
 		CREATE TRIGGER ducklake_snapshot_sync_trigger
 		AFTER INSERT ON ducklake.ducklake_snapshot
 		FOR EACH ROW
 		EXECUTE FUNCTION ducklake._snapshot_trigger()
 		)",
-                   0);
-    if (ret != SPI_OK_UTILITY)
-      elog(ERROR, "SPI_exec CREATE TRIGGER failed: %s", SPI_result_code_string(ret));
-  }
+		               0);
+		if (ret != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec CREATE TRIGGER failed: %s", SPI_result_code_string(ret));
+	}
 
-  AtEOXact_GUC(false, save_nestlevel);
-  PopActiveSnapshot();
-  SPI_finish();
+	AtEOXact_GUC(false, save_nestlevel);
+	PopActiveSnapshot();
+	SPI_finish();
 }
 
-bool PgDuckLakeMetadataManager::IsInitialized(duckdb::DuckLakeOptions & /*options*/) {
-  bool initialized = IsInitialized();
-  if (initialized)
-    EnsureSnapshotTrigger();
-  return initialized;
+bool
+PgDuckLakeMetadataManager::IsInitialized(duckdb::DuckLakeOptions & /*options*/) {
+	bool initialized = IsInitialized();
+	if (initialized)
+		EnsureSnapshotTrigger();
+	return initialized;
 }
 
-void PgDuckLakeMetadataManager::InitializeDuckLake(bool has_explicit_schema, duckdb::DuckLakeEncryption encryption) {
-  DuckLakeMetadataManager::InitializeDuckLake(has_explicit_schema, encryption);
-  EnsureSnapshotTrigger();
+void
+PgDuckLakeMetadataManager::InitializeDuckLake(bool has_explicit_schema, duckdb::DuckLakeEncryption encryption) {
+	DuckLakeMetadataManager::InitializeDuckLake(has_explicit_schema, encryption);
+	EnsureSnapshotTrigger();
 }
 
-duckdb::string PgDuckLakeMetadataManager::GetInlinedTableQueries(duckdb::DuckLakeSnapshot commit_snapshot,
-                                                                 const duckdb::DuckLakeTableInfo &table,
-                                                                 duckdb::string &inlined_tables,
-                                                                 duckdb::string &inlined_table_queries) {
-  auto table_name =
-      DuckLakeMetadataManager::GetInlinedTableQueries(commit_snapshot, table, inlined_tables, inlined_table_queries);
+duckdb::string
+PgDuckLakeMetadataManager::GetInlinedTableQueries(duckdb::DuckLakeSnapshot commit_snapshot,
+                                                  const duckdb::DuckLakeTableInfo &table,
+                                                  duckdb::string &inlined_tables,
+                                                  duckdb::string &inlined_table_queries) {
+	auto table_name =
+	    DuckLakeMetadataManager::GetInlinedTableQueries(commit_snapshot, table, inlined_tables, inlined_table_queries);
 
-  // Grant access to predefined roles so SPI metadata queries succeed
-  // regardless of which user created the inlined data table.
-  duckdb::string roles;
-  for (const char *role : {superuser_role, writer_role, reader_role}) {
-    if (role && role[0] != '\0') {
-      if (!roles.empty())
-        roles += ", ";
-      roles += duckdb::StringUtil::Format("%s", duckdb::SQLIdentifier(role));
-    }
-  }
-  if (!roles.empty()) {
-    inlined_table_queries += duckdb::StringUtil::Format("\nGRANT ALL ON {METADATA_CATALOG}.%s TO %s;",
-                                                        duckdb::SQLIdentifier(table_name), roles);
-  }
+	// Grant access to predefined roles so SPI metadata queries succeed
+	// regardless of which user created the inlined data table.
+	duckdb::string roles;
+	for (const char *role : {superuser_role, writer_role, reader_role}) {
+		if (role && role[0] != '\0') {
+			if (!roles.empty())
+				roles += ", ";
+			roles += duckdb::StringUtil::Format("%s", duckdb::SQLIdentifier(role));
+		}
+	}
+	if (!roles.empty()) {
+		inlined_table_queries += duckdb::StringUtil::Format("\nGRANT ALL ON {METADATA_CATALOG}.%s TO %s;",
+		                                                    duckdb::SQLIdentifier(table_name), roles);
+	}
 
-  return table_name;
+	return table_name;
 }
 
 // Helper functions for direct insert optimization
 
-TableInliningState GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out,
-                                         int64_t *row_limit_out) {
-  int ret;
-  TableInliningState state = TI_NO_TABLE;
+TableInliningState
+GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out, int64_t *row_limit_out) {
+	int ret;
+	TableInliningState state = TI_NO_TABLE;
 
-  if ((ret = SPI_connect()) < 0) {
-    elog(ERROR, "SPI_connect failed: %d", ret);
-    return TI_NO_TABLE;
-  }
+	if ((ret = SPI_connect()) < 0) {
+		elog(ERROR, "SPI_connect failed: %d", ret);
+		return TI_NO_TABLE;
+	}
 
-  HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(table_oid));
-  if (!HeapTupleIsValid(tp)) {
-    SPI_finish();
-    return TI_NO_TABLE;
-  }
+	HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(table_oid));
+	if (!HeapTupleIsValid(tp)) {
+		SPI_finish();
+		return TI_NO_TABLE;
+	}
 
-  Form_pg_class reltup = (Form_pg_class)GETSTRUCT(tp);
-  char *table_name = NameStr(reltup->relname);
-  Oid schema_oid = reltup->relnamespace;
-  ReleaseSysCache(tp);
+	Form_pg_class reltup = (Form_pg_class)GETSTRUCT(tp);
+	char *table_name = NameStr(reltup->relname);
+	Oid schema_oid = reltup->relnamespace;
+	ReleaseSysCache(tp);
 
-  HeapTuple ntp = SearchSysCache1(NAMESPACEOID, ObjectIdGetDatum(schema_oid));
-  if (!HeapTupleIsValid(ntp)) {
-    SPI_finish();
-    return TI_NO_TABLE;
-  }
+	HeapTuple ntp = SearchSysCache1(NAMESPACEOID, ObjectIdGetDatum(schema_oid));
+	if (!HeapTupleIsValid(ntp)) {
+		SPI_finish();
+		return TI_NO_TABLE;
+	}
 
-  Form_pg_namespace nstup = (Form_pg_namespace)GETSTRUCT(ntp);
-  char *schema_name = NameStr(nstup->nspname);
-  ReleaseSysCache(ntp);
+	Form_pg_namespace nstup = (Form_pg_namespace)GETSTRUCT(ntp);
+	char *schema_name = NameStr(nstup->nspname);
+	ReleaseSysCache(ntp);
 
-  /* Single SPI query that returns all the information we need:
-   *   col 0: table_id          -- from ducklake_table
-   *   col 1: inlined schema_version -- MAX over ducklake_inlined_data_tables
-   *   col 2: data_inlining_row_limit -- from ducklake_metadata (NULL if unset)
-   *
-   * On a schema-bumping DDL (ADD COLUMN, SET PARTITION KEY, ...)
-   * DuckLake's commit path inserts a new ducklake_inlined_data_tables
-   * row at the new schema_version *and* keeps the old one, then routes
-   * subsequent inlined writes to the latest by selecting the row with
-   * MAX(schema_version) for the table_id (see DuckLakeMetadataManager::
-   * WriteNewInlinedData in third_party/ducklake).  We mirror that here:
-   * always read the row with MAX(schema_version) so we plan against the
-   * inlined heap table DuckLake itself would write to.  An earlier
-   * version also compared this against MAX(ducklake_schema_versions.
-   * schema_version) and rejected with TI_SCHEMA_VERSION_MISMATCH, but
-   * that was stricter than DuckLake's own contract and broke every
-   * direct insert after any schema-bumping ALTER (issue #197). */
-  StringInfoData query;
-  initStringInfo(&query);
-  appendStringInfo(&query,
-                   "SELECT dt.table_id, "
-                   "       (SELECT MAX(idt.schema_version) "
-                   "        FROM ducklake.ducklake_inlined_data_tables idt "
-                   "        WHERE idt.table_id = dt.table_id), "
-                   "       (SELECT m.value::bigint "
-                   "        FROM ducklake.ducklake_metadata m "
-                   "        WHERE m.key = 'data_inlining_row_limit' "
-                   "        AND m.scope IS NULL) "
-                   "FROM ducklake.ducklake_table dt "
-                   "JOIN ducklake.ducklake_schema ds ON dt.schema_id = ds.schema_id "
-                   "WHERE dt.table_name = '%s' "
-                   "AND ds.schema_name = '%s' "
-                   "AND dt.end_snapshot IS NULL "
-                   "AND ds.end_snapshot IS NULL "
-                   "LIMIT 1",
-                   table_name, schema_name);
+	/* Single SPI query that returns all the information we need:
+	 *   col 0: table_id          -- from ducklake_table
+	 *   col 1: inlined schema_version -- MAX over ducklake_inlined_data_tables
+	 *   col 2: data_inlining_row_limit -- from ducklake_metadata (NULL if unset)
+	 *
+	 * On a schema-bumping DDL (ADD COLUMN, SET PARTITION KEY, ...)
+	 * DuckLake's commit path inserts a new ducklake_inlined_data_tables
+	 * row at the new schema_version *and* keeps the old one, then routes
+	 * subsequent inlined writes to the latest by selecting the row with
+	 * MAX(schema_version) for the table_id (see DuckLakeMetadataManager::
+	 * WriteNewInlinedData in third_party/ducklake).  We mirror that here:
+	 * always read the row with MAX(schema_version) so we plan against the
+	 * inlined heap table DuckLake itself would write to.  An earlier
+	 * version also compared this against MAX(ducklake_schema_versions.
+	 * schema_version) and rejected with TI_SCHEMA_VERSION_MISMATCH, but
+	 * that was stricter than DuckLake's own contract and broke every
+	 * direct insert after any schema-bumping ALTER (issue #197). */
+	StringInfoData query;
+	initStringInfo(&query);
+	appendStringInfo(&query,
+	                 "SELECT dt.table_id, "
+	                 "       (SELECT MAX(idt.schema_version) "
+	                 "        FROM ducklake.ducklake_inlined_data_tables idt "
+	                 "        WHERE idt.table_id = dt.table_id), "
+	                 "       (SELECT m.value::bigint "
+	                 "        FROM ducklake.ducklake_metadata m "
+	                 "        WHERE m.key = 'data_inlining_row_limit' "
+	                 "        AND m.scope IS NULL) "
+	                 "FROM ducklake.ducklake_table dt "
+	                 "JOIN ducklake.ducklake_schema ds ON dt.schema_id = ds.schema_id "
+	                 "WHERE dt.table_name = '%s' "
+	                 "AND ds.schema_name = '%s' "
+	                 "AND dt.end_snapshot IS NULL "
+	                 "AND ds.end_snapshot IS NULL "
+	                 "LIMIT 1",
+	                 table_name, schema_name);
 
-  ret = SPI_execute(query.data, true, 1);
-  if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    bool isnull;
+	ret = SPI_execute(query.data, true, 1);
+	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+		HeapTuple tuple = SPI_tuptable->vals[0];
+		bool isnull;
 
-    /* col 0: table_id (must be present; NULL here means no ducklake row) */
-    Datum table_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
-    if (isnull) {
-      state = TI_NO_TABLE;
-      goto done;
-    }
-    uint64_t table_id = DatumGetInt64(table_id_datum);
+		/* col 0: table_id (must be present; NULL here means no ducklake row) */
+		Datum table_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
+		if (isnull) {
+			state = TI_NO_TABLE;
+			goto done;
+		}
+		uint64_t table_id = DatumGetInt64(table_id_datum);
 
-    /* col 1: MAX inlined schema_version (NULL if no inlined_data_tables row) */
-    Datum sv_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 2, &isnull);
-    if (isnull) {
-      state = TI_NO_INLINED_TABLE;
-      goto done;
-    }
-    uint64_t schema_version = DatumGetInt64(sv_datum);
+		/* col 1: MAX inlined schema_version (NULL if no inlined_data_tables row) */
+		Datum sv_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 2, &isnull);
+		if (isnull) {
+			state = TI_NO_INLINED_TABLE;
+			goto done;
+		}
+		uint64_t schema_version = DatumGetInt64(sv_datum);
 
-    /* col 2: data_inlining_row_limit must be explicitly set > 0 */
-    Datum limit_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 3, &isnull);
-    if (isnull || DatumGetInt64(limit_datum) <= 0) {
-      state = TI_NO_INLINED_TABLE;
-      goto done;
-    }
-    int64_t row_limit = DatumGetInt64(limit_datum);
+		/* col 2: data_inlining_row_limit must be explicitly set > 0 */
+		Datum limit_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 3, &isnull);
+		if (isnull || DatumGetInt64(limit_datum) <= 0) {
+			state = TI_NO_INLINED_TABLE;
+			goto done;
+		}
+		int64_t row_limit = DatumGetInt64(limit_datum);
 
-    *table_id_out = table_id;
-    *schema_version_out = schema_version;
-    if (row_limit_out)
-      *row_limit_out = row_limit;
-    state = TI_OK;
-  }
+		*table_id_out = table_id;
+		*schema_version_out = schema_version;
+		if (row_limit_out)
+			*row_limit_out = row_limit;
+		state = TI_OK;
+	}
 
 done:
 
-  SPI_finish();
-  return state;
+	SPI_finish();
+	return state;
 }
 
-bool GetTableInliningInfo(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out) {
-  return GetTableInliningState(table_oid, table_id_out, schema_version_out, NULL) == TI_OK;
+bool
+GetTableInliningInfo(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out) {
+	return GetTableInliningState(table_oid, table_id_out, schema_version_out, NULL) == TI_OK;
 }
 
-uint64_t GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version) {
-  int ret;
-  uint64_t next_row_id = 0;
+uint64_t
+GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version) {
+	int ret;
+	uint64_t next_row_id = 0;
 
-  if ((ret = SPI_connect()) < 0) {
-    elog(ERROR, "SPI_connect failed: %d", ret);
-    return 0;
-  }
+	if ((ret = SPI_connect()) < 0) {
+		elog(ERROR, "SPI_connect failed: %d", ret);
+		return 0;
+	}
 
-  /* Read next_row_id from ducklake_table_stats (O(1) index lookup).
-   * CreateSnapshotForDirectInsert keeps this row up to date after
-   * each direct insert.  If no row exists (first insert into this
-   * table), fall back to MAX(row_id) + 1 from the inlined data table. */
-  StringInfoData query;
-  initStringInfo(&query);
-  appendStringInfo(&query,
-                   "SELECT next_row_id "
-                   "FROM ducklake.ducklake_table_stats "
-                   "WHERE table_id = %llu",
-                   (unsigned long long)table_id);
+	/* Read next_row_id from ducklake_table_stats (O(1) index lookup).
+	 * CreateSnapshotForDirectInsert keeps this row up to date after
+	 * each direct insert.  If no row exists (first insert into this
+	 * table), fall back to MAX(row_id) + 1 from the inlined data table. */
+	StringInfoData query;
+	initStringInfo(&query);
+	appendStringInfo(&query,
+	                 "SELECT next_row_id "
+	                 "FROM ducklake.ducklake_table_stats "
+	                 "WHERE table_id = %llu",
+	                 (unsigned long long)table_id);
 
-  ret = SPI_execute(query.data, true, 1);
-  if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    bool isnull;
-    Datum row_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
-    if (!isnull) {
-      next_row_id = DatumGetInt64(row_id_datum);
-    }
-  } else if (ret == SPI_OK_SELECT) {
-    /* No stats row -- fall back to scanning the inlined data table. */
-    StringInfoData fallback;
-    initStringInfo(&fallback);
-    appendStringInfo(&fallback,
-                     "SELECT COALESCE(MAX(row_id) + 1, 0) "
-                     "FROM ducklake.ducklake_inlined_data_%llu_%llu",
-                     (unsigned long long)table_id, (unsigned long long)schema_version);
+	ret = SPI_execute(query.data, true, 1);
+	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+		HeapTuple tuple = SPI_tuptable->vals[0];
+		bool isnull;
+		Datum row_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
+		if (!isnull) {
+			next_row_id = DatumGetInt64(row_id_datum);
+		}
+	} else if (ret == SPI_OK_SELECT) {
+		/* No stats row -- fall back to scanning the inlined data table. */
+		StringInfoData fallback;
+		initStringInfo(&fallback);
+		appendStringInfo(&fallback,
+		                 "SELECT COALESCE(MAX(row_id) + 1, 0) "
+		                 "FROM ducklake.ducklake_inlined_data_%llu_%llu",
+		                 (unsigned long long)table_id, (unsigned long long)schema_version);
 
-    ret = SPI_execute(fallback.data, true, 1);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-      HeapTuple tuple = SPI_tuptable->vals[0];
-      bool isnull;
-      Datum row_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
-      if (!isnull) {
-        next_row_id = DatumGetInt64(row_id_datum);
-      }
-    }
-  }
+		ret = SPI_execute(fallback.data, true, 1);
+		if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+			HeapTuple tuple = SPI_tuptable->vals[0];
+			bool isnull;
+			Datum row_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
+			if (!isnull) {
+				next_row_id = DatumGetInt64(row_id_datum);
+			}
+		}
+	}
 
-  SPI_finish();
-  return next_row_id;
+	SPI_finish();
+	return next_row_id;
 }
 
-uint64_t GetNextSnapshotId() {
-  int ret;
-  uint64_t next_snapshot_id = 1; // Default to 1 if no snapshots exist yet
+uint64_t
+GetNextSnapshotId() {
+	int ret;
+	uint64_t next_snapshot_id = 1; // Default to 1 if no snapshots exist yet
 
-  if ((ret = SPI_connect()) < 0) {
-    elog(ERROR, "SPI_connect failed: %d", ret);
-    return next_snapshot_id;
-  }
+	if ((ret = SPI_connect()) < 0) {
+		elog(ERROR, "SPI_connect failed: %d", ret);
+		return next_snapshot_id;
+	}
 
-  const char *query = "SELECT snapshot_id + 1 FROM ducklake.ducklake_snapshot "
-                      "ORDER BY snapshot_id DESC LIMIT 1";
+	const char *query = "SELECT snapshot_id + 1 FROM ducklake.ducklake_snapshot "
+	                    "ORDER BY snapshot_id DESC LIMIT 1";
 
-  ret = SPI_execute(query, true, 1);
-  if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    bool isnull;
-    Datum snapshot_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
-    if (!isnull) {
-      next_snapshot_id = DatumGetInt64(snapshot_id_datum);
-    }
-  }
+	ret = SPI_execute(query, true, 1);
+	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+		HeapTuple tuple = SPI_tuptable->vals[0];
+		bool isnull;
+		Datum snapshot_id_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1, &isnull);
+		if (!isnull) {
+			next_snapshot_id = DatumGetInt64(snapshot_id_datum);
+		}
+	}
 
-  SPI_finish();
-  return next_snapshot_id;
+	SPI_finish();
+	return next_snapshot_id;
 }
 
-void CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted) {
-  int ret;
+void
+CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted) {
+	int ret;
 
-  elog(DEBUG1, "CreateSnapshotForDirectInsert: creating snapshot %llu", (unsigned long long)snapshot_id);
+	elog(DEBUG1, "CreateSnapshotForDirectInsert: creating snapshot %llu", (unsigned long long)snapshot_id);
 
-  if ((ret = SPI_connect()) < 0) {
-    elog(ERROR, "CreateSnapshotForDirectInsert: SPI_connect failed: %d", ret);
-    return;
-  }
+	if ((ret = SPI_connect()) < 0) {
+		elog(ERROR, "CreateSnapshotForDirectInsert: SPI_connect failed: %d", ret);
+		return;
+	}
 
-  /* Read the latest snapshot via primary-key index backward scan (O(1))
-   * rather than MAX() over the full table.  We carry its schema_version
-   * forward: direct insert is a data-only change, so the new snapshot
-   * must preserve the global catalog view (which tables are visible).
-   * Using a per-table schema_version here would effectively roll back
-   * the catalog and hide tables created after this one. */
-  const char *query_state = "SELECT COALESCE(next_catalog_id, 1), COALESCE(next_file_id, 0), "
-                            "       COALESCE(schema_version, 0) "
-                            "FROM ducklake.ducklake_snapshot "
-                            "ORDER BY snapshot_id DESC LIMIT 1";
+	/* Read the latest snapshot via primary-key index backward scan (O(1))
+	 * rather than MAX() over the full table.  We carry its schema_version
+	 * forward: direct insert is a data-only change, so the new snapshot
+	 * must preserve the global catalog view (which tables are visible).
+	 * Using a per-table schema_version here would effectively roll back
+	 * the catalog and hide tables created after this one. */
+	const char *query_state = "SELECT COALESCE(next_catalog_id, 1), COALESCE(next_file_id, 0), "
+	                          "       COALESCE(schema_version, 0) "
+	                          "FROM ducklake.ducklake_snapshot "
+	                          "ORDER BY snapshot_id DESC LIMIT 1";
 
-  uint64_t next_catalog_id = 1;
-  uint64_t next_file_id = 0;
-  uint64_t schema_version = 0;
+	uint64_t next_catalog_id = 1;
+	uint64_t next_file_id = 0;
+	uint64_t schema_version = 0;
 
-  ret = SPI_execute(query_state, true, 1);
-  if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    TupleDesc tupdesc = SPI_tuptable->tupdesc;
-    bool isnull;
+	ret = SPI_execute(query_state, true, 1);
+	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+		HeapTuple tuple = SPI_tuptable->vals[0];
+		TupleDesc tupdesc = SPI_tuptable->tupdesc;
+		bool isnull;
 
-    Datum catalog_id_datum = SPI_getbinval(tuple, tupdesc, 1, &isnull);
-    if (!isnull) {
-      next_catalog_id = DatumGetInt64(catalog_id_datum);
-    }
+		Datum catalog_id_datum = SPI_getbinval(tuple, tupdesc, 1, &isnull);
+		if (!isnull) {
+			next_catalog_id = DatumGetInt64(catalog_id_datum);
+		}
 
-    Datum file_id_datum = SPI_getbinval(tuple, tupdesc, 2, &isnull);
-    if (!isnull) {
-      next_file_id = DatumGetInt64(file_id_datum);
-    }
+		Datum file_id_datum = SPI_getbinval(tuple, tupdesc, 2, &isnull);
+		if (!isnull) {
+			next_file_id = DatumGetInt64(file_id_datum);
+		}
 
-    Datum schema_version_datum = SPI_getbinval(tuple, tupdesc, 3, &isnull);
-    if (!isnull) {
-      schema_version = DatumGetInt64(schema_version_datum);
-    }
-  }
+		Datum schema_version_datum = SPI_getbinval(tuple, tupdesc, 3, &isnull);
+		if (!isnull) {
+			schema_version = DatumGetInt64(schema_version_datum);
+		}
+	}
 
-  StringInfoData snapshot_insert;
-  initStringInfo(&snapshot_insert);
-  appendStringInfo(&snapshot_insert,
-                   "INSERT INTO ducklake.ducklake_snapshot "
-                   "(snapshot_id, snapshot_time, schema_version, next_catalog_id, "
-                   "next_file_id) "
-                   "VALUES (%llu, NOW(), %llu, %llu, %llu)",
-                   (unsigned long long)snapshot_id, (unsigned long long)schema_version,
-                   (unsigned long long)next_catalog_id, (unsigned long long)next_file_id);
+	StringInfoData snapshot_insert;
+	initStringInfo(&snapshot_insert);
+	appendStringInfo(&snapshot_insert,
+	                 "INSERT INTO ducklake.ducklake_snapshot "
+	                 "(snapshot_id, snapshot_time, schema_version, next_catalog_id, "
+	                 "next_file_id) "
+	                 "VALUES (%llu, NOW(), %llu, %llu, %llu)",
+	                 (unsigned long long)snapshot_id, (unsigned long long)schema_version,
+	                 (unsigned long long)next_catalog_id, (unsigned long long)next_file_id);
 
-  elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", snapshot_insert.data);
-  ret = SPI_execute(snapshot_insert.data, false, 0);
-  if (ret != SPI_OK_INSERT) {
-    elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot: %d", ret);
-  }
+	elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", snapshot_insert.data);
+	ret = SPI_execute(snapshot_insert.data, false, 0);
+	if (ret != SPI_OK_INSERT) {
+		elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot: %d", ret);
+	}
 
-  // Build INSERT for ducklake_snapshot_changes
-  // Use a simple description for the changes_made field
-  StringInfoData changes_insert;
-  initStringInfo(&changes_insert);
-  appendStringInfo(&changes_insert,
-                   "INSERT INTO ducklake.ducklake_snapshot_changes "
-                   "(snapshot_id, changes_made, author, commit_message, commit_extra_info) "
-                   "VALUES (%llu, 'inlined_data_insert', NULL, NULL, NULL)",
-                   (unsigned long long)snapshot_id);
+	// Build INSERT for ducklake_snapshot_changes
+	// Use a simple description for the changes_made field
+	StringInfoData changes_insert;
+	initStringInfo(&changes_insert);
+	appendStringInfo(&changes_insert,
+	                 "INSERT INTO ducklake.ducklake_snapshot_changes "
+	                 "(snapshot_id, changes_made, author, commit_message, commit_extra_info) "
+	                 "VALUES (%llu, 'inlined_data_insert', NULL, NULL, NULL)",
+	                 (unsigned long long)snapshot_id);
 
-  elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", changes_insert.data);
-  ret = SPI_execute(changes_insert.data, false, 0);
-  if (ret != SPI_OK_INSERT) {
-    elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot changes: %d", ret);
-  }
+	elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", changes_insert.data);
+	ret = SPI_execute(changes_insert.data, false, 0);
+	if (ret != SPI_OK_INSERT) {
+		elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot changes: %d", ret);
+	}
 
-  /* Update ducklake_table_stats, or create it if this is the first insert.
-   * DuckDB normally creates this row on its first data commit, but the
-   * direct-insert path bypasses DuckDB entirely.  When inserting a new
-   * stats row we must also populate ducklake_table_column_stats so that
-   * DuckDB's GetGlobalTableStats LEFT JOIN doesn't produce a NULL
-   * column_id (TransformGlobalStatsRow reads it without a null check). */
-  StringInfoData stats_update;
-  initStringInfo(&stats_update);
-  appendStringInfo(&stats_update,
-                   "UPDATE ducklake.ducklake_table_stats "
-                   "SET next_row_id = next_row_id + %lld, "
-                   "    record_count = record_count + %lld "
-                   "WHERE table_id = %llu",
-                   (long long)rows_inserted, (long long)rows_inserted, (unsigned long long)table_id);
+	/* Update ducklake_table_stats, or create it if this is the first insert.
+	 * DuckDB normally creates this row on its first data commit, but the
+	 * direct-insert path bypasses DuckDB entirely.  When inserting a new
+	 * stats row we must also populate ducklake_table_column_stats so that
+	 * DuckDB's GetGlobalTableStats LEFT JOIN doesn't produce a NULL
+	 * column_id (TransformGlobalStatsRow reads it without a null check). */
+	StringInfoData stats_update;
+	initStringInfo(&stats_update);
+	appendStringInfo(&stats_update,
+	                 "UPDATE ducklake.ducklake_table_stats "
+	                 "SET next_row_id = next_row_id + %lld, "
+	                 "    record_count = record_count + %lld "
+	                 "WHERE table_id = %llu",
+	                 (long long)rows_inserted, (long long)rows_inserted, (unsigned long long)table_id);
 
-  ret = SPI_execute(stats_update.data, false, 0);
-  if (ret != SPI_OK_UPDATE) {
-    elog(ERROR, "CreateSnapshotForDirectInsert: failed to update table stats: %d", ret);
-  }
+	ret = SPI_execute(stats_update.data, false, 0);
+	if (ret != SPI_OK_UPDATE) {
+		elog(ERROR, "CreateSnapshotForDirectInsert: failed to update table stats: %d", ret);
+	}
 
-  if (SPI_processed == 0) {
-    /* No existing stats row -- first direct insert into this table. */
-    StringInfoData stats_insert;
-    initStringInfo(&stats_insert);
-    appendStringInfo(&stats_insert,
-                     "INSERT INTO ducklake.ducklake_table_stats "
-                     "(table_id, record_count, next_row_id, file_size_bytes) "
-                     "VALUES (%llu, %lld, %lld, 0)",
-                     (unsigned long long)table_id, (long long)rows_inserted, (long long)rows_inserted);
+	if (SPI_processed == 0) {
+		/* No existing stats row -- first direct insert into this table. */
+		StringInfoData stats_insert;
+		initStringInfo(&stats_insert);
+		appendStringInfo(&stats_insert,
+		                 "INSERT INTO ducklake.ducklake_table_stats "
+		                 "(table_id, record_count, next_row_id, file_size_bytes) "
+		                 "VALUES (%llu, %lld, %lld, 0)",
+		                 (unsigned long long)table_id, (long long)rows_inserted, (long long)rows_inserted);
 
-    ret = SPI_execute(stats_insert.data, false, 0);
-    if (ret != SPI_OK_INSERT) {
-      elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert table stats: %d", ret);
-    }
+		ret = SPI_execute(stats_insert.data, false, 0);
+		if (ret != SPI_OK_INSERT) {
+			elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert table stats: %d", ret);
+		}
 
-    /* Populate ducklake_table_column_stats for each active column. */
-    StringInfoData col_stats_insert;
-    initStringInfo(&col_stats_insert);
-    appendStringInfo(&col_stats_insert,
-                     "INSERT INTO ducklake.ducklake_table_column_stats "
-                     "(table_id, column_id, contains_null, contains_nan, "
-                     "min_value, max_value, extra_stats) "
-                     "SELECT %llu, column_id, NULL, NULL, NULL, NULL, NULL "
-                     "FROM ducklake.ducklake_column "
-                     "WHERE table_id = %llu AND end_snapshot IS NULL",
-                     (unsigned long long)table_id, (unsigned long long)table_id);
+		/* Populate ducklake_table_column_stats for each active column. */
+		StringInfoData col_stats_insert;
+		initStringInfo(&col_stats_insert);
+		appendStringInfo(&col_stats_insert,
+		                 "INSERT INTO ducklake.ducklake_table_column_stats "
+		                 "(table_id, column_id, contains_null, contains_nan, "
+		                 "min_value, max_value, extra_stats) "
+		                 "SELECT %llu, column_id, NULL, NULL, NULL, NULL, NULL "
+		                 "FROM ducklake.ducklake_column "
+		                 "WHERE table_id = %llu AND end_snapshot IS NULL",
+		                 (unsigned long long)table_id, (unsigned long long)table_id);
 
-    ret = SPI_execute(col_stats_insert.data, false, 0);
-    if (ret != SPI_OK_INSERT) {
-      elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert column stats: %d", ret);
-    }
+		ret = SPI_execute(col_stats_insert.data, false, 0);
+		if (ret != SPI_OK_INSERT) {
+			elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert column stats: %d", ret);
+		}
 
-    elog(DEBUG1, "CreateSnapshotForDirectInsert: created new stats row for table %llu", (unsigned long long)table_id);
-  }
+		elog(DEBUG1, "CreateSnapshotForDirectInsert: created new stats row for table %llu",
+		     (unsigned long long)table_id);
+	}
 
-  SPI_finish();
-  elog(DEBUG1, "CreateSnapshotForDirectInsert: successfully created snapshot %llu", (unsigned long long)snapshot_id);
+	SPI_finish();
+	elog(DEBUG1, "CreateSnapshotForDirectInsert: successfully created snapshot %llu", (unsigned long long)snapshot_id);
 }
 
 } // namespace pgducklake

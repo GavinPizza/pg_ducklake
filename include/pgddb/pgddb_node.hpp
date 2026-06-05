@@ -8,6 +8,6 @@ extern "C" {
 namespace pgddb {
 
 extern CustomScanMethods scan_methods;
-void InitNode(const char* custom_scan_name);
+void InitNode(const char *custom_scan_name);
 
 } // namespace pgddb

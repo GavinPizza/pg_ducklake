@@ -118,8 +118,7 @@ __PostgresFunctionGuard__(const char *func_name, FuncArgs... args) {
 	throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, message);
 }
 
-#define PostgresFunctionGuard(FUNC, ...)                                                                               \
-	pgddb::__PostgresFunctionGuard__<decltype(&FUNC), &FUNC>(#FUNC, ##__VA_ARGS__)
+#define PostgresFunctionGuard(FUNC, ...) pgddb::__PostgresFunctionGuard__<decltype(&FUNC), &FUNC>(#FUNC, ##__VA_ARGS__)
 
 template <typename T, typename ReturnType, typename... FuncArgs>
 ReturnType

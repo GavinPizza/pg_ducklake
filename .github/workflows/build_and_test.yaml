@@ -12,6 +12,20 @@ concurrency:
   cancel-in-progress: ${{ !contains(github.ref, 'main') }}
 
 jobs:
+  format:
+    name: "clang-format"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Check formatting (libpgddb core + pg_ducklake, excludes vendor/)
+        run: |
+          find src include examples/pg_ducklake/src examples/pg_ducklake/include \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -not -path '*/vendor/*' -print0 \
+            | xargs -0 uvx clang-format@22.1.5 --dry-run -Werror
+
   # Build pg_duckdb + pg_vortex against PostgreSQL, run each example's
   # installcheck. Modeled on examples/pg_duckdb/.github/workflows/build_and_test.yaml
   # (the original pg_duckdb workflow, now dormant under examples/), adapted

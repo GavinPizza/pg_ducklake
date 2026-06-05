@@ -64,49 +64,49 @@ extern "C" {
  * Calls all sync_handlers in order.
  */
 DECLARE_PG_FUNCTION(ducklake_snapshot_trigger) {
-  if (!CALLED_AS_TRIGGER(fcinfo))
-    elog(ERROR, "not fired by trigger manager");
+	if (!CALLED_AS_TRIGGER(fcinfo))
+		elog(ERROR, "not fired by trigger manager");
 
-  TriggerData *trigdata = (TriggerData *)fcinfo->context;
+	TriggerData *trigdata = (TriggerData *)fcinfo->context;
 
-  /* Skip sync when:
-   *  - skip_snapshot_sync is set (direct insert / ExecuteCommit paths
-   *    have no DDL changes to reverse-sync; running sync handlers on
-   *    a DuckDB worker thread would also crash because PG's
-   *    InterruptHoldoffCount is not thread-safe), or
-   *  - enable_metadata_sync GUC is off (user opts out of the
-   *    per-commit sync overhead when all DDL goes through PG). */
-  if (pgducklake::skip_snapshot_sync || !pgducklake::enable_metadata_sync) {
-    return PointerGetDatum(trigdata->tg_trigtuple);
-  }
+	/* Skip sync when:
+	 *  - skip_snapshot_sync is set (direct insert / ExecuteCommit paths
+	 *    have no DDL changes to reverse-sync; running sync handlers on
+	 *    a DuckDB worker thread would also crash because PG's
+	 *    InterruptHoldoffCount is not thread-safe), or
+	 *  - enable_metadata_sync GUC is off (user opts out of the
+	 *    per-commit sync overhead when all DDL goes through PG). */
+	if (pgducklake::skip_snapshot_sync || !pgducklake::enable_metadata_sync) {
+		return PointerGetDatum(trigdata->tg_trigtuple);
+	}
 
-  /* Extract snapshot_id from the NEW row */
-  bool isnull;
-  int64 snapshot_id = DatumGetInt64(SPI_getbinval(trigdata->tg_trigtuple, trigdata->tg_relation->rd_att, 1, &isnull));
-  if (isnull)
-    elog(ERROR, "snapshot_id is NULL");
+	/* Extract snapshot_id from the NEW row */
+	bool isnull;
+	int64 snapshot_id = DatumGetInt64(SPI_getbinval(trigdata->tg_trigtuple, trigdata->tg_relation->rd_att, 1, &isnull));
+	if (isnull)
+		elog(ERROR, "snapshot_id is NULL");
 
-  SPI_connect();
+	SPI_connect();
 
-  auto save_nestlevel = NewGUCNestLevel();
-  SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
+	auto save_nestlevel = NewGUCNestLevel();
+	SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
-  pgducklake::syncing_from_metadata = true;
+	pgducklake::syncing_from_metadata = true;
 
-  PG_TRY();
-  {
-    std::string sid = std::to_string(snapshot_id);
-    for (auto handler : sync_handlers)
-      handler(sid.c_str());
-  }
-  PG_FINALLY();
-  {
-    pgducklake::syncing_from_metadata = false;
-  }
-  PG_END_TRY();
+	PG_TRY();
+	{
+		std::string sid = std::to_string(snapshot_id);
+		for (auto handler : sync_handlers)
+			handler(sid.c_str());
+	}
+	PG_FINALLY();
+	{
+		pgducklake::syncing_from_metadata = false;
+	}
+	PG_END_TRY();
 
-  AtEOXact_GUC(false, save_nestlevel);
-  SPI_finish();
-  return PointerGetDatum(trigdata->tg_trigtuple);
+	AtEOXact_GUC(false, save_nestlevel);
+	SPI_finish();
+	return PointerGetDatum(trigdata->tg_trigtuple);
 }
 }

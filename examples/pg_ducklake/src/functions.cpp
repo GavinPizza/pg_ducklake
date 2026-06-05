@@ -74,23 +74,24 @@ namespace pgducklake {
 
 using namespace duckdb;
 
-bool IsDucklakeOnlyFunction(Oid funcid) {
-  // Match by prosrc only: pg_ducklake declares all of its DuckDB-routed
-  // SQL stubs with prosrc='duckdb_only_function', whether they live in
-  // the ducklake schema (snapshots, table_info, ...) or in @extschema@
-  // (read_csv, read_parquet -- unqualified for parity with pg_duckdb).
-  HeapTuple tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
-  if (!HeapTupleIsValid(tp))
-    return false;
-  bool isnull;
-  Datum prosrc_datum = SysCacheGetAttr(PROCOID, tp, Anum_pg_proc_prosrc, &isnull);
-  if (isnull) {
-    ReleaseSysCache(tp);
-    return false;
-  }
-  char *prosrc_str = TextDatumGetCString(prosrc_datum);
-  ReleaseSysCache(tp);
-  return std::strcmp(prosrc_str, "duckdb_only_function") == 0;
+bool
+IsDucklakeOnlyFunction(Oid funcid) {
+	// Match by prosrc only: pg_ducklake declares all of its DuckDB-routed
+	// SQL stubs with prosrc='duckdb_only_function', whether they live in
+	// the ducklake schema (snapshots, table_info, ...) or in @extschema@
+	// (read_csv, read_parquet -- unqualified for parity with pg_duckdb).
+	HeapTuple tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
+	if (!HeapTupleIsValid(tp))
+		return false;
+	bool isnull;
+	Datum prosrc_datum = SysCacheGetAttr(PROCOID, tp, Anum_pg_proc_prosrc, &isnull);
+	if (isnull) {
+		ReleaseSysCache(tp);
+		return false;
+	}
+	char *prosrc_str = TextDatumGetCString(prosrc_datum);
+	ReleaseSysCache(tp);
+	return std::strcmp(prosrc_str, "duckdb_only_function") == 0;
 }
 
 } // namespace pgducklake
@@ -104,16 +105,16 @@ bool IsDucklakeOnlyFunction(Oid funcid) {
 extern "C" {
 
 DECLARE_PG_FUNCTION(duckdb_only_function) {
-  char *function_name = DatumGetCString(DirectFunctionCall1(regprocout, fcinfo->flinfo->fn_oid));
-  elog(ERROR, "Function '%s' only works with DuckDB execution", function_name);
+	char *function_name = DatumGetCString(DirectFunctionCall1(regprocout, fcinfo->flinfo->fn_oid));
+	elog(ERROR, "Function '%s' only works with DuckDB execution", function_name);
 }
 
 // ducklake_only_procedure: the procedure twin of duckdb_only_function. The CALL
 // is caught by the utility hook (IsDucklakeOnlyProcedure) and routed to DuckDB;
 // if this body runs the routing was missed, so error loudly.
 DECLARE_PG_FUNCTION(ducklake_only_procedure) {
-  char *proc_name = DatumGetCString(DirectFunctionCall1(regprocout, ObjectIdGetDatum(fcinfo->flinfo->fn_oid)));
-  elog(ERROR, "Procedure '%s' only works with DuckDB execution", proc_name);
+	char *proc_name = DatumGetCString(DirectFunctionCall1(regprocout, ObjectIdGetDatum(fcinfo->flinfo->fn_oid)));
+	elog(ERROR, "Procedure '%s' only works with DuckDB execution", proc_name);
 }
 
 // ducklake_function_mapping: marker stub for the regclass overloads of
@@ -124,10 +125,10 @@ DECLARE_PG_FUNCTION(ducklake_only_procedure) {
 // them to DuckDB; if this body fires the rewrite was missed, so error with a
 // corrective hint.
 DECLARE_PG_FUNCTION(ducklake_function_mapping) {
-  ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("regclass function was not rewritten by planner hook"),
-                  errhint("Use the (schema_name text, table_name text) form "
-                          "for dynamic table references.")));
-  PG_RETURN_NULL();
+	ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("regclass function was not rewritten by planner hook"),
+	                errhint("Use the (schema_name text, table_name text) form "
+	                        "for dynamic table references.")));
+	PG_RETURN_NULL();
 }
 }
 
@@ -224,39 +225,44 @@ static const DefaultMacro pg_ducklake_scalar_macros[] = {
  */
 
 /* Look up an upstream ducklake_<name> table function by name and arity. */
-static TableFunction LookupUpstreamFunction(ClientContext &context, const string &ducklake_name,
-                                            vector<LogicalType> arg_types = {LogicalType::VARCHAR}) {
-  auto &catalog = Catalog::GetSystemCatalog(context);
-  auto &entry = catalog.GetEntry(context, CatalogType::TABLE_FUNCTION_ENTRY, DEFAULT_SCHEMA, ducklake_name)
-                    .Cast<TableFunctionCatalogEntry>();
-  return entry.functions.GetFunctionByArguments(context, arg_types);
+static TableFunction
+LookupUpstreamFunction(ClientContext &context, const string &ducklake_name,
+                       vector<LogicalType> arg_types = {LogicalType::VARCHAR}) {
+	auto &catalog = Catalog::GetSystemCatalog(context);
+	auto &entry = catalog.GetEntry(context, CatalogType::TABLE_FUNCTION_ENTRY, DEFAULT_SCHEMA, ducklake_name)
+	                  .Cast<TableFunctionCatalogEntry>();
+	return entry.functions.GetFunctionByArguments(context, arg_types);
 }
 
 /* Stub init/execute for bind-pattern table functions -- bind replaces
  * the function pointer before these are reached. */
-static unique_ptr<GlobalTableFunctionState> UnreachableInit(ClientContext &, TableFunctionInitInput &) {
-  throw InternalException("UnreachableInit should never be called");
+static unique_ptr<GlobalTableFunctionState>
+UnreachableInit(ClientContext &, TableFunctionInitInput &) {
+	throw InternalException("UnreachableInit should never be called");
 }
 
-static void UnreachableExecute(ClientContext &, TableFunctionInput &, DataChunk &) {
-  throw InternalException("UnreachableExecute should never be called");
+static void
+UnreachableExecute(ClientContext &, TableFunctionInput &, DataChunk &) {
+	throw InternalException("UnreachableExecute should never be called");
 }
 
 /* Register a TableFunctionSet in the DuckDB system catalog. */
-static void RegisterTableFunctionSet(DatabaseInstance &db, TableFunctionSet &set) {
-  CreateTableFunctionInfo info(set);
-  auto &catalog = Catalog::GetSystemCatalog(db);
-  auto transaction = CatalogTransaction::GetSystemTransaction(db);
-  catalog.CreateTableFunction(transaction, info);
+static void
+RegisterTableFunctionSet(DatabaseInstance &db, TableFunctionSet &set) {
+	CreateTableFunctionInfo info(set);
+	auto &catalog = Catalog::GetSystemCatalog(db);
+	auto transaction = CatalogTransaction::GetSystemTransaction(db);
+	catalog.CreateTableFunction(transaction, info);
 }
 
 /* Reset bind input to just the catalog constant (the first positional arg of
  * every ducklake_<name>) with no named parameters. Overload-specific inputs
  * are added by the caller afterwards. */
-static void ResetToCatalogOnly(TableFunctionBindInput &input) {
-  input.inputs.clear();
-  input.inputs.push_back(duckdb::Value(PGDUCKLAKE_DUCKDB_CATALOG));
-  input.named_parameters.clear();
+static void
+ResetToCatalogOnly(TableFunctionBindInput &input) {
+	input.inputs.clear();
+	input.inputs.push_back(duckdb::Value(PGDUCKLAKE_DUCKDB_CATALOG));
+	input.named_parameters.clear();
 }
 
 /*
@@ -264,41 +270,44 @@ static void ResetToCatalogOnly(TableFunctionBindInput &input) {
  * functions. The no-args overload of both passes cleanup_all=true to its
  * upstream; cleanup_old_files additionally has an interval overload.
  */
-static unique_ptr<FunctionData> CleanupAllBind(ClientContext &context, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names,
-                                               const string &ducklake_name) {
-  ResetToCatalogOnly(input);
-  input.named_parameters["cleanup_all"] = duckdb::Value::BOOLEAN(true);
+static unique_ptr<FunctionData>
+CleanupAllBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+               vector<string> &names, const string &ducklake_name) {
+	ResetToCatalogOnly(input);
+	input.named_parameters["cleanup_all"] = duckdb::Value::BOOLEAN(true);
 
-  auto func = LookupUpstreamFunction(context, ducklake_name);
-  input.table_function = func;
-  return func.bind(context, input, return_types, names);
+	auto func = LookupUpstreamFunction(context, ducklake_name);
+	input.table_function = func;
+	return func.bind(context, input, return_types, names);
 }
 
-static unique_ptr<FunctionData> CleanupOldFilesNoArgsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                          vector<LogicalType> &return_types, vector<string> &names) {
-  return CleanupAllBind(context, input, return_types, names, "ducklake_cleanup_old_files");
+static unique_ptr<FunctionData>
+CleanupOldFilesNoArgsBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+                          vector<string> &names) {
+	return CleanupAllBind(context, input, return_types, names, "ducklake_cleanup_old_files");
 }
 
-static unique_ptr<FunctionData> CleanupIntervalBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
-  auto interval_val = input.inputs[0].GetValue<interval_t>();
-  auto now = duckdb::Timestamp::GetCurrentTimestamp();
-  auto older_than = duckdb::Interval::Add(now, duckdb::Interval::Invert(interval_val));
+static unique_ptr<FunctionData>
+CleanupIntervalBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+                    vector<string> &names) {
+	auto interval_val = input.inputs[0].GetValue<interval_t>();
+	auto now = duckdb::Timestamp::GetCurrentTimestamp();
+	auto older_than = duckdb::Interval::Add(now, duckdb::Interval::Invert(interval_val));
 
-  ResetToCatalogOnly(input);
-  input.named_parameters["older_than"] = duckdb::Value::TIMESTAMPTZ(timestamp_tz_t(older_than.value));
+	ResetToCatalogOnly(input);
+	input.named_parameters["older_than"] = duckdb::Value::TIMESTAMPTZ(timestamp_tz_t(older_than.value));
 
-  auto func = LookupUpstreamFunction(context, "ducklake_cleanup_old_files");
-  input.table_function = func;
-  return func.bind(context, input, return_types, names);
+	auto func = LookupUpstreamFunction(context, "ducklake_cleanup_old_files");
+	input.table_function = func;
+	return func.bind(context, input, return_types, names);
 }
 
 /* cleanup_orphaned_files(): no-args only; same cleanup_all=true prologue, but
  * delegates to the differently-named upstream ducklake_delete_orphaned_files. */
-static unique_ptr<FunctionData> OrphanedNoArgsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
-  return CleanupAllBind(context, input, return_types, names, "ducklake_delete_orphaned_files");
+static unique_ptr<FunctionData>
+OrphanedNoArgsBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+                   vector<string> &names) {
+	return CleanupAllBind(context, input, return_types, names, "ducklake_delete_orphaned_files");
 }
 
 /*
@@ -318,60 +327,61 @@ static unique_ptr<FunctionData> OrphanedNoArgsBind(ClientContext &context, Table
  *   - flush:         (catalog) positional + schema_name => / table_name => named
  *                    -> looked up by {VARCHAR} (the default)
  */
-static unique_ptr<LogicalOperator> BindOpNoArgs(ClientContext &context, TableFunctionBindInput &input, idx_t bind_index,
-                                                vector<string> &return_names, const string &ducklake_name) {
-  ResetToCatalogOnly(input);
+static unique_ptr<LogicalOperator>
+BindOpNoArgs(ClientContext &context, TableFunctionBindInput &input, idx_t bind_index, vector<string> &return_names,
+             const string &ducklake_name) {
+	ResetToCatalogOnly(input);
 
-  auto func = LookupUpstreamFunction(context, ducklake_name);
-  input.table_function = func;
-  return func.bind_operator(context, input, bind_index, return_names);
+	auto func = LookupUpstreamFunction(context, ducklake_name);
+	input.table_function = func;
+	return func.bind_operator(context, input, bind_index, return_names);
 }
 
 /* merge/rewrite: upstream signature is (catalog, table_name, schema => ...). */
-static unique_ptr<LogicalOperator> BindOpPositionalTable(ClientContext &context, TableFunctionBindInput &input,
-                                                         idx_t bind_index, vector<string> &return_names,
-                                                         const string &ducklake_name) {
-  auto schema_name = input.inputs[0].GetValue<string>();
-  auto table_name = input.inputs[1].GetValue<string>();
+static unique_ptr<LogicalOperator>
+BindOpPositionalTable(ClientContext &context, TableFunctionBindInput &input, idx_t bind_index,
+                      vector<string> &return_names, const string &ducklake_name) {
+	auto schema_name = input.inputs[0].GetValue<string>();
+	auto table_name = input.inputs[1].GetValue<string>();
 
-  ResetToCatalogOnly(input);
-  input.inputs.push_back(duckdb::Value(table_name));
-  input.named_parameters["schema"] = duckdb::Value(schema_name);
+	ResetToCatalogOnly(input);
+	input.inputs.push_back(duckdb::Value(table_name));
+	input.named_parameters["schema"] = duckdb::Value(schema_name);
 
-  auto func = LookupUpstreamFunction(context, ducklake_name, {LogicalType::VARCHAR, LogicalType::VARCHAR});
-  input.table_function = func;
-  return func.bind_operator(context, input, bind_index, return_names);
+	auto func = LookupUpstreamFunction(context, ducklake_name, {LogicalType::VARCHAR, LogicalType::VARCHAR});
+	input.table_function = func;
+	return func.bind_operator(context, input, bind_index, return_names);
 }
 
 /* flush: upstream signature is (catalog, schema_name => ..., table_name => ...). */
-static unique_ptr<LogicalOperator> BindOpNamedTable(ClientContext &context, TableFunctionBindInput &input,
-                                                    idx_t bind_index, vector<string> &return_names,
-                                                    const string &ducklake_name) {
-  auto schema_name = input.inputs[0].GetValue<string>();
-  auto table_name = input.inputs[1].GetValue<string>();
+static unique_ptr<LogicalOperator>
+BindOpNamedTable(ClientContext &context, TableFunctionBindInput &input, idx_t bind_index, vector<string> &return_names,
+                 const string &ducklake_name) {
+	auto schema_name = input.inputs[0].GetValue<string>();
+	auto table_name = input.inputs[1].GetValue<string>();
 
-  ResetToCatalogOnly(input);
-  input.named_parameters["schema_name"] = duckdb::Value(schema_name);
-  input.named_parameters["table_name"] = duckdb::Value(table_name);
+	ResetToCatalogOnly(input);
+	input.named_parameters["schema_name"] = duckdb::Value(schema_name);
+	input.named_parameters["table_name"] = duckdb::Value(table_name);
 
-  // schema_name/table_name are named params, so the upstream overload is
-  // resolved by its single positional VARCHAR (catalog) -- the default arity.
-  auto func = LookupUpstreamFunction(context, ducklake_name);
-  input.table_function = func;
-  return func.bind_operator(context, input, bind_index, return_names);
+	// schema_name/table_name are named params, so the upstream overload is
+	// resolved by its single positional VARCHAR (catalog) -- the default arity.
+	auto func = LookupUpstreamFunction(context, ducklake_name);
+	input.table_function = func;
+	return func.bind_operator(context, input, bind_index, return_names);
 }
 
 /* bind_operator requires plain function pointers; stamp a no-args/table-args
  * pair per pg function, closing over the upstream name and table-arg style. */
 #define DEFINE_BIND_OP_SET(prefix, ducklake_name, table_args_helper)                                                   \
-  static unique_ptr<LogicalOperator> prefix##NoArgsBind(ClientContext &ctx, TableFunctionBindInput &input,             \
-                                                        idx_t bind_index, vector<string> &return_names) {              \
-    return BindOpNoArgs(ctx, input, bind_index, return_names, ducklake_name);                                          \
-  }                                                                                                                    \
-  static unique_ptr<LogicalOperator> prefix##TableArgsBind(ClientContext &ctx, TableFunctionBindInput &input,          \
-                                                           idx_t bind_index, vector<string> &return_names) {           \
-    return table_args_helper(ctx, input, bind_index, return_names, ducklake_name);                                     \
-  }
+	static unique_ptr<LogicalOperator> prefix##NoArgsBind(ClientContext &ctx, TableFunctionBindInput &input,           \
+	                                                      idx_t bind_index, vector<string> &return_names) {            \
+		return BindOpNoArgs(ctx, input, bind_index, return_names, ducklake_name);                                      \
+	}                                                                                                                  \
+	static unique_ptr<LogicalOperator> prefix##TableArgsBind(ClientContext &ctx, TableFunctionBindInput &input,        \
+	                                                         idx_t bind_index, vector<string> &return_names) {         \
+		return table_args_helper(ctx, input, bind_index, return_names, ducklake_name);                                 \
+	}
 
 DEFINE_BIND_OP_SET(Merge, "ducklake_merge_adjacent_files", BindOpPositionalTable)
 DEFINE_BIND_OP_SET(Rewrite, "ducklake_rewrite_data_files", BindOpPositionalTable)
@@ -380,20 +390,20 @@ DEFINE_BIND_OP_SET(Flush, "ducklake_flush_inlined_data", BindOpNamedTable)
 #undef DEFINE_BIND_OP_SET
 
 /* Register a two-overload bind_operator set: no-args + (text, text). */
-static void RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name,
-                                    table_function_bind_operator_t no_args_bind,
-                                    table_function_bind_operator_t table_args_bind) {
-  TableFunctionSet set(pg_name);
+static void
+RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name, table_function_bind_operator_t no_args_bind,
+                        table_function_bind_operator_t table_args_bind) {
+	TableFunctionSet set(pg_name);
 
-  TableFunction no_args({}, nullptr, nullptr, nullptr);
-  no_args.bind_operator = no_args_bind;
-  set.AddFunction(no_args);
+	TableFunction no_args({}, nullptr, nullptr, nullptr);
+	no_args.bind_operator = no_args_bind;
+	set.AddFunction(no_args);
 
-  TableFunction table_args({LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, nullptr, nullptr);
-  table_args.bind_operator = table_args_bind;
-  set.AddFunction(table_args);
+	TableFunction table_args({LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, nullptr, nullptr);
+	table_args.bind_operator = table_args_bind;
+	set.AddFunction(table_args);
 
-  RegisterTableFunctionSet(db, set);
+	RegisterTableFunctionSet(db, set);
 }
 
 /*
@@ -402,46 +412,48 @@ static void RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name,
  * and scalar macros (system.main.<name> -> ducklake_<name>(catalog, ...)),
  * plus the overloaded TableFunctionSets that DuckDB macros can't express.
  */
-void RegisterDucklakeFunctions(DatabaseInstance &db) {
-  auto &catalog = Catalog::GetSystemCatalog(db);
-  auto transaction = CatalogTransaction::GetSystemTransaction(db);
+void
+RegisterDucklakeFunctions(DatabaseInstance &db) {
+	auto &catalog = Catalog::GetSystemCatalog(db);
+	auto transaction = CatalogTransaction::GetSystemTransaction(db);
 
-  // Wrapper table macros: system.main.<name>(...) -> ducklake_<name>(catalog, ...).
-  for (const auto &macro : pg_ducklake_wrapper_macros) {
-    auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(macro);
-    catalog.CreateFunction(transaction, *info);
-  }
+	// Wrapper table macros: system.main.<name>(...) -> ducklake_<name>(catalog, ...).
+	for (const auto &macro : pg_ducklake_wrapper_macros) {
+		auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(macro);
+		catalog.CreateFunction(transaction, *info);
+	}
 
-  // Scalar macros: virtual-column accessors + variant field extraction.
-  for (const auto &macro : pg_ducklake_scalar_macros) {
-    auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(macro);
-    catalog.CreateFunction(transaction, *info);
-  }
+	// Scalar macros: virtual-column accessors + variant field extraction.
+	for (const auto &macro : pg_ducklake_scalar_macros) {
+		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(macro);
+		catalog.CreateFunction(transaction, *info);
+	}
 
-  // time_travel(...): query a DuckLake table at a historical snapshot
-  // (built in time_travel.cpp).
-  auto time_travel = GetTimeTravelFunctions();
-  RegisterTableFunctionSet(db, time_travel);
+	// time_travel(...): query a DuckLake table at a historical snapshot
+	// (built in time_travel.cpp).
+	auto time_travel = GetTimeTravelFunctions();
+	RegisterTableFunctionSet(db, time_travel);
 
-  // cleanup_old_files(): no-args + interval overloads (.bind pattern).
-  {
-    TableFunctionSet set("cleanup_old_files");
-    set.AddFunction(TableFunction({}, UnreachableExecute, CleanupOldFilesNoArgsBind, UnreachableInit));
-    set.AddFunction(TableFunction({LogicalType::INTERVAL}, UnreachableExecute, CleanupIntervalBind, UnreachableInit));
-    RegisterTableFunctionSet(db, set);
-  }
+	// cleanup_old_files(): no-args + interval overloads (.bind pattern).
+	{
+		TableFunctionSet set("cleanup_old_files");
+		set.AddFunction(TableFunction({}, UnreachableExecute, CleanupOldFilesNoArgsBind, UnreachableInit));
+		set.AddFunction(
+		    TableFunction({LogicalType::INTERVAL}, UnreachableExecute, CleanupIntervalBind, UnreachableInit));
+		RegisterTableFunctionSet(db, set);
+	}
 
-  // cleanup_orphaned_files(): no-args only (.bind pattern).
-  {
-    TableFunctionSet set("cleanup_orphaned_files");
-    set.AddFunction(TableFunction({}, UnreachableExecute, OrphanedNoArgsBind, UnreachableInit));
-    RegisterTableFunctionSet(db, set);
-  }
+	// cleanup_orphaned_files(): no-args only (.bind pattern).
+	{
+		TableFunctionSet set("cleanup_orphaned_files");
+		set.AddFunction(TableFunction({}, UnreachableExecute, OrphanedNoArgsBind, UnreachableInit));
+		RegisterTableFunctionSet(db, set);
+	}
 
-  // Compaction + flush: bind_operator sets (no-args + (text, text)).
-  RegisterBindOperatorSet(db, "merge_adjacent_files", MergeNoArgsBind, MergeTableArgsBind);
-  RegisterBindOperatorSet(db, "rewrite_data_files", RewriteNoArgsBind, RewriteTableArgsBind);
-  RegisterBindOperatorSet(db, "flush_inlined_data", FlushNoArgsBind, FlushTableArgsBind);
+	// Compaction + flush: bind_operator sets (no-args + (text, text)).
+	RegisterBindOperatorSet(db, "merge_adjacent_files", MergeNoArgsBind, MergeTableArgsBind);
+	RegisterBindOperatorSet(db, "rewrite_data_files", RewriteNoArgsBind, RewriteTableArgsBind);
+	RegisterBindOperatorSet(db, "flush_inlined_data", FlushNoArgsBind, FlushTableArgsBind);
 }
 
 } // namespace pgducklake

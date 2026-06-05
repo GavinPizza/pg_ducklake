@@ -21,8 +21,8 @@ namespace pgducklake {
 extern bool sort_synced_from_pg;
 
 struct SortedIndexDrop {
-  Oid index_oid;
-  Oid table_oid;
+	Oid index_oid;
+	Oid table_oid;
 };
 
 void ApplyCreateSortedIndex(const std::string &query);
@@ -31,8 +31,8 @@ std::vector<SortedIndexDrop> FindSortedIndexDrops(DropStmt *drop);
 void HandleDropSortedIndex(const std::vector<SortedIndexDrop> &drops);
 
 struct SortedIndexCreate {
-  Oid relid;
-  std::string sort_spec;
+	Oid relid;
+	std::string sort_spec;
 };
 
 /* Batch-sync ducklake_sorted pg_class indexes: create new ones and drop

@@ -1940,7 +1940,7 @@ IsThreadSafeTypeForPostgresToDuckDB(Oid attr_type, duckdb::LogicalTypeId duckdb_
  */
 void
 InsertTuplesIntoChunk(duckdb::DataChunk &output, pgddb::PostgresScanLocalState &scan_local_state,
-                                    TupleTableSlot **slots, int num_slots) {
+                      TupleTableSlot **slots, int num_slots) {
 	if (num_slots == 0) {
 		return;
 	}

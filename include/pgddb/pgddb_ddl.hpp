@@ -39,13 +39,15 @@ protected:
 	// Map a Postgres type to the DuckDB type name written into CREATE TABLE
 	// (e.g. ducklake.variant -> "VARIANT"). Return a palloc'd name, or nullptr to
 	// fall through to PG's format_type_with_typemod. Base: no override.
-	virtual char *column_type_name(Oid /*type_oid*/, int32_t /*typemod*/) {
+	virtual char *
+	column_type_name(Oid /*type_oid*/, int32_t /*typemod*/) {
 		return nullptr;
 	}
 
 	// Validate the relation just before its CREATE TABLE is generated; ereport(ERROR)
 	// to reject (e.g. pg_duckdb's MotherDuck ownership check). Base: accept everything.
-	virtual void validate_create_table(Relation /*relation*/) {
+	virtual void
+	validate_create_table(Relation /*relation*/) {
 	}
 };
 

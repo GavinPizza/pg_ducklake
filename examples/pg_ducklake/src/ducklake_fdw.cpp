@@ -10,9 +10,9 @@
  * Regular FDW tables (PostgreSQL-backed) support full DML; frozen
  * snapshots remain read-only.  Supports two modes:
  *
- *   1. Regular FDW — references a DuckLake catalog backed by a PostgreSQL
+ *   1. Regular FDW -- references a DuckLake catalog backed by a PostgreSQL
  *      metadata database (options: dbname, metadata_schema).
- *   2. Frozen FDW — references a static .ducklake snapshot file hosted over
+ *   2. Frozen FDW -- references a static .ducklake snapshot file hosted over
  *      HTTP/HTTPS (option: frozen_url).
  *
  * Queries are not executed through the FDW scan callbacks.  Instead, the

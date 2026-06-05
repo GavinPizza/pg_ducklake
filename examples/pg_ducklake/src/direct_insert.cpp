@@ -1,7 +1,8 @@
 /*
  * direct_insert.cpp
  *
- * @scope backend: register custom scan node methods; cached ducklake AM OID
+ * @scope backend: register custom scan node methods + direct-insert outcome
+ *   counters shmem; cached ducklake AM OID
  * @scope duckdb-instance: per-statement scan state (snapshot, row IDs)
  *
  * Optimization for INSERT patterns that bypass DuckDB execution:
@@ -17,6 +18,10 @@
  * 2. Executor initializes state and allocates snapshot/row IDs
  * 3. Executor inserts rows (SPI for UNNEST, heap AM for VALUES)
  * 4. Executor returns completion (no tuples to output)
+ *
+ * The shared-memory outcome counters for this path and the
+ * ducklake.direct_insert_stats() / reset_direct_insert_stats() SRFs live in
+ * the "outcome counters" section near the end of this file.
  */
 
 #include "duckdb.hpp"

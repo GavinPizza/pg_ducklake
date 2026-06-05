@@ -245,7 +245,7 @@ static duckdb::unique_ptr<duckdb::QueryResult> CreateSPIResult(const duckdb::str
 /*
  * Substitute DuckLake catalog/schema placeholders with the PostgreSQL schema
  * constants. We avoid calling transaction.GetCatalog() here because during
- * DuckLake initialization (FinalizeLoad → InitializeDuckLake → Execute), the
+ * DuckLake initialization (FinalizeLoad -> InitializeDuckLake -> Execute), the
  * AttachedDatabase is not yet reachable via the db_manager.
  */
 static void SubstituteCatalogPlaceholders(duckdb::string &query) {

@@ -4,8 +4,9 @@
  * @scope backend: register DuckDB-only function names with pg_duckdb
  * @scope duckdb-instance: register wrapper macros, maintenance and
  *   flush table functions in DuckDB catalog
- * @scope extension: duckdb_only_function and ducklake_function_mapping
- *   safety-net C stubs (the planner reroutes these calls before the body runs)
+ * @scope extension: duckdb_only_function, ducklake_only_procedure and
+ *   ducklake_function_mapping safety-net C stubs (the planner reroutes these
+ *   calls before the body runs)
  *
  * Exposes upstream DuckLake functions as PostgreSQL functions in the
  * `ducklake` schema. Two layers are involved:

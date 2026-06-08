@@ -1,16 +1,12 @@
+#pragma once
+
 /*
  * copy_from.hpp -- COPY FROM STDIN into inlined DuckLake tables.
  *
  * @scope backend: COPY FROM STDIN handler for inlined DuckLake tables
  */
 
-#pragma once
-
-extern "C" {
-#include "postgres.h"
-
-#include "nodes/parsenodes.h"
-}
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
 
@@ -25,6 +21,6 @@ namespace pgducklake {
  *
  * Returns the number of rows inserted (for QueryCompletion).
  */
-uint64 DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string);
+uint64_t DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string);
 
 } // namespace pgducklake

@@ -91,8 +91,7 @@ Event triggers check events and synchronize corresponding DuckDB objects in `PGD
 
 ### DML path
 
-DML containing ducklake objects is caught by `pg_duckdb` hooks (see `DuckdbInitHooks` in @third_party/pg_duckdb/src/pgduckdb_hooks.cpp).
-SQL is parsed and converted to DuckDB SQL by `DuckdbPlannerHook`, then passed to DuckDB for execution. Ducklake tables are converted to `pgducklake.<schema_name>.<table_name>` (`RegisterDuckdbTableAm`).
+DML referencing ducklake objects is caught by pg_ducklake's own planner hook (`DucklakePlannerHook` in @src/hooks.cpp). When a query references a ducklake-AM table or a ducklake-only function, the whole query is routed to libpgddb's CustomScan via `pgddb::PlanNode`, which deparses it to DuckDB SQL and executes it in DuckDB. Ducklake tables are deparsed as `pgducklake.<schema_name>.<table_name>` via the `pgddb_db_and_schema` hook (`DbAndSchemaForDucklake` in @src/duckdb_manager.cpp).
 
 ## Build and Test Commands
 
@@ -132,7 +131,7 @@ See `coding-rules` skill for the full docs tree and style guide.
 ## Gotchas
 
 - **FATAL macro conflict**: PostgreSQL's `elog.h` defines `FATAL`, which clobbers DuckDB's `ExceptionType::FATAL`. Include order is critical: DuckDB/DuckLake headers must parse *before* `postgres.h`. See `coding-rules` skill for the full include-order rules.
-- **Subtree structure**: `third_party/pg_duckdb` and `third_party/ducklake` are git subtrees (source committed directly). Only `third_party/pg_duckdb/third_party/duckdb` is a submodule. CI auto-syncs subtree changes back to `relytcloud/pg_duckdb:pgducklake` and `relytcloud/ducklake:pg_ducklake`.
+- **Subtree / dependency structure**: `third_party/ducklake` is a git subtree (source committed directly). pg_ducklake is a libpgddb consumer -- the pg_duckdb-derived infrastructure (planner offload, CustomScan, PG-side wrappers) and the DuckDB headers/submodule come from libpgddb via the `PGDDB_*` make variables, not from a local `third_party/pg_duckdb`. CI auto-syncs the `third_party/ducklake` subtree to its upstream repo (see `.github/workflows/sync-subtrees.yaml`).
 
 ## Miscellaneous
 

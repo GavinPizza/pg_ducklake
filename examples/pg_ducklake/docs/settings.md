@@ -13,6 +13,7 @@ Use `SELECT * FROM ducklake.options()` to list all DuckLake catalog options and 
 | :--- | :------ | :----- |
 | [`ducklake.default_table_path`](#ducklakedefault_table_path) | `""` | Per-session |
 | [`ducklake.enable_direct_insert`](#ducklakeenable_direct_insert) | `true` | Per-session |
+| [`ducklake.enable_metadata_sync`](#ducklakeenable_metadata_sync) | `true` | Per-session |
 | [`ducklake.maintenance_enabled`](#ducklakemaintenance_enabled) | `true` | Reload (`SIGHUP`) |
 | [`ducklake.maintenance_naptime`](#ducklakemaintenance_naptime) | `60` | Reload (`SIGHUP`) |
 | [`ducklake.maintenance_max_workers`](#ducklakemaintenance_max_workers) | `3` | Requires restart |
@@ -108,6 +109,13 @@ Minimum fraction of deleted rows before the maintenance worker rewrites a data f
 ### `ducklake.enable_direct_insert`
 
 Enable direct insert optimization for `INSERT ... SELECT UNNEST($n)` statements.
+
+- **Default**: `true`
+- **Access**: Per-session
+
+### `ducklake.enable_metadata_sync`
+
+Enable reverse metadata sync from DuckDB to PostgreSQL. When enabled (default), a snapshot trigger detects tables created or dropped by external DuckDB clients and creates/drops the corresponding `pg_class` entries. Disable this when all DDL and DML goes through PostgreSQL, to avoid the per-commit trigger overhead.
 
 - **Default**: `true`
 - **Access**: Per-session

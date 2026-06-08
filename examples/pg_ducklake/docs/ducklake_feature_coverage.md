@@ -117,7 +117,7 @@ Last updated: 2026-04-10
 These features are unique to pg_ducklake and not part of the upstream DuckLake extension.
 
 - [x] Role-based access control: `ducklake_superuser`, `ducklake_writer`, `ducklake_reader` roles
-- [x] Foreign data wrapper (read-only): `ducklake_fdw` for read-only access to DuckLake tables
+- [x] Foreign data wrapper: `ducklake_fdw` for remote DuckLake catalogs (full DML) and frozen snapshots (read-only)
 - [x] `IMPORT FOREIGN SCHEMA`: Bulk-import tables from a remote DuckLake catalog via FDW
 - [x] Direct insert optimization: Fast path for `INSERT ... SELECT UNNEST($n)`
 

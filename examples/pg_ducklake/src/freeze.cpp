@@ -3,19 +3,20 @@
  *
  * @scope extension: proc ducklake.freeze
  *
- * Copies all 22 ducklake_* metadata tables from PostgreSQL into a new DuckDB
- * database file, producing a "frozen" snapshot that DuckDB clients can query
- * directly without PostgreSQL.
+ * Copies every ducklake_* metadata table (see metadata_tables[] below) from
+ * PostgreSQL into a new DuckDB database file, producing a "frozen" snapshot
+ * that DuckDB clients can query directly without PostgreSQL.
  *
  * Usage:
  *   CALL ducklake.freeze('/path/to/output.ducklake');
  */
 
+#include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
+
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
-#include "pgducklake/constants.hpp"
-#include "pgducklake/duckdb_manager.hpp"
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
@@ -62,19 +63,21 @@ static const char *metadata_tables[] = {
 
 static constexpr const char *FROZEN_DB = "__pgducklake_frozen__";
 
-static void DetachFrozenDB() {
-  auto detach = duckdb::StringUtil::Format("DETACH %s", FROZEN_DB);
-  try {
-    DuckDBQueryOrThrow(detach);
-  } catch (const std::exception &) {
-    // Best-effort cleanup; ignore errors (the DB may not be attached).
-  }
+static void
+DetachFrozenDB() {
+	auto detach = duckdb::StringUtil::Format("DETACH %s", FROZEN_DB);
+	try {
+		DuckDBQueryOrThrow(detach);
+	} catch (const std::exception &) {
+		// Best-effort cleanup; ignore errors (the DB may not be attached).
+	}
 }
 
-static void FreezeFail(const char *step, const char *error_msg) {
-  DetachFrozenDB();
-  ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-                  errmsg("failed to freeze DuckLake at %s: %s", step, error_msg ? error_msg : "unknown error")));
+static void
+FreezeFail(const char *step, const char *error_msg) {
+	DetachFrozenDB();
+	ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+	                errmsg("failed to freeze DuckLake at %s: %s", step, error_msg ? error_msg : "unknown error")));
 }
 
 } // namespace pgducklake
@@ -82,36 +85,36 @@ static void FreezeFail(const char *step, const char *error_msg) {
 extern "C" {
 
 DECLARE_PG_FUNCTION(ducklake_freeze) {
-  if (PG_ARGISNULL(0))
-    elog(ERROR, "output_path cannot be NULL");
+	if (PG_ARGISNULL(0))
+		elog(ERROR, "output_path cannot be NULL");
 
-  char *output_path = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char *output_path = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
-  // If data inlining is enabled, the caller must flush inlined data before
-  // freezing (SELECT * FROM ducklake.flush_inlined_data()). The flush must be
-  // a separate top-level PG statement so pg_duckdb's catalog cache refreshes
-  // before the copy reads from pgduckdb.ducklake.*.
-  std::string batch;
-  batch += duckdb::StringUtil::Format("ATTACH %s AS %s;\n", duckdb::KeywordHelper::WriteQuoted(output_path).c_str(),
-                                      pgducklake::FROZEN_DB);
+	// If data inlining is enabled, the caller must flush inlined data before
+	// freezing (SELECT * FROM ducklake.flush_inlined_data()). The flush must be
+	// a separate top-level PG statement so pg_duckdb's catalog cache refreshes
+	// before the copy reads from pgduckdb.ducklake.*.
+	std::string batch;
+	batch += duckdb::StringUtil::Format("ATTACH %s AS %s;\n", duckdb::KeywordHelper::WriteQuoted(output_path).c_str(),
+	                                    pgducklake::FROZEN_DB);
 
-  for (auto &table : pgducklake::metadata_tables) {
-    bool empty = (strcmp(table, "ducklake_files_scheduled_for_deletion") == 0 ||
-                  strcmp(table, "ducklake_inlined_data_tables") == 0);
-    batch +=
-        duckdb::StringUtil::Format("CREATE TABLE %s.main.%s AS SELECT * FROM pgduckdb." PGDUCKLAKE_PG_SCHEMA ".%s%s;\n",
-                                   pgducklake::FROZEN_DB, table, table, empty ? " WHERE false" : "");
-  }
+	for (auto &table : pgducklake::metadata_tables) {
+		bool empty = (strcmp(table, "ducklake_files_scheduled_for_deletion") == 0 ||
+		              strcmp(table, "ducklake_inlined_data_tables") == 0);
+		batch += duckdb::StringUtil::Format("CREATE TABLE %s.main.%s AS SELECT * FROM pgduckdb." PGDUCKLAKE_PG_SCHEMA
+		                                    ".%s%s;\n",
+		                                    pgducklake::FROZEN_DB, table, table, empty ? " WHERE false" : "");
+	}
 
-  try {
-    pgducklake::DuckDBQueryOrThrow(batch);
-  } catch (const std::exception &e) {
-    pgducklake::FreezeFail("copy metadata", pgducklake::DuckDBErrorMessage(e).c_str());
-  }
+	try {
+		pgducklake::DuckDBQueryOrThrow(batch);
+	} catch (const std::exception &e) {
+		pgducklake::FreezeFail("copy metadata", pgducklake::DuckDBErrorMessage(e).c_str());
+	}
 
-  // 3. DETACH
-  pgducklake::DetachFrozenDB();
+	// 3. DETACH
+	pgducklake::DetachFrozenDB();
 
-  PG_RETURN_VOID();
+	PG_RETURN_VOID();
 }
 }

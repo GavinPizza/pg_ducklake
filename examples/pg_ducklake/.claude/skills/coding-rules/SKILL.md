@@ -97,17 +97,10 @@ Every new doc file must be linked from `docs/README.md`. Keep synced with code:
 - When modifying multiple files, run file modification tasks in parallel whenever possible, instead of processing them sequentially
 - Prefer additive changes to extension lifecycle.
 
-### Mixed-write guard
+### PG <-> DuckDB transaction sync
 
-`pg_duckdb` tracks command IDs to block mixed PostgreSQL/DuckDB writes in one transaction. DuckLake metadata flows can look like mixed writes even when they are internal extension operations.
+pg_ducklake's writes go through PostgreSQL's heap (inlined data tables) and SPI, so it does **not** use pg_duckdb's command-id / mixed-write tracking -- that machinery was dropped in the libpgddb port (there is no separate DuckDB store to keep in sync).
 
-`UnsafeCommandIdGuard` synchronizes pg_duckdb's expected command ID around these operations.
+Instead, PG transaction events are mirrored to DuckDB's DuckLake transaction by `DuckLakeXactCallback` / `DuckLakeSubXactCallback` (@src/duckdb_manager.cpp): PRE_COMMIT/ABORT commit or roll back the DuckDB transaction. SAVEPOINTs taken while DuckDB holds an active transaction are rejected, except around DuckLake's metadata-commit retry loop where they are allowed via `SetAllowSubtransaction(true)`.
 
-Use it in code paths where internal SPI writes or DDL-triggered DuckDB writes would otherwise trip detection.
-
-Known use sites:
-
-- metadata query execution path (@src/pgducklake_metadata_manager.cpp)
-- create/drop trigger paths (@src/pgducklake_ddl.cpp)
-
-Do not remove guard usage without verifying transaction-safety and mixed-write behavior end-to-end.
+Do not change this sync without verifying transaction-safety end-to-end (see `test/isolation/`).

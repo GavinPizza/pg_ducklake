@@ -40,26 +40,19 @@
 #include "pgducklake/functions.hpp"
 #include "pgducklake/guc.hpp"
 
-#include "pgddb/catalog/pgddb_storage.hpp"
-#include "pgddb/pgddb_duckdb.hpp"
-#include "pgddb/pg/transactions.hpp"
-
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/main/extension.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
-#include "duckdb/storage/storage_extension.hpp"
-#include "duckdb/transaction/transaction_context.hpp"
-#include "ducklake_extension.hpp"
-
-extern "C" {
-#include "pgddb/pgddb_ruleutils.h"
-
-#include "nodes/pg_list.h"
-}
-
 #include <cstring>
 #include <filesystem>
+
+#include "pgddb/catalog/pgddb_storage.hpp"
+#include "pgddb/pg/transactions.hpp"
+
+#include <duckdb/main/client_context.hpp>
+#include <duckdb/main/database.hpp>
+#include <duckdb/main/extension.hpp>
+#include <duckdb/parser/keyword_helper.hpp>
+#include <duckdb/storage/storage_extension.hpp>
+#include <duckdb/transaction/transaction_context.hpp>
+#include <ducklake_extension.hpp>
 
 extern "C" {
 #include "postgres.h"
@@ -69,52 +62,57 @@ extern "C" {
 #include "commands/extension.h"
 #include "fmgr.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+
+#include "pgddb/pgddb_ruleutils.h"
 }
 
-void ducklake_detach_catalog() {
-  try {
-    pgducklake::DuckDBQueryOrThrow("DETACH DATABASE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG);
-  } catch (const std::exception &e) {
-    elog(WARNING, "Failed to detach DuckLake catalog: %s", pgducklake::DuckDBErrorMessage(e).c_str());
-  }
+void
+ducklake_detach_catalog() {
+	try {
+		pgducklake::DuckDBQueryOrThrow("DETACH DATABASE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG);
+	} catch (const std::exception &e) {
+		elog(WARNING, "Failed to detach DuckLake catalog: %s", pgducklake::DuckDBErrorMessage(e).c_str());
+	}
 }
 
-void ducklake_attach_catalog() {
-  /* METADATA_CATALOG points the DuckLakeTransaction metadata connection's
-   * search path at the pgducklake catalog itself (instead of the default
-   * __ducklake_metadata_pgducklake, which does not exist because pg_ducklake
-   * keeps metadata in PostgreSQL, not in a separate DuckDB database).
-   * This lets DuckDB-native queries (read_blob, etc.) on the metadata
-   * connection resolve system functions through normal catalog search. */
-  duckdb::string query =
-      "ATTACH 'ducklake:" PGDUCKLAKE_DUCKDB_CATALOG ":' AS " PGDUCKLAKE_DUCKDB_CATALOG
-      "(METADATA_SCHEMA " PGDUCKLAKE_PG_SCHEMA_QUOTED ", METADATA_CATALOG " PGDUCKLAKE_DUCKDB_CATALOG;
-    /* First-time init: create local data directory and pass it as DATA_PATH
-     * so DuckLake stores it in the catalog metadata. */
-    auto data_path = duckdb::StringUtil::Format("%s/pg_ducklake", DataDir);
-    try {
-      std::filesystem::create_directory(data_path);
-    } catch (const std::filesystem::filesystem_error &e) {
-      ereport(ERROR, (errcode(ERRCODE_IO_ERROR),
-                      errmsg("failed to create DuckLake data directory \"%s\": %s", data_path.c_str(), e.what())));
-    }
-    query += ", DATA_PATH '" + data_path + "'";
-  /* On subsequent ATTACHes, omit DATA_PATH so DuckLake reads it from its
-   * stored catalog metadata. This avoids mismatch errors when the data_path
-   * has been changed (e.g. to an S3 bucket via ducklake.set_option). */
-  query += ")";
+void
+ducklake_attach_catalog() {
+	/* METADATA_CATALOG points the DuckLakeTransaction metadata connection's
+	 * search path at the pgducklake catalog itself (instead of the default
+	 * __ducklake_metadata_pgducklake, which does not exist because pg_ducklake
+	 * keeps metadata in PostgreSQL, not in a separate DuckDB database).
+	 * This lets DuckDB-native queries (read_blob, etc.) on the metadata
+	 * connection resolve system functions through normal catalog search. */
+	duckdb::string query =
+	    "ATTACH 'ducklake:" PGDUCKLAKE_DUCKDB_CATALOG ":' AS " PGDUCKLAKE_DUCKDB_CATALOG
+	    "(METADATA_SCHEMA " PGDUCKLAKE_PG_SCHEMA_QUOTED ", METADATA_CATALOG " PGDUCKLAKE_DUCKDB_CATALOG;
+	/* First-time init: create local data directory and pass it as DATA_PATH
+	 * so DuckLake stores it in the catalog metadata. */
+	auto data_path = duckdb::StringUtil::Format("%s/pg_ducklake", DataDir);
+	try {
+		std::filesystem::create_directory(data_path);
+	} catch (const std::filesystem::filesystem_error &e) {
+		ereport(ERROR, (errcode(ERRCODE_IO_ERROR),
+		                errmsg("failed to create DuckLake data directory \"%s\": %s", data_path.c_str(), e.what())));
+	}
+	query += ", DATA_PATH '" + data_path + "'";
+	/* On subsequent ATTACHes, omit DATA_PATH so DuckLake reads it from its
+	 * stored catalog metadata. This avoids mismatch errors when the data_path
+	 * has been changed (e.g. to an S3 bucket via ducklake.set_option). */
+	query += ")";
 
-  elog(DEBUG1, "Executing query: %s", query.c_str());
+	elog(DEBUG1, "Executing query: %s", query.c_str());
 
-  try {
-    pgducklake::DuckDBQueryOrThrow(query);
-  } catch (const std::exception &e) {
-    elog(ERROR, "Failed to attach DuckLake catalog: %s", pgducklake::DuckDBErrorMessage(e).c_str());
-  }
+	try {
+		pgducklake::DuckDBQueryOrThrow(query);
+	} catch (const std::exception &e) {
+		elog(ERROR, "Failed to attach DuckLake catalog: %s", pgducklake::DuckDBErrorMessage(e).c_str());
+	}
 }
 
 namespace pgducklake {
@@ -123,10 +121,11 @@ void ResetDirectInsertCaches();
 
 class PostgresScannerExtension : public duckdb::Extension {
 public:
-  std::string Name() override {
-    return "postgres_scanner";
-  }
-  void Load(duckdb::ExtensionLoader &loader) override;
+	std::string
+	Name() override {
+		return "postgres_scanner";
+	}
+	void Load(duckdb::ExtensionLoader &loader) override;
 };
 
 // libpgddb manager binding. Subclasses pgddb::DuckDBManager and overrides
@@ -142,11 +141,11 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	// The "pgduckdb" PostgresStorageExtension is registered + attached by the
 	// kernel's DuckDBManager::Initialize, before this runs.
 	database->LoadStaticExtension<duckdb::DucklakeExtension>();
-    database->LoadStaticExtension<PostgresScannerExtension>();
+	database->LoadStaticExtension<PostgresScannerExtension>();
 	pgducklake::ResetDirectInsertCaches();
-    pgducklake::RegisterDucklakeFunctions(*context.db);
+	pgducklake::RegisterDucklakeFunctions(*context.db);
 
-  ducklake_attach_catalog();
+	ducklake_attach_catalog();
 }
 
 void
@@ -354,34 +353,34 @@ RegisterXactCallback() {
 
 duckdb::unique_ptr<duckdb::QueryResult>
 DuckDBQueryOrThrow(duckdb::ClientContext &context, const std::string &query) {
-  auto res = context.Query(query, false);
-  if (res->HasError()) {
-    res->ThrowError();
-  }
-  return res;
+	auto res = context.Query(query, false);
+	if (res->HasError()) {
+		res->ThrowError();
+	}
+	return res;
 }
 
 duckdb::unique_ptr<duckdb::QueryResult>
 DuckDBQueryOrThrow(duckdb::Connection &connection, const std::string &query) {
-  return DuckDBQueryOrThrow(*connection.context, query);
+	return DuckDBQueryOrThrow(*connection.context, query);
 }
 
 duckdb::unique_ptr<duckdb::QueryResult>
 DuckDBQueryOrThrow(const std::string &query) {
-  auto *connection = DuckDBManager::Get().GetConnection();
-  return DuckDBQueryOrThrow(*connection, query);
+	auto *connection = DuckDBManager::Get().GetConnection();
+	return DuckDBQueryOrThrow(*connection, query);
 }
 
 std::string
 DuckDBErrorMessage(const std::exception &e) {
-  const char *what = e.what();
-  // Exceptions thrown by QueryResult::ThrowError() carry a JSON ErrorData
-  // blob; unwrap it the same way the cpp_wrapper guard does. Non-duckdb
-  // exceptions keep their plain message.
-  if (what && what[0] == '{') {
-    return duckdb::ErrorData(what).Message();
-  }
-  return what ? what : "unknown error";
+	const char *what = e.what();
+	// Exceptions thrown by QueryResult::ThrowError() carry a JSON ErrorData
+	// blob; unwrap it the same way the cpp_wrapper guard does. Non-duckdb
+	// exceptions keep their plain message.
+	if (what && what[0] == '{') {
+		return duckdb::ErrorData(what).Message();
+	}
+	return what ? what : "unknown error";
 }
 
 } // namespace pgducklake

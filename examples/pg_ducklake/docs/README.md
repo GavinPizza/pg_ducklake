@@ -13,5 +13,5 @@
 
 ## How-to Guides
 
-- [Foreign Data Wrapper](foreign_data_wrapper.md) -- read-only access to remote DuckLake catalogs
+- [Foreign Data Wrapper](foreign_data_wrapper.md) -- access remote DuckLake catalogs (full DML) and frozen snapshots (read-only)
 - [Building from Source](compilation.md) -- compile and install on Ubuntu and macOS

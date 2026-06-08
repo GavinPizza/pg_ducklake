@@ -1,3 +1,5 @@
+#pragma once
+
 /*
  * sorted_by.hpp
  *
@@ -5,19 +7,12 @@
  * sync helpers for ducklake_sorted.
  */
 
-#pragma once
-
 #include "pgducklake/catalog_sync.hpp"
 
 #include <string>
 #include <vector>
 
-extern "C" {
-#include "postgres.h"
-
-#include "nodes/parsenodes.h"
-#include "tcop/utility.h"
-}
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
 
@@ -26,20 +21,18 @@ namespace pgducklake {
 extern bool sort_synced_from_pg;
 
 struct SortedIndexDrop {
-  Oid index_oid;
-  Oid table_oid;
+	Oid index_oid;
+	Oid table_oid;
 };
 
-void HandleCreateSortedIndex(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
-                             ProcessUtilityContext context, ParamListInfo params, struct QueryEnvironment *query_env,
-                             DestReceiver *dest, QueryCompletion *qc, ProcessUtility_hook_type prev_hook);
+void ApplyCreateSortedIndex(const std::string &query);
 
 std::vector<SortedIndexDrop> FindSortedIndexDrops(DropStmt *drop);
 void HandleDropSortedIndex(const std::vector<SortedIndexDrop> &drops);
 
 struct SortedIndexCreate {
-  Oid relid;
-  std::string sort_spec;
+	Oid relid;
+	std::string sort_spec;
 };
 
 /* Batch-sync ducklake_sorted pg_class indexes: create new ones and drop

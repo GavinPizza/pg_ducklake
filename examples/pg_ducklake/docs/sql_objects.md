@@ -35,6 +35,7 @@ Default operator classes are registered for common types (bool, int2, int4, int8
 | `ducklake_create_table_trigger` | `ducklake._create_table_trigger()` | `ddl_command_end` | CREATE TABLE, CREATE TABLE AS |
 | `ducklake_drop_table_trigger` | `ducklake._drop_table_trigger()` | `sql_drop` | (all) |
 | `ducklake_alter_table_trigger` | `ducklake._alter_table_trigger()` | `ddl_command_end` | ALTER TABLE |
+| `ducklake_comment_trigger` | `ducklake._comment_trigger()` | `ddl_command_end` | COMMENT |
 | *(created at runtime)* | `ducklake._snapshot_trigger()` | row-level trigger | DuckDB-to-PG catalog sync |
 
 ## Foreign Data Wrapper

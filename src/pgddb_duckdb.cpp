@@ -103,9 +103,9 @@ DuckDBManager::Initialize() {
 	OnInit(config);
 
 	{
-    	// Block signals before initializing DuckDB to ensure signal is handled by the Postgres main thread only
-    	pgddb::ThreadSignalBlockGuard guard;
-    	database = new duckdb::DuckDB(connection_string, &config);
+		// Block signals before initializing DuckDB to ensure signal is handled by the Postgres main thread only
+		pgddb::ThreadSignalBlockGuard guard;
+		database = new duckdb::DuckDB(connection_string, &config);
 	}
 
 	connection = duckdb::make_uniq<duckdb::Connection>(*database);
@@ -123,8 +123,7 @@ DuckDBManager::Initialize() {
 	// relation no consumer resolver claims to this catalog.
 	{
 		auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
-		duckdb::StorageExtension::Register(dbconfig, "pgduckdb",
-		                                   duckdb::make_shared_ptr<PostgresStorageExtension>());
+		duckdb::StorageExtension::Register(dbconfig, "pgduckdb", duckdb::make_shared_ptr<PostgresStorageExtension>());
 	}
 	QueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
 

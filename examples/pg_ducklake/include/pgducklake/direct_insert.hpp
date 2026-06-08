@@ -1,3 +1,5 @@
+#pragma once
+
 /*
  * direct_insert.hpp
  *
@@ -13,38 +15,24 @@
  * data table when ducklake.enable_direct_insert = true.
  */
 
-#pragma once
-
-#include <stdint.h>
-
-extern "C" {
-#include "postgres.h"
-
-#include "fmgr.h"
-#include "nodes/params.h"
-#include "nodes/parsenodes.h"
-#include "nodes/pg_list.h"
-#include "nodes/plannodes.h"
-
-#include "optimizer/planner.h"
-}
+#include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
 
 struct ParamInfo {
-  int param_id;
-  Oid param_type;
-  Oid element_type;
+	int param_id;
+	Oid param_type;
+	Oid element_type;
 };
 
 struct DirectInsertContext {
-  Oid target_table_oid;
-  uint64_t table_id;
-  uint64_t schema_version;
-  List *param_infos; // List of ParamInfo*
-  int expected_row_count;
-  List *target_col_names; // List of char*
-  List *target_col_types; // List of Oid
+	Oid target_table_oid;
+	uint64_t table_id;
+	uint64_t schema_version;
+	List *param_infos; // List of ParamInfo*
+	int expected_row_count;
+	List *target_col_names; // List of char*
+	List *target_col_types; // List of Oid
 };
 
 // DirectInsertScanState is defined in the implementation file to avoid
@@ -71,22 +59,22 @@ void ResetDirectInsertCaches();
  * even considers them.
  */
 enum DirectInsertPattern {
-  DI_PAT_MATCHED_UNNEST = 0,
-  DI_PAT_MATCHED_VALUES,
-  DI_PAT_UNMATCHED,
-  DI_PAT_NUM,
+	DI_PAT_MATCHED_UNNEST = 0,
+	DI_PAT_MATCHED_VALUES,
+	DI_PAT_UNMATCHED,
+	DI_PAT_NUM,
 };
 
 enum DirectInsertReason {
-  DI_R_OK = 0,
-  DI_R_INVALID_RTE,
-  DI_R_NO_INLINED_TABLE,
-  DI_R_SCHEMA_VERSION_MISMATCH,
-  DI_R_COL_TYPES_UNSUPPORTED,
-  DI_R_GREATER_THAN_LIMIT,
-  DI_R_UNSUPPORTED_INSERT_SHAPE,
-  DI_R_RETRY,
-  DI_R_NUM,
+	DI_R_OK = 0,
+	DI_R_INVALID_RTE,
+	DI_R_NO_INLINED_TABLE,
+	DI_R_SCHEMA_VERSION_MISMATCH,
+	DI_R_COL_TYPES_UNSUPPORTED,
+	DI_R_GREATER_THAN_LIMIT,
+	DI_R_UNSUPPORTED_INSERT_SHAPE,
+	DI_R_RETRY,
+	DI_R_NUM,
 };
 
 /* Bump counter; safe to call from any backend after ShmemStartup ran. */
@@ -107,13 +95,3 @@ const char *DirectInsertPatternName(DirectInsertPattern pattern);
 const char *DirectInsertReasonName(DirectInsertReason reason);
 
 } // namespace pgducklake
-
-extern "C" {
-
-/* SRF: (pattern text, reason text, count bigint). */
-Datum ducklake_direct_insert_stats(PG_FUNCTION_ARGS);
-
-/* Zero all counters. */
-Datum ducklake_reset_direct_insert_stats(PG_FUNCTION_ARGS);
-
-} // extern "C"

@@ -20,16 +20,17 @@ jobs:
         uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Check formatting (libpgddb core + pg_ducklake, excludes vendor/)
+      - name: Check formatting (kernel + pg_ducklake, excludes vendor/)
         run: |
-          find src include examples/pg_ducklake/src examples/pg_ducklake/include \
+          find libpgduckdb pg_ducklake/src pg_ducklake/include \
             \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -not -path '*/vendor/*' -print0 \
             | xargs -0 uvx clang-format@22.1.5 --dry-run -Werror
 
-  # Build pg_duckdb + pg_vortex against PostgreSQL, run each example's
-  # installcheck. Modeled on examples/pg_duckdb/.github/workflows/build_and_test.yaml
-  # (the original pg_duckdb workflow, now dormant under examples/), adapted
-  # for this repo's "libpgddb at root, examples/<name>/ for consumers" layout.
+  # Build each extension against PostgreSQL and run its installcheck.
+  # Modeled on pg_duckdb/.github/workflows/build_and_test.yaml (the original
+  # standalone pg_duckdb workflow, now dormant), adapted for this repo's
+  # layout: the libpgduckdb kernel at root, extensions at pg_duckdb/, pg_ducklake/,
+  # and examples/pg_vortex/.
   build-and-test:
     name: "Build and test (PG ${{ matrix.version }})"
     runs-on: ubuntu-24.04
@@ -41,14 +42,14 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
-      # Consumed by examples/pg_ducklake/Makefile, which passes the toolchain
+      # Consumed by pg_ducklake/Makefile, which passes the toolchain
       # into its duckdb configure (manifest mode builds ducklake's vcpkg.json
       # deps -- CRoaring, needed by DuckLake >= v1.5 deletion vectors). Same
       # setup as upstream ducklake CI (.github/workflows/Catalogs.yml there).
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       VCPKG_TARGET_TRIPLET: x64-linux
 
-    # libduckdb is always statically bundled into each consumer's .so
+    # libduckdb is always statically bundled into each extension's .so
     # (see root Makefile); there's no `type` distinction anymore.
     strategy:
       fail-fast: false
@@ -80,7 +81,7 @@ jobs:
 
       # Clones vcpkg to $GITHUB_WORKSPACE/vcpkg (must run after checkout, which
       # wipes the workspace). Pinned to the same vcpkg commit duckdb v1.5.3 pins
-      # (2025.12.12 tag; see third_party/duckdb/Makefile setup-vcpkg) and that
+      # (2025.12.12 tag; see duckdb/Makefile setup-vcpkg) and that
       # upstream ducklake CI uses.
       - name: Setup vcpkg (CRoaring for pg_ducklake)
         uses: lukka/run-vcpkg@v11.1
@@ -95,7 +96,7 @@ jobs:
       - name: Compute version SHAs
         id: versions
         run: |
-          DUCKDB_SHA=$(git -C third_party/duckdb rev-parse HEAD)
+          DUCKDB_SHA=$(git -C duckdb rev-parse HEAD)
           POSTGRES_SHA=$(git -C postgres rev-parse HEAD)
           echo "duckdb_sha=$DUCKDB_SHA" >> "$GITHUB_OUTPUT"
           echo "postgres_sha=$POSTGRES_SHA" >> "$GITHUB_OUTPUT"
@@ -123,19 +124,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install pg_duckdb test deps
-        run: python3 -m pip install -r examples/pg_duckdb/requirements.txt
+        run: python3 -m pip install -r pg_duckdb/requirements.txt
 
       - name: Cache DuckDB build
         uses: actions/cache@v4
         with:
-          path: third_party/duckdb/build/
-          # Hash ALL consumers' extension configs: each consumer now builds
-          # libduckdb into its own build/<type>-<consumer-tag>/ subdir, so any
-          # change to either set must invalidate the cache.
-          key: duckdb-build-ubuntu-24.04-${{ steps.versions.outputs.duckdb_sha }}-${{ hashFiles('examples/pg_duckdb/third_party/pg_duckdb_extensions.cmake', 'examples/pg_vortex/pg_vortex_extensions.cmake', 'examples/pg_ducklake/pg_ducklake_extensions.cmake') }}
+          path: duckdb/build/
+          # Hash ALL extensions' EXTENSION_CONFIGS: each builds libduckdb into
+          # its own build/<type>-<tag>/ subdir. v2 busts pre-move caches whose
+          # CMakeCache.txt records the old third_party/duckdb absolute paths.
+          key: duckdb-build-v2-ubuntu-24.04-${{ steps.versions.outputs.duckdb_sha }}-${{ hashFiles('pg_duckdb/third_party/pg_duckdb_extensions.cmake', 'examples/pg_vortex/pg_vortex_extensions.cmake', 'pg_ducklake/pg_ducklake_extensions.cmake') }}
 
-      # Each consumer builds its own libduckdb into
-      # third_party/duckdb/build/<type>-<consumer-tag>/, so the build order
+      # Each extension builds its own libduckdb into
+      # duckdb/build/<type>-<tag>/, so the build order
       # below doesn't matter -- they no longer share artifacts.
       - name: Build pg_vortex
         run: ERROR_ON_WARNING=1 make examples/pg_vortex/all -j$(nproc)
@@ -144,14 +145,14 @@ jobs:
       # ---- pg_duckdb ----
       # ERROR_ON_WARNING=1 catches new -Wall/-Wextra issues introduced by libpgddb extractions.
       - name: Build pg_duckdb
-        run: ERROR_ON_WARNING=1 make examples/pg_duckdb/all -j$(nproc)
+        run: ERROR_ON_WARNING=1 make pg_duckdb/all -j$(nproc)
       - name: Install pg_duckdb
-        run: make examples/pg_duckdb/install
+        run: make pg_duckdb/install
       # ---- pg_ducklake ----
       - name: Build pg_ducklake
-        run: make examples/pg_ducklake/all -j$(nproc)
+        run: make pg_ducklake/all -j$(nproc)
       - name: Install pg_ducklake
-        run: make examples/pg_ducklake/install
+        run: make pg_ducklake/install
       - name: sccache stats
         run: sccache --show-stats
       # ---- tests ----
@@ -169,14 +170,14 @@ jobs:
       - name: pg_duckdb installcheck
         id: pgduckdb_installcheck
         timeout-minutes: 30
-        run: make examples/pg_duckdb/installcheck
+        run: make pg_duckdb/installcheck
       - name: Print regression.diffs on failure
         if: failure() && steps.pgduckdb_installcheck.outcome == 'failure'
-        run: cat examples/pg_duckdb/test/regression/regression.diffs || true
+        run: cat pg_duckdb/test/regression/regression.diffs || true
 
       - name: Print postmaster.log on failure
         if: failure() && steps.pgduckdb_installcheck.outcome == 'failure'
-        run: cat examples/pg_duckdb/test/regression/log/postmaster.log || true
+        run: cat pg_duckdb/test/regression/log/postmaster.log || true
 
       - name: Upload pg_duckdb regression artifacts on failure
         if: failure() && steps.pgduckdb_installcheck.outcome == 'failure'
@@ -184,23 +185,23 @@ jobs:
         with:
           name: pg_duckdb-regression-${{ matrix.version }}
           path: |
-            examples/pg_duckdb/test/regression/regression.diffs
-            examples/pg_duckdb/test/regression/regression.out
-            examples/pg_duckdb/test/regression/results/
-            examples/pg_duckdb/test/regression/log/
+            pg_duckdb/test/regression/regression.diffs
+            pg_duckdb/test/regression/regression.out
+            pg_duckdb/test/regression/results/
+            pg_duckdb/test/regression/log/
 
       - name: pg_ducklake installcheck
         id: pgducklake_installcheck
         timeout-minutes: 30
-        run: make examples/pg_ducklake/installcheck
+        run: make pg_ducklake/installcheck
 
       - name: Print pg_ducklake regression.diffs on failure
         if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
-        run: cat examples/pg_ducklake/test/regression/regression.diffs || true
+        run: cat pg_ducklake/test/regression/regression.diffs || true
 
       - name: Print pg_ducklake postmaster.log on failure
         if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
-        run: cat examples/pg_ducklake/test/regression/log/postmaster.log || true
+        run: cat pg_ducklake/test/regression/log/postmaster.log || true
 
       - name: Upload pg_ducklake regression artifacts on failure
         if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
@@ -208,7 +209,7 @@ jobs:
         with:
           name: pg_ducklake-regression-${{ matrix.version }}
           path: |
-            examples/pg_ducklake/test/regression/regression.diffs
-            examples/pg_ducklake/test/regression/regression.out
-            examples/pg_ducklake/test/regression/results/
-            examples/pg_ducklake/test/regression/log/
+            pg_ducklake/test/regression/regression.diffs
+            pg_ducklake/test/regression/regression.out
+            pg_ducklake/test/regression/results/
+            pg_ducklake/test/regression/log/

@@ -1,5 +1,5 @@
 // pg_vortex's planner. Copied + adapted from
-// examples/pg_duckdb/src/pgduckdb_planner.cpp. Differences:
+// libpgduckdb/pgddb_planner.cpp (pgduckdb_planner.cpp at the time). Differences:
 // - namespace pg_vortex (vs no namespace) to avoid symbol clashes when both
 //   extensions are loaded in the same backend.
 // - References vortex_scan_scan_methods (defined in vortex_node.cpp) rather

@@ -1,5 +1,5 @@
 // pg_vortex's CustomScan node. Copied + adapted from
-// examples/pg_duckdb/src/pgduckdb_node.cpp. Differences:
+// libpgduckdb/pgddb_node.cpp (pgduckdb_node.cpp at the time). Differences:
 // - CustomScanMethods/ExecMethods tagged "VortexScan" (must be globally
 //   unique when both pg_duckdb and pg_vortex load in the same backend).
 // - References pg_vortex::Prepare instead of DuckdbPrepare.

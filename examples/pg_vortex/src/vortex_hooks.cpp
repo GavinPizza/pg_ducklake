@@ -1,7 +1,7 @@
 // pg_vortex's planner hook. Modelled on
-// examples/pg_duckdb/src/pgduckdb_hooks.cpp but stripped to a single
+// pg_duckdb/src/pgduckdb_hooks.cpp but stripped to a single
 // planner_hook that detects calls to pg_vortex.read_vortex via a tiny per-
-// consumer OID cache and routes to pg_vortex::PlanNode; chains otherwise.
+// extension OID cache and routes to pg_vortex::PlanNode; chains otherwise.
 // No ExecutorStart/Finish (no mixed-write tracking; read-only). No
 // ProcessUtility / emit_log (no DDL, no MotherDuck hints). No
 // ExplainOneQuery (EXPLAIN ANALYZE timings won't propagate to DuckDB; plain
@@ -38,7 +38,7 @@ namespace pg_vortex {
 
 static planner_hook_type prev_planner_hook = nullptr;
 
-// --- Per-consumer OID cache ---
+// --- Per-extension OID cache ---
 //
 // We only need to know one OID: pg_vortex.read_vortex(text). The cache is
 // invalidated whenever the pg_extension catalog changes (so CREATE/DROP

@@ -1,0 +1,139 @@
+This file provides guidance to AI coding assistants when working with code in this repository.
+
+## Project Architecture
+
+`pg_ducklake` is a PostgreSQL extension that extends `pg_duckdb` to support DuckLake, an open lakehouse format. This extension static-links `ducklake`, the official DuckDB extension, and loads it
+via DuckDB's `LoadStaticExtension<T>()`.
+Its C++ code should use `namespace pgducklake`.
+
+- header files in `include/`
+- implement files in `src/`
+- tests in `test/`
+
+### Lifecycle scopes
+
+pg_ducklake has three object lifecycles:
+
+```
+PG extension           CREATE/DROP EXTENSION pg_ducklake
+PG backend process     _PG_init, one per connection
+  +-- DuckDB instance  [1..N via recycle_ddb]
+```
+
+PG extension and PG backend process are parallel -- the extension
+creates SQL objects (table AM, functions, metadata tables), while
+each backend process independently initializes its own state.
+
+#### Entrypoints
+
+| Scope              | Entrypoint                                            |
+| ------------------ | ----------------------------------------------------- |
+| PG extension       | sql/pg_ducklake--\*.sql                               |
+| PG backend process | src/pgducklake.cpp (`_PG_init`)                       |
+| DuckDB instance    | src/duckdb_manager.cpp (`DuckDBManager::OnPostInit`) |
+
+#### 1. PG extension
+
+Created by `CREATE EXTENSION pg_ducklake`.
+Destroyed by `DROP EXTENSION pg_ducklake`.
+
+SQL catalog objects: `ducklake` schema and metadata tables, table AM
+`ducklake`, index AM `ducklake_sorted`, SQL functions and procedures,
+event triggers, predefined roles.
+
+#### 2. PG backend process
+
+Created by `_PG_init()` when `pg_ducklake.so` is loaded in a new
+backend. Destroyed on backend exit. One per connection.
+
+C++ static variables and static class members belong here -- they
+live as long as the process regardless of DuckDB instance recycling.
+
+#### 3. DuckDB instance
+
+Created by `DuckDBManager::Initialize()` on first DuckDB query.
+Destroyed by `DuckDBManager::Reset()` via `recycle_ddb()` or backend
+exit. Hook on create: `pgducklake::DuckDBManager::OnPostInit(duckdb::ClientContext &)`.
+
+Everything registered on `db.instance` is lost on recycle and
+re-created by `DuckDBManager::OnPostInit`. Per-transaction
+`PgDuckLakeMetadataManager` instances also belong here.
+
+#### 4. Background maintenance worker
+
+Registered by `_PG_init()` via `RegisterBackgroundWorker()`. The
+launcher (`ducklake_maintenance_launcher`) is a persistent process
+that spawns short-lived workers (`ducklake_maintenance_worker`) per
+database. Workers run two phases: in-process maintenance (flush
+inlined data, expire snapshots) and compaction (rewrite data files,
+merge adjacent files, cleanup old files). VACUUM on ducklake tables
+is a no-op; all maintenance goes through the background worker.
+
+See `src/maintenance_worker.cpp` for the implementation.
+
+#### @scope convention
+
+Each source file declares its scopes in the header comment:
+
+```cpp
+/*
+ * @scope backend: register GUCs
+ * @scope duckdb-instance: register wrapper macros in DuckDB catalog
+ */
+```
+
+These tags are the source of truth for per-file classification.
+
+### DDL path
+
+DDL is executed by PostgreSQL, then `ducklake_<ddl>_trigger` is called to handle DDL operations (see @src/ducklake_table.cpp).
+Event triggers check events and synchronize corresponding DuckDB objects in `PGDUCKLAKE_DUCKDB_CATALOG`.
+
+### DML path
+
+DML referencing ducklake objects is caught by pg_ducklake's own planner hook (`DucklakePlannerHook` in @src/hooks.cpp). When a query references a ducklake-AM table or a ducklake-only function, the whole query is routed to libpgddb's CustomScan via `pgddb::PlanNode`, which deparses it to DuckDB SQL and executes it in DuckDB. Ducklake tables are deparsed as `pgducklake.<schema_name>.<table_name>` via the `pgddb_db_and_schema` hook (`DbAndSchemaForDucklake` in @src/duckdb_manager.cpp).
+
+## Build and Test Commands
+
+See `setup-dev` skill for full dev environment setup (ccache, PostgreSQL from source, submodules, worktrees). See `commit-message-format`, `pr`, and `fix-ci` skills for git/CI workflows.
+
+Supported PostgreSQL versions: 14, 15, 16, 17, 18.
+
+`PG_CONFIG` is required. Usually a local pg is installed under workdir, e.g. `PG_CONFIG=$(pwd)/pg-18/bin/pg_config`, to avoid conflicts with other worktrees. If neither local pg nor global pg is found, stop and ask user.
+
+```bash
+# macOS add:
+# LIBRARY_PATH="$(brew --prefix)/lib:$LIBRARY_PATH"
+
+NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+PG_CONFIG=<pg_config> make -j"$NCPU" && make install
+PG_CONFIG=<pg_config> make installcheck # build, install, and runs both regression + isolation
+
+# Run single regression test
+PG_CONFIG=<pg_config> make check-regression TEST=basic
+
+# Run single isolation test
+PG_CONFIG=<pg_config> make check-isolation TEST=concurrent_writes
+
+# Format all project C++ files (src/ and include/, not third_party/)
+PG_CONFIG=<pg_config> make format
+
+# Check formatting without modifying files (used in CI)
+PG_CONFIG=<pg_config> make check-format
+```
+
+Tests live in `test/regression/` (SQL regression) and `test/isolation/` (concurrency specs). Use regression and isolation tests to verify functionality as possible.
+
+## Docs
+
+See `coding-rules` skill for the full docs tree and style guide.
+
+## Gotchas
+
+- **FATAL macro conflict**: PostgreSQL's `elog.h` defines `FATAL`, which clobbers DuckDB's `ExceptionType::FATAL`. Include order is critical: DuckDB/DuckLake headers must parse *before* `postgres.h`. See `coding-rules` skill for the full include-order rules.
+- **ducklake dependency / patch structure**: `third_party/ducklake` is a git **submodule** pinned to a community `duckdb/ducklake` commit. Our divergence from community is **not** committed into the tree -- it lives as an ordered series of patch files `third_party/ducklake-NNN-<desc>.patch` that the `Makefile` applies onto the pristine submodule checkout at build time (apply-once, stamp-guarded via `DUCKLAKE_STAMP`; the submodule working tree is intentionally left dirty/patched, the gitlink stays pinned). To see exactly what we changed vs. community, read those patch files. pg_ducklake is built on the libpgddb kernel -- the pg_duckdb-derived infrastructure (planner offload, CustomScan, PG-side wrappers) and the DuckDB headers/submodule come from the kernel (`libpgduckdb/` at the repo root) via the `PGDDB_*` make variables, not from a local `third_party/pg_duckdb`.
+
+## Miscellaneous
+
+- When exploring multiple files, run in parallel whenever possible, instead of processing them sequentially.
+- **Never `cd` into subdirectories** in Bash commands — it changes the working directory for subsequent calls. Use subshells (`(cd third_party/ducklake && git ...)`) or `pushd`/`popd` (`pushd third_party/ducklake; git ...; popd`) to keep the working directory at the project root.

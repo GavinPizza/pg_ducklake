@@ -1,0 +1,26 @@
+# Ignore rules for pg_ducklake/docker/Dockerfile (BuildKit per-Dockerfile
+# ignore; the build context is the repo root).
+.git
+# duckdb submodule init-stamp sentinel.
+!.git/modules/duckdb/HEAD
+# ducklake's full gitdir: the in-image build runs git checkout/clean/apply.
+!.git/modules/pg_ducklake/third_party/ducklake
+
+pg_duckdb
+examples
+pg-*
+duckdb/.git
+.venv
+.bear
+.cache
+.claude
+.vscode
+compile_commands.json
+
+*.o
+*.so
+*.dylib
+*.bc
+**/.deps
+duckdb/build
+pg_ducklake/third_party/ducklake/build

@@ -32,14 +32,45 @@ DUCKLAKE_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/ducklake/libducklake_extension
 
 POSTGRES_SCANNER_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/postgres_scanner/libpostgres_scanner_extension.a
 
-# -lroaring: DuckLake v1.5 deletion vectors depend on CRoaring (homebrew croaring,
-# resolved via LIBRARY_PATH=/opt/homebrew/lib).
-PG_DUCKLAKE_LINK_FLAGS = $(FULL_DUCKDB_LIB) -lssl -lcrypto -lstdc++ -llz4 -lroaring
+# DuckLake >= v1.5 needs CRoaring for deletion vectors: the vendored ducklake's
+# CMakeLists does find_package(roaring CONFIG REQUIRED), declared in its
+# vcpkg.json. Mirroring upstream ducklake CI (its .github/workflows/Catalogs.yml),
+# a vcpkg toolchain provided via VCPKG_TOOLCHAIN_PATH (set job-wide in our CI) is
+# passed into the duckdb configure with the vendored ducklake dir as the manifest
+# dir, so vcpkg builds roaring during configure. These are the same variables
+# duckdb's own Makefile wires for VCPKG builds ("Enable VCPKG for this build" in
+# third_party/duckdb/Makefile). Appending after the root include is safe: the
+# variable is only expanded in the duckdb configure recipe. Without a toolchain
+# (local macOS dev) find_package falls back to a system croaring (homebrew).
+ifneq ($(VCPKG_TOOLCHAIN_PATH),)
+DUCKDB_EXTRA_CMAKE_VARS += -DCMAKE_TOOLCHAIN_FILE='$(VCPKG_TOOLCHAIN_PATH)' -DVCPKG_BUILD=1
+DUCKDB_EXTRA_CMAKE_VARS += -DVCPKG_MANIFEST_DIR='$(DUCKLAKE_DIR)'
+ifneq ($(VCPKG_TARGET_TRIPLET),)
+DUCKDB_EXTRA_CMAKE_VARS += -DVCPKG_TARGET_TRIPLET='$(VCPKG_TARGET_TRIPLET)'
+endif
+# vcpkg manifest mode installs static deps under the duckdb build dir.
+ROARING_LIB_DIR := $(DUCKDB_BUILD_DIR)/vcpkg_installed/$(VCPKG_TARGET_TRIPLET)/lib
+endif
+
+PG_DUCKLAKE_LINK_FLAGS = $(FULL_DUCKDB_LIB)
 ifeq ($(shell uname -s),Darwin)
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,-force_load,$(DUCKLAKE_EXT_LIB)
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,-force_load,$(POSTGRES_SCANNER_EXT_LIB)
 else
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,--whole-archive $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB) -Wl,--no-whole-archive
+endif
+# -lroaring: vcpkg-built in CI (see above), homebrew croaring on local macOS
+# (resolved via LIBRARY_PATH=/opt/homebrew/lib). It must come AFTER the
+# whole-archive'd extension archives: GNU ld resolves static archives in a
+# single left-to-right pass, so a libroaring.a listed earlier contributes
+# nothing (no roaring symbol is undefined yet at that point) and the ducklake
+# extension's references would stay unresolved.
+PG_DUCKLAKE_LINK_FLAGS += -lssl -lcrypto -lstdc++ -llz4
+ifneq ($(ROARING_LIB_DIR),)
+	PG_DUCKLAKE_LINK_FLAGS += -L$(ROARING_LIB_DIR)
+endif
+PG_DUCKLAKE_LINK_FLAGS += -lroaring
+ifneq ($(shell uname -s),Darwin)
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,--exclude-libs,ALL
 endif
 

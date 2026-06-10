@@ -41,6 +41,12 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Consumed by examples/pg_ducklake/Makefile, which passes the toolchain
+      # into its duckdb configure (manifest mode builds ducklake's vcpkg.json
+      # deps -- CRoaring, needed by DuckLake >= v1.5 deletion vectors). Same
+      # setup as upstream ducklake CI (.github/workflows/Catalogs.yml there).
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
 
     # libduckdb is always statically bundled into each consumer's .so
     # (see root Makefile); there's no `type` distinction anymore.
@@ -71,6 +77,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: "recursive"
+
+      # Clones vcpkg to $GITHUB_WORKSPACE/vcpkg (must run after checkout, which
+      # wipes the workspace). Pinned to the same vcpkg commit duckdb v1.5.3 pins
+      # (2025.12.12 tag; see third_party/duckdb/Makefile setup-vcpkg) and that
+      # upstream ducklake CI uses.
+      - name: Setup vcpkg (CRoaring for pg_ducklake)
+        uses: lukka/run-vcpkg@v11.1
+        with:
+          vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
 
       - name: Checkout PostgreSQL ${{ matrix.version }}
         run: |

@@ -27,6 +27,7 @@
 #include <duckdb/parser/keyword_helper.hpp>
 
 #include "pgddb/utility/cpp_wrapper.hpp"
+#include "pgddb/utility/spi_guard.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -528,19 +529,19 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	EventTriggerData *trigger_data = (EventTriggerData *)fcinfo->context;
 	Node *parsetree = trigger_data->parsetree;
 
-	SPI_connect();
-
-	auto save_nestlevel = NewGUCNestLevel();
+	pgddb::SPIGuard<true> spi_guard;
 	SetConfigOption("search_path", "pg_catalog, pg_temp", PGC_USERSET, PGC_S_SESSION);
 	SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
 	int ret = SPI_exec(R"(
-		SELECT DISTINCT objid AS relid, pg_class.relpersistence = 't' AS is_temporary
+		SELECT
+		  DISTINCT objid AS relid,
+		  pg_class.relpersistence = 't' AS is_temporary
 		FROM pg_catalog.pg_event_trigger_ddl_commands() cmds
 		JOIN pg_catalog.pg_class
-		ON cmds.objid = pg_class.oid
+		  ON cmds.objid = pg_class.oid
 		WHERE cmds.object_type = 'table'
-		AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
+		  AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
 		)",
 	                   0);
 
@@ -553,24 +554,21 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 		/* Reject variant columns on non-ducklake tables */
 		Oid variant_oid = pgducklake::VariantOid();
 		if (OidIsValid(variant_oid)) {
-			StringInfoData check_sql;
-			initStringInfo(&check_sql);
-			appendStringInfo(&check_sql,
-			                 "SELECT 1 FROM pg_catalog.pg_event_trigger_ddl_commands() cmds "
-			                 "JOIN pg_catalog.pg_attribute a ON cmds.objid = a.attrelid "
-			                 "WHERE cmds.object_type = 'table' "
-			                 "AND a.attnum > 0 AND NOT a.attisdropped "
-			                 "AND a.atttypid = %u LIMIT 1",
-			                 variant_oid);
-			ret = SPI_exec(check_sql.data, 1);
-			pfree(check_sql.data);
+			std::string check_sql = duckdb::StringUtil::Format(R"(
+			SELECT 1
+			FROM pg_catalog.pg_event_trigger_ddl_commands() cmds 
+			JOIN pg_catalog.pg_attribute a
+			  ON cmds.objid = a.attrelid 
+			WHERE cmds.object_type = 'table' 
+			  AND a.attnum > 0 AND NOT a.attisdropped 
+			  AND a.atttypid = %u LIMIT 1
+			)",
+			                                                   variant_oid);
+			ret = SPI_exec(check_sql.c_str(), 1);
 			if (ret == SPI_OK_SELECT && SPI_processed > 0)
-				ereport(ERROR,
-				        (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("ducklake.variant type can only be used with "
-				                                                        "ducklake access method")));
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				                errmsg(R"(ducklake.variant type can only be used with ducklake access method)")));
 		}
-		AtEOXact_GUC(false, save_nestlevel);
-		SPI_finish();
 		PG_RETURN_NULL();
 	}
 
@@ -606,9 +604,6 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 		                                                        "access method")));
 	}
 
-	AtEOXact_GUC(false, save_nestlevel);
-	SPI_finish();
-
 	// Generate CREATE TABLE DDL for DuckDB
 	std::string create_table_ddl(pgducklake::Ruleutils().get_tabledef(relid));
 	elog(DEBUG1, "Creating DuckLake table: %s", create_table_ddl.c_str());
@@ -638,79 +633,14 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 	if (!CALLED_AS_EVENT_TRIGGER(fcinfo)) /* internal error */
 		elog(ERROR, "not fired by event trigger manager");
 
-	SPI_connect();
-
-	auto save_nestlevel = NewGUCNestLevel();
+	pgddb::SPIGuard<true> spi_guard;
 	SetConfigOption("search_path", "pg_catalog, pg_temp", PGC_USERSET, PGC_S_SESSION);
-
-	// Check if any tables were dropped
-	int ret = SPI_exec(R"(
-		SELECT 1
-		FROM pg_catalog.pg_event_trigger_dropped_objects()
-		WHERE object_type = 'table'
-	)",
-	                   0);
-
-	if (ret != SPI_OK_SELECT) {
-		elog(ERROR, "SPI_exec failed: error code %s", SPI_result_code_string(ret));
-	}
-
-	if (SPI_processed == 0) {
-		AtEOXact_GUC(false, save_nestlevel);
-		SPI_finish();
-		PG_RETURN_NULL();
-	}
-
-	/*
-	 * Drop inlined data/delete tables associated with the dropped DuckLake
-	 * tables.  These PostgreSQL tables live in the ducklake schema and block
-	 * DROP EXTENSION if left behind.
-	 */
-	ret = SPI_exec(R"(
-		SELECT idt.table_name, del.relname
-		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
-		JOIN ducklake.ducklake_table AS tbl
-		  ON cmds.object_name = tbl.table_name
-		JOIN ducklake.ducklake_schema AS schema
-		  ON cmds.schema_name = schema.schema_name
-		  AND tbl.schema_id = schema.schema_id
-		LEFT JOIN ducklake.ducklake_inlined_data_tables idt
-		  ON idt.table_id = tbl.table_id
-		LEFT JOIN pg_catalog.pg_class del
-		  ON del.relname = 'ducklake_inlined_delete_' || tbl.table_id
-		  AND del.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace
-		                          WHERE nspname = 'ducklake')
-		WHERE cmds.object_type = 'table'
-		  AND tbl.end_snapshot IS NULL
-		  AND schema.end_snapshot IS NULL
-		)",
-	               0);
-
-	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-		std::string drop_sql;
-		for (uint64_t proc = 0; proc < SPI_processed; ++proc) {
-			HeapTuple tuple = SPI_tuptable->vals[proc];
-			char *inlined_data_table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
-			char *inlined_delete_table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-			if (inlined_data_table_name) {
-				drop_sql += duckdb::StringUtil::Format("DROP TABLE ducklake.%s;",
-				                                       duckdb::SQLIdentifier(inlined_data_table_name));
-			}
-			if (inlined_delete_table_name) {
-				drop_sql += duckdb::StringUtil::Format("DROP TABLE ducklake.%s;",
-				                                       duckdb::SQLIdentifier(inlined_delete_table_name));
-			}
-		}
-		if (!drop_sql.empty()) {
-			SPI_exec(drop_sql.c_str(), 0);
-		}
-	}
 
 	/*
 	 * Query DuckLake metadata to find tables that need to be dropped.
 	 * We can't use pg_class here since the tables are already dropped.
 	 */
-	ret = SPI_exec(R"(
+	int ret = SPI_exec(R"(
 		SELECT cmds.schema_name, cmds.object_name
 		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
 		JOIN ducklake.ducklake_table AS tbl
@@ -722,7 +652,7 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 		  AND tbl.end_snapshot IS NULL
 		  AND schema.end_snapshot IS NULL
 		)",
-	               0);
+	                   0);
 
 	if (ret != SPI_OK_SELECT) {
 		elog(ERROR, "SPI_exec failed: error code %s", SPI_result_code_string(ret));
@@ -740,17 +670,8 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 		elog(DEBUG1, "Dropping DuckLake table: %s", drop_ddl.c_str());
 
-		try {
-			pgducklake::DuckDBQueryOrThrow(drop_ddl);
-		} catch (const std::exception &e) {
-			// Log warning but don't fail - table might already be gone
-			elog(WARNING, "failed to drop DuckLake table %s.%s: %s", schema_name, table_name,
-			     pgducklake::DuckDBErrorMessage(e).c_str());
-		}
+		pgducklake::DuckDBQueryOrThrow(drop_ddl);
 	}
-
-	AtEOXact_GUC(false, save_nestlevel);
-	SPI_finish();
 
 	PG_RETURN_NULL();
 }
@@ -780,9 +701,7 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 	EventTriggerData *trigger_data = (EventTriggerData *)fcinfo->context;
 	Node *parsetree = trigger_data->parsetree;
 
-	SPI_connect();
-
-	auto save_nestlevel = NewGUCNestLevel();
+	pgddb::SPIGuard<true> spi_guard;
 	SetConfigOption("search_path", "pg_catalog, pg_temp", PGC_USERSET, PGC_S_SESSION);
 	SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
@@ -790,9 +709,9 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 		SELECT DISTINCT objid AS relid
 		FROM pg_catalog.pg_event_trigger_ddl_commands() cmds
 		JOIN pg_catalog.pg_class
-		ON cmds.objid = pg_class.oid
+		  ON cmds.objid = pg_class.oid
 		WHERE cmds.object_type IN ('table', 'table column')
-		AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
+		  AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
 		)",
 	                   0);
 
@@ -803,24 +722,20 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 		/* Reject variant columns added to non-ducklake tables */
 		Oid variant_oid = pgducklake::VariantOid();
 		if (OidIsValid(variant_oid)) {
-			StringInfoData check_sql;
-			initStringInfo(&check_sql);
-			appendStringInfo(&check_sql,
-			                 "SELECT 1 FROM pg_catalog.pg_event_trigger_ddl_commands() cmds "
-			                 "JOIN pg_catalog.pg_attribute a ON cmds.objid = a.attrelid "
-			                 "WHERE cmds.object_type IN ('table', 'table column') "
-			                 "AND a.attnum > 0 AND NOT a.attisdropped "
-			                 "AND a.atttypid = %u LIMIT 1",
-			                 variant_oid);
-			ret = SPI_exec(check_sql.data, 1);
-			pfree(check_sql.data);
+			std::string check_sql = duckdb::StringUtil::Format(R"(
+			SELECT 1
+			FROM pg_catalog.pg_event_trigger_ddl_commands() cmds
+			JOIN pg_catalog.pg_attribute a
+			  ON cmds.objid = a.attrelid
+			WHERE cmds.object_type IN ('table', 'table column')
+			  AND a.attnum > 0 AND NOT a.attisdropped
+			  AND a.atttypid = %u LIMIT 1)",
+			                                                   variant_oid);
+			ret = SPI_exec(check_sql.c_str(), 1);
 			if (ret == SPI_OK_SELECT && SPI_processed > 0)
-				ereport(ERROR,
-				        (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("ducklake.variant type can only be used with "
-				                                                        "ducklake access method")));
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				                errmsg(R"(ducklake.variant type can only be used with ducklake access method)")));
 		}
-		AtEOXact_GUC(false, save_nestlevel);
-		SPI_finish();
 		PG_RETURN_NULL();
 	}
 
@@ -831,9 +746,6 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 		elog(ERROR, "Expected relid to be returned, but found NULL");
 
 	Oid relid = DatumGetObjectId(relid_datum);
-
-	AtEOXact_GUC(false, save_nestlevel);
-	SPI_finish();
 
 	/* Generate DDL using the kernel's DuckdbRuleutils deparser */
 	std::string ddl_str;
@@ -871,19 +783,19 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 	if (comment_stmt->objtype != OBJECT_TABLE && comment_stmt->objtype != OBJECT_COLUMN)
 		PG_RETURN_NULL();
 
-	SPI_connect();
-
-	auto save_nestlevel = NewGUCNestLevel();
+	pgddb::SPIGuard<true> spi_guard;
 	SetConfigOption("search_path", "pg_catalog, pg_temp", PGC_USERSET, PGC_S_SESSION);
 	SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
 	int ret = SPI_exec(R"(
-		SELECT DISTINCT cmds.objid AS relid, cmds.objsubid
+		SELECT
+		  DISTINCT cmds.objid AS relid,
+		  cmds.objsubid
 		FROM pg_catalog.pg_event_trigger_ddl_commands() cmds
 		JOIN pg_catalog.pg_class
-		ON cmds.objid = pg_class.oid
+		  ON cmds.objid = pg_class.oid
 		WHERE cmds.object_type IN ('table', 'table column')
-		AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
+		  AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
 		)",
 	                   0);
 
@@ -891,8 +803,6 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 		elog(ERROR, "SPI_exec failed: error code %s", SPI_result_code_string(ret));
 
 	if (SPI_processed == 0) {
-		AtEOXact_GUC(false, save_nestlevel);
-		SPI_finish();
 		PG_RETURN_NULL();
 	}
 
@@ -906,9 +816,6 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 
 	Datum subid_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 2, &isnull);
 	int32 objsubid = isnull ? 0 : DatumGetInt32(subid_datum);
-
-	AtEOXact_GUC(false, save_nestlevel);
-	SPI_finish();
 
 	/* Build DuckDB COMMENT SQL */
 	std::string comment_ddl;

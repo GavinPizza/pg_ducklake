@@ -22,7 +22,11 @@ WHERE relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake');
 (1 row)
 
 DROP TABLE t;
-DROP EXTENSION pg_ducklake;
+-- CASCADE: DuckLake-internal tables (e.g. inlined data tables) live in the
+-- ducklake schema and are reclaimed lazily by DuckLake GC, so they may
+-- still exist here. They hold no data once the ducklake tables are dropped.
+DROP EXTENSION pg_ducklake CASCADE;
+NOTICE:  drop cascades to table ducklake.ducklake_inlined_data_2_2
 SELECT oid FROM pg_namespace WHERE nspname = 'ducklake';
  oid 
 -----

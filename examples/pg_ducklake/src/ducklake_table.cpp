@@ -662,51 +662,6 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 	}
 
 	/*
-	 * Drop inlined data/delete tables associated with the dropped DuckLake
-	 * tables.  These PostgreSQL tables live in the ducklake schema and block
-	 * DROP EXTENSION if left behind.
-	 */
-	ret = SPI_exec(R"(
-		SELECT idt.table_name, del.relname
-		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
-		JOIN ducklake.ducklake_table AS tbl
-		  ON cmds.object_name = tbl.table_name
-		JOIN ducklake.ducklake_schema AS schema
-		  ON cmds.schema_name = schema.schema_name
-		  AND tbl.schema_id = schema.schema_id
-		LEFT JOIN ducklake.ducklake_inlined_data_tables idt
-		  ON idt.table_id = tbl.table_id
-		LEFT JOIN pg_catalog.pg_class del
-		  ON del.relname = 'ducklake_inlined_delete_' || tbl.table_id
-		  AND del.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace
-		                          WHERE nspname = 'ducklake')
-		WHERE cmds.object_type = 'table'
-		  AND tbl.end_snapshot IS NULL
-		  AND schema.end_snapshot IS NULL
-		)",
-	               0);
-
-	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-		std::string drop_sql;
-		for (uint64_t proc = 0; proc < SPI_processed; ++proc) {
-			HeapTuple tuple = SPI_tuptable->vals[proc];
-			char *inlined_data_table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
-			char *inlined_delete_table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-			if (inlined_data_table_name) {
-				drop_sql += duckdb::StringUtil::Format("DROP TABLE ducklake.%s;",
-				                                       duckdb::SQLIdentifier(inlined_data_table_name));
-			}
-			if (inlined_delete_table_name) {
-				drop_sql += duckdb::StringUtil::Format("DROP TABLE ducklake.%s;",
-				                                       duckdb::SQLIdentifier(inlined_delete_table_name));
-			}
-		}
-		if (!drop_sql.empty()) {
-			SPI_exec(drop_sql.c_str(), 0);
-		}
-	}
-
-	/*
 	 * Query DuckLake metadata to find tables that need to be dropped.
 	 * We can't use pg_class here since the tables are already dropped.
 	 */

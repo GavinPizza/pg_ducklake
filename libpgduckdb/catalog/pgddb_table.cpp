@@ -37,6 +37,8 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
 	const auto n = pgddb::GetTupleDescNatts(tupleDesc);
 	for (int i = 0; i < n; ++i) {
 		Form_pg_attribute attr = pgddb::GetAttr(tupleDesc, i);
+		if (pgddb::AttIsDropped(attr))
+			continue;
 		auto col_name = duckdb::string(pgddb::GetAttName(attr));
 		auto duck_type = ConvertPostgresToDuckColumnType(attr);
 		info.columns.AddColumn(duckdb::ColumnDefinition(col_name, duck_type));

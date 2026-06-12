@@ -344,6 +344,14 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 		count_tuples_only = true;
 		return;
 	}
+	duckdb::vector<AttrNumber> col_idx_to_attno;
+	auto natts = GetTupleDescNatts(table_tuple_desc);
+	for (int i = 0; i < natts; i++) {
+		if (AttIsDropped(GetAttr(table_tuple_desc, i))) {
+			continue;
+		}
+		col_idx_to_attno.emplace_back(static_cast<AttrNumber>(i + 1));
+	}
 	/*
 	 * We need to read columns from the Postgres tuple in column order, but for
 	 * outputting them we care about the DuckDB order. A map automatically
@@ -352,9 +360,9 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 	 */
 	duckdb::map<AttrNumber, duckdb::idx_t> pg_column_order;
 	duckdb::idx_t scan_index = 0;
-	for (const auto &pg_column : input.column_ids) {
-		/* Postgres AttrNumbers are 1-based */
-		pg_column_order[pg_column + 1] = scan_index++;
+	for (const auto &col_id : input.column_ids) {
+		auto pg_column = col_idx_to_attno[col_id];
+		pg_column_order[pg_column] = scan_index++;
 	}
 
 	auto table_filters = input.filters.get();
@@ -383,11 +391,11 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 	 */
 	if (input.CanRemoveFilterColumns()) {
 		for (const auto &projection_id : input.projection_ids) {
-			output_columns.emplace_back(input.column_ids[projection_id] + 1);
+			output_columns.emplace_back(col_idx_to_attno[input.column_ids[projection_id]]);
 		}
 	} else {
 		for (const auto &column_id : input.column_ids) {
-			output_columns.emplace_back(column_id + 1);
+			output_columns.emplace_back(col_idx_to_attno[column_id]);
 		}
 	}
 

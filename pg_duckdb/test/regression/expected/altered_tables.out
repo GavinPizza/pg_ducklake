@@ -46,3 +46,151 @@ SELECT a, c, d, f FROM table_missing_attrs;
 (2 rows)
 
 DROP TABLE table_missing_attrs;
+CREATE TABLE table_dropped_attrs(a int, b text, c int, d text);
+INSERT INTO table_dropped_attrs VALUES (1, 'x', 10, 'p'), (2, 'y', 20, 'q'), (3, 'z', 30, 'r');
+SELECT * FROM table_dropped_attrs ORDER BY a;
+ a | b | c  | d 
+---+---+----+---
+ 1 | x | 10 | p
+ 2 | y | 20 | q
+ 3 | z | 30 | r
+(3 rows)
+
+SELECT attname, attnum, attisdropped
+FROM pg_attribute
+WHERE attrelid = 'table_dropped_attrs'::regclass AND attnum > 0;
+ attname | attnum | attisdropped 
+---------+--------+--------------
+ a       |      1 | f
+ b       |      2 | f
+ c       |      3 | f
+ d       |      4 | f
+(4 rows)
+
+ALTER TABLE table_dropped_attrs DROP COLUMN b;
+ALTER TABLE table_dropped_attrs DROP COLUMN d;
+SELECT attname, attnum, attisdropped
+FROM pg_attribute
+WHERE attrelid = 'table_dropped_attrs'::regclass AND attnum > 0;
+           attname            | attnum | attisdropped 
+------------------------------+--------+--------------
+ a                            |      1 | f
+ ........pg.dropped.2........ |      2 | t
+ c                            |      3 | f
+ ........pg.dropped.4........ |      4 | t
+(4 rows)
+
+\set pwd `pwd`
+\set parquet_file_path '\'' :pwd '/tmp_check/table_dropped_attrs.parquet'  '\''
+COPY table_dropped_attrs TO :parquet_file_path (FORMAT PARQUET);
+SELECT * FROM read_parquet(:parquet_file_path) r ORDER BY r['a'];
+ a | c  
+---+----
+ 1 | 10
+ 2 | 20
+ 3 | 30
+(3 rows)
+
+COPY table_dropped_attrs (c, a) TO :parquet_file_path (FORMAT PARQUET);
+SELECT * FROM read_parquet(:parquet_file_path) r ORDER BY r['a'];
+ c  | a 
+----+---
+ 10 | 1
+ 20 | 2
+ 30 | 3
+(3 rows)
+
+SELECT * FROM table_dropped_attrs ORDER BY a;
+ a | c  
+---+----
+ 1 | 10
+ 2 | 20
+ 3 | 30
+(3 rows)
+
+COPY table_dropped_attrs TO STDOUT;
+1	10
+2	20
+3	30
+SELECT c, a FROM table_dropped_attrs ORDER BY a;
+ c  | a 
+----+---
+ 10 | 1
+ 20 | 2
+ 30 | 3
+(3 rows)
+
+SELECT a, c FROM table_dropped_attrs WHERE c > 10 ORDER BY a;
+ a | c  
+---+----
+ 2 | 20
+ 3 | 30
+(2 rows)
+
+SELECT a FROM table_dropped_attrs WHERE c > 10 ORDER BY a;
+ a 
+---
+ 2
+ 3
+(2 rows)
+
+SELECT a, c FROM table_dropped_attrs ORDER BY c DESC;
+ a | c  
+---+----
+ 3 | 30
+ 2 | 20
+ 1 | 10
+(3 rows)
+
+SELECT COUNT(*) FROM table_dropped_attrs;
+ count 
+-------
+     3
+(1 row)
+
+ALTER TABLE table_dropped_attrs ADD COLUMN e int DEFAULT 99;
+SELECT * FROM table_dropped_attrs ORDER BY a;
+ a | c  | e  
+---+----+----
+ 1 | 10 | 99
+ 2 | 20 | 99
+ 3 | 30 | 99
+(3 rows)
+
+SELECT e, c, a FROM table_dropped_attrs ORDER BY a;
+ e  | c  | a 
+----+----+---
+ 99 | 10 | 1
+ 99 | 20 | 2
+ 99 | 30 | 3
+(3 rows)
+
+-- Drop the first column so live attnos (3, 5) no longer line up with
+-- DuckDB column indexes (0, 1).
+ALTER TABLE table_dropped_attrs DROP COLUMN a;
+SELECT * FROM table_dropped_attrs ORDER BY c;
+ c  | e  
+----+----
+ 10 | 99
+ 20 | 99
+ 30 | 99
+(3 rows)
+
+SELECT e, c FROM table_dropped_attrs ORDER BY c;
+ e  | c  
+----+----
+ 99 | 10
+ 99 | 20
+ 99 | 30
+(3 rows)
+
+COPY table_dropped_attrs TO :parquet_file_path (FORMAT PARQUET);
+SELECT * FROM read_parquet(:parquet_file_path) r ORDER BY r['c'];
+ c  | e  
+----+----
+ 10 | 99
+ 20 | 99
+ 30 | 99
+(3 rows)
+
+DROP TABLE table_dropped_attrs;

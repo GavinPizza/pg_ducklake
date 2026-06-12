@@ -54,6 +54,11 @@ GetAttName(const Form_pg_attribute att) {
 	return NameStr(att->attname);
 }
 
+bool
+AttIsDropped(const Form_pg_attribute att) {
+	return att->attisdropped;
+}
+
 Form_pg_attribute
 GetAttr(const TupleDesc tupleDesc, int i) {
 	return TupleDescAttr(tupleDesc, i);

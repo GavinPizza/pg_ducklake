@@ -11,6 +11,7 @@
 
 #include "pgducklake/catalog_sync.hpp"
 #include "pgducklake/constants.hpp"
+#include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/guc.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
 
@@ -38,12 +39,16 @@ extern "C" {
 #include "access/htup_details.h"
 #include "access/skey.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_type.h"
 #include "executor/spi.h"
+#include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 }
@@ -76,52 +81,83 @@ ConvertSPIResultToDuckStatementType(int result) {
 	}
 }
 
-/* Deform SPI tuples into a DuckDB DataChunk using pre-allocated buffers.
- * Callers pass Datum/bool arrays sized to natts so we avoid per-chunk palloc. */
-static void
-InsertSPITupleTableIntoChunk(duckdb::DataChunk &output, SPITupleTable *tuptable, idx_t start_idx, int num_tuples,
-                             Datum *values, bool *nulls) {
-	D_ASSERT(tuptable);
-	D_ASSERT(start_idx + num_tuples <= tuptable->numvals);
+/* An empty MaterializedQueryResult of the given statement type. */
+static duckdb::unique_ptr<duckdb::MaterializedQueryResult>
+CreateEmptyResult(duckdb::StatementType type) {
+	duckdb::vector<duckdb::string> names;
+	duckdb::StatementProperties properties;
+	duckdb::ClientProperties client_properties;
+	auto &allocator = duckdb::Allocator::DefaultAllocator();
+	auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
+	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(type, properties, names, std::move(empty_collection),
+	                                                          client_properties);
+}
 
-	if (num_tuples == 0) {
-		return;
+/*
+ * Run one SPI_execute inside an internal subtransaction so a PostgreSQL
+ * ERROR (e.g. a unique-violation raised by a concurrent DuckLake commit)
+ * can be caught and reported to DuckDB without corrupting backend state.
+ *
+ * Catching the longjmp WITHOUT a subtransaction (the previous approach)
+ * leaks every resource the failed executor had open -- most visibly the
+ * ActiveSnapshot entries it pushed, which later trip the
+ * "portal->portalSnapshot == GetActiveSnapshot()" assertion (pquery.c)
+ * when the enclosing statement's portal completes. The subtransaction
+ * rollback is what unwinds those.
+ *
+ * Discipline notes (mirrors PL/pgSQL's exception blocks):
+ * - SetAllowSubtransaction(true) opens the DuckLakeSubXactCallback gate
+ *   that otherwise rejects SAVEPOINTs while DuckDB holds a transaction.
+ * - CurrentResourceOwner must be restored by hand after both
+ *   ReleaseCurrentSubTransaction and RollbackAndReleaseCurrentSubTransaction;
+ *   forgetting it leaves later snapshot registrations owned by the dead
+ *   subtransaction's resource owner ("snapshot reference is not owned by
+ *   resource owner TopTransaction" at commit).
+ * - The GUC nest level is created OUTSIDE the subtransaction (our
+ *   client_min_messages override must survive the rollback) and popped
+ *   explicitly at the end.
+ */
+static int
+SPIExecuteInSubtransaction(const duckdb::string &query, bool &had_error, duckdb::string &error_message) {
+	MemoryContext old_context = CurrentMemoryContext;
+	ResourceOwner old_owner = CurrentResourceOwner;
+	int ret = -1;
+	had_error = false;
+
+	/* Suppress NOTICE-level chatter from internal metadata SQL run via SPI. DuckLake emits
+	 * CREATE TABLE IF NOT EXISTS for per-table inlined-delete tables; DuckDB silently ignores
+	 * re-creates, but real PostgreSQL raises a NOTICE that would otherwise leak to the client.
+	 * Scoped via a GUC nest level and restored by AtEOXact_GUC below (and on transaction abort). */
+	int save_nestlevel = NewGUCNestLevel();
+	::SetConfigOption("client_min_messages", "warning", PGC_USERSET, PGC_S_SESSION);
+
+	SetAllowSubtransaction(true);
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(old_context);
+
+	PG_TRY();
+	{
+		ret = SPI_execute(query.c_str(), false, 0);
+		ReleaseCurrentSubTransaction();
 	}
-
-	TupleDesc tupdesc = tuptable->tupdesc;
-	int natts = tupdesc->natts;
-
-	/* Cache per-column attribute metadata outside the row loop. */
-	auto attlen = (int16 *)palloc(natts * sizeof(int16));
-	auto atttypid = (Oid *)palloc(natts * sizeof(Oid));
-	auto column_append = (pgddb::PostgresToDuckValueFn *)palloc(natts * sizeof(pgddb::PostgresToDuckValueFn));
-	for (int col = 0; col < natts; col++) {
-		auto attr = TupleDescAttr(tupdesc, col);
-		attlen[col] = attr->attlen;
-		atttypid[col] = attr->atttypid;
-		column_append[col] = pgddb::GetPostgresToDuckValueFn(attr->atttypid, output.data[col]);
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(old_context);
+		ErrorData *edata = CopyErrorData();
+		error_message = edata->message;
+		FreeErrorData(edata);
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		had_error = true;
 	}
+	PG_END_TRY();
 
-	for (int row = 0; row < num_tuples; row++) {
-		HeapTuple tuple = tuptable->vals[start_idx + row];
-		heap_deform_tuple(tuple, tupdesc, values, nulls);
+	SetAllowSubtransaction(false);
+	MemoryContextSwitchTo(old_context);
+	CurrentResourceOwner = old_owner;
 
-		for (int col = 0; col < natts; col++) {
-			auto &result = output.data[col];
-			auto &array_mask = duckdb::FlatVector::Validity(result);
-
-			if (nulls[col]) {
-				array_mask.SetInvalid(row);
-			} else {
-				Datum datum = values[col];
-				column_append[col](result, datum, row);
-			}
-		}
-	}
-
-	pfree(attlen);
-	pfree(atttypid);
-	pfree(column_append);
+	AtEOXact_GUC(false, save_nestlevel);
+	return ret;
 }
 
 static duckdb::unique_ptr<duckdb::QueryResult>
@@ -134,34 +170,9 @@ CreateSPIResult(const duckdb::string &query) {
 	SPI_connect();
 	PushActiveSnapshot(GetTransactionSnapshot());
 
-	MemoryContext old_context = CurrentMemoryContext;
 	duckdb::string error_message;
 	bool had_error = false;
-	int ret = -1;
-
-	/* Suppress NOTICE-level chatter from internal metadata SQL run via SPI. DuckLake emits
-	 * CREATE TABLE IF NOT EXISTS for per-table inlined-delete tables; DuckDB silently ignores
-	 * re-creates, but real PostgreSQL raises a NOTICE that would otherwise leak to the client.
-	 * Scoped via a GUC nest level and restored by AtEOXact_GUC below (and on transaction abort). */
-	int save_nestlevel = NewGUCNestLevel();
-	::SetConfigOption("client_min_messages", "warning", PGC_USERSET, PGC_S_SESSION);
-
-	PG_TRY();
-	{
-		ret = SPI_execute(query.c_str(), false, 0);
-	}
-	PG_CATCH();
-	{
-		MemoryContextSwitchTo(old_context);
-		ErrorData *edata = CopyErrorData();
-		error_message = edata->message;
-		FreeErrorData(edata);
-		FlushErrorState();
-		had_error = true;
-	}
-	PG_END_TRY();
-
-	AtEOXact_GUC(false, save_nestlevel);
+	int ret = SPIExecuteInSubtransaction(query, had_error, error_message);
 
 	if (had_error) {
 		PopActiveSnapshot();
@@ -183,19 +194,7 @@ CreateSPIResult(const duckdb::string &query) {
 	if (!tuptable) {
 		PopActiveSnapshot();
 		SPI_finish();
-
-		// Return an empty result
-		duckdb::vector<duckdb::string> names;
-		duckdb::StatementProperties properties;
-		duckdb::ClientProperties client_properties;
-
-		// Create an empty ColumnDataCollection instead of passing nullptr
-		auto &allocator = duckdb::Allocator::DefaultAllocator();
-		auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
-
-		return duckdb::make_uniq<duckdb::MaterializedQueryResult>(ConvertSPIResultToDuckStatementType(ret), properties,
-		                                                          names, std::move(empty_collection),
-		                                                          client_properties);
+		return CreateEmptyResult(ConvertSPIResultToDuckStatementType(ret));
 	}
 
 	TupleDesc tupdesc = tuptable->tupdesc;
@@ -223,23 +222,38 @@ CreateSPIResult(const duckdb::string &query) {
 	auto &allocator = duckdb::Allocator::DefaultAllocator();
 	auto collection_p = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator, types);
 
-	// Allocate deform buffers once for all chunks
+	// One reusable chunk, append state, deform buffer, and per-column append
+	// function table for all slices; the loop below allocates nothing.
+	duckdb::DataChunk chunk;
+	chunk.Initialize(allocator, types, STANDARD_VECTOR_SIZE);
+	duckdb::ColumnDataAppendState append_state;
+	collection_p->InitializeAppend(append_state);
+
 	auto values = (Datum *)palloc(num_columns * sizeof(Datum));
 	auto deform_nulls = (bool *)palloc(num_columns * sizeof(bool));
-
-	// Convert SPI rows to DuckDB DataChunks and append them
-	for (idx_t row_idx = 0; row_idx < num_rows; row_idx += STANDARD_VECTOR_SIZE) {
-		idx_t chunk_size = duckdb::MinValue<int>(STANDARD_VECTOR_SIZE, num_rows - row_idx);
-		auto chunk = duckdb::make_uniq<duckdb::DataChunk>();
-		chunk->Initialize(allocator, types, chunk_size);
-		InsertSPITupleTableIntoChunk(*chunk, tuptable, row_idx, chunk_size, values, deform_nulls);
-
-		chunk->SetCardinality(chunk_size);
-		collection_p->Append(*chunk);
+	auto column_append = (pgddb::PostgresToDuckValueFn *)palloc(num_columns * sizeof(pgddb::PostgresToDuckValueFn));
+	for (int i = 0; i < num_columns; i++) {
+		column_append[i] = pgddb::GetPostgresToDuckValueFn(TupleDescAttr(tupdesc, i)->atttypid, chunk.data[i]);
 	}
 
-	pfree(values);
-	pfree(deform_nulls);
+	for (idx_t row_idx = 0; row_idx < num_rows; row_idx += STANDARD_VECTOR_SIZE) {
+		idx_t chunk_size = duckdb::MinValue<idx_t>(STANDARD_VECTOR_SIZE, num_rows - row_idx);
+		chunk.Reset();
+		for (idx_t row = 0; row < chunk_size; row++) {
+			HeapTuple tuple = tuptable->vals[row_idx + row];
+			heap_deform_tuple(tuple, tupdesc, values, deform_nulls);
+			for (int col = 0; col < num_columns; col++) {
+				auto &result = chunk.data[col];
+				if (deform_nulls[col]) {
+					duckdb::FlatVector::Validity(result).SetInvalid(row);
+				} else {
+					column_append[col](result, values[col], row);
+				}
+			}
+		}
+		chunk.SetCardinality(chunk_size);
+		collection_p->Append(append_state, chunk);
+	}
 
 	PopActiveSnapshot();
 	SPI_finish();
@@ -281,53 +295,19 @@ CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
 	pgddb::PostgresScopedStackReset scoped_stack_reset;
 
 	SPI_connect();
+	// The commit batch can run from the PRE_COMMIT xact callback at the end
+	// of a pipelined implicit transaction (extended protocol, e.g. asyncpg
+	// executemany: finish_xact_command at Sync), where no portal and no
+	// active snapshot exist -- SPI then rejects the batch with "cannot
+	// execute SQL without an outer snapshot or portal". Push one explicitly,
+	// like CreateSPIResult does for reads.
+	PushActiveSnapshot(GetTransactionSnapshot());
 
-	MemoryContext old_context = CurrentMemoryContext;
 	duckdb::string error_message;
 	bool had_error = false;
-	int ret = -1;
+	int ret = SPIExecuteInSubtransaction(query, had_error, error_message);
 
-	/*
-	 * WORKAROUND: BeginInternalSubTransaction is intentionally NOT used here.
-	 *
-	 * The full xact + subxact callback infrastructure is now in place
-	 * (RegisterXactCallback() in _PG_init installs both DuckLakeXactCallback
-	 * and DuckLakeSubXactCallback, and DuckdbAllowSubtransaction toggles the
-	 * subxact gate). Even with that machinery matching upstream pg_duckdb,
-	 * opening a subtransaction here still triggers PG to raise
-	 * "snapshot reference X is not owned by resource owner TopTransaction"
-	 * at implicit-autocommit time. The error is sent to the client but never
-	 * written to the server log, which makes it look like it comes from
-	 * AtEOXact_Snapshot at parent commit -- after our subtxn release returns
-	 * cleanly. Tracking down which snapshot is being unregistered against
-	 * the wrong owner (and why upstream pg_ducklake doesn't hit it) is a
-	 * follow-up that needs PG-internals expertise.
-	 *
-	 * Cost: DuckLake's FlushChanges no longer retries on unique-violation;
-	 * concurrent-commit conflicts surface as top-level INSERT failures
-	 * instead of being retried. The regression suite is single-writer so
-	 * doesn't exercise this path.
-	 */
-	/* Suppress NOTICE-level chatter from internal metadata DDL run via SPI (see CreateSPIResult). */
-	int save_nestlevel = NewGUCNestLevel();
-	::SetConfigOption("client_min_messages", "warning", PGC_USERSET, PGC_S_SESSION);
-
-	PG_TRY();
-	{
-		ret = SPI_execute(query.c_str(), false, 0);
-	}
-	PG_CATCH();
-	{
-		MemoryContextSwitchTo(old_context);
-		ErrorData *edata = CopyErrorData();
-		error_message = edata->message;
-		FreeErrorData(edata);
-		FlushErrorState();
-		had_error = true;
-	}
-	PG_END_TRY();
-
-	AtEOXact_GUC(false, save_nestlevel);
+	PopActiveSnapshot();
 
 	if (!had_error && ret < 0) {
 		error_message = duckdb::string("SPI execute failed: ") + SPI_result_code_string(ret);
@@ -340,13 +320,7 @@ CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
 		throw duckdb::TransactionException("%s", error_message.c_str());
 	}
 
-	duckdb::vector<duckdb::string> names;
-	duckdb::StatementProperties properties;
-	duckdb::ClientProperties client_properties;
-	auto &allocator = duckdb::Allocator::DefaultAllocator();
-	auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
-	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::EXECUTE_STATEMENT, properties,
-	                                                          names, std::move(empty_collection), client_properties);
+	return CreateEmptyResult(duckdb::StatementType::EXECUTE_STATEMENT);
 }
 
 PgDuckLakeMetadataManager::PgDuckLakeMetadataManager(duckdb::DuckLakeTransaction &transaction_)
@@ -534,7 +508,14 @@ PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
 	auto save_nestlevel = NewGUCNestLevel();
 	::SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
-	int ret = SPI_exec(R"(
+	// Both statements run through SPIExecuteInSubtransaction so a PG ERROR
+	// (query cancel, permission failure, ...) cannot longjmp out while the
+	// GlobalProcessLock lock_guard above is held -- a longjmp skips C++
+	// destructors and would leak the mutex. Failures surface as a thrown
+	// duckdb exception after cleanup, like the other helpers here.
+	duckdb::string error_message;
+	bool had_error = false;
+	int ret = SPIExecuteInSubtransaction(R"(
 		SELECT 1 FROM pg_trigger t
 		JOIN pg_class c ON t.tgrelid = c.oid
 		JOIN pg_namespace n ON c.relnamespace = n.oid
@@ -542,25 +523,30 @@ PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
 		  AND c.relname = 'ducklake_snapshot'
 		  AND t.tgname = 'ducklake_snapshot_sync_trigger'
 		)",
-	                   1);
-	if (ret != SPI_OK_SELECT)
-		elog(ERROR, "SPI_exec failed: %s", SPI_result_code_string(ret));
+	                                     had_error, error_message);
 
-	if (SPI_processed == 0) {
-		ret = SPI_exec(R"(
-		CREATE TRIGGER ducklake_snapshot_sync_trigger
+	if (!had_error && ret == SPI_OK_SELECT && SPI_processed == 0) {
+		// OR REPLACE: two backends can race the probe; the loser must
+		// succeed rather than error on the duplicate trigger.
+		ret = SPIExecuteInSubtransaction(R"(
+		CREATE OR REPLACE TRIGGER ducklake_snapshot_sync_trigger
 		AFTER INSERT ON ducklake.ducklake_snapshot
 		FOR EACH ROW
 		EXECUTE FUNCTION ducklake._snapshot_trigger()
 		)",
-		               0);
-		if (ret != SPI_OK_UTILITY)
-			elog(ERROR, "SPI_exec CREATE TRIGGER failed: %s", SPI_result_code_string(ret));
+		                                 had_error, error_message);
 	}
 
 	AtEOXact_GUC(false, save_nestlevel);
 	PopActiveSnapshot();
 	SPI_finish();
+
+	if (had_error || ret < 0) {
+		if (!had_error) {
+			error_message = SPI_result_code_string(ret);
+		}
+		throw duckdb::IOException("EnsureSnapshotTrigger failed: %s", error_message.c_str());
+	}
 }
 
 bool
@@ -580,13 +566,7 @@ PgDuckLakeMetadataManager::AttachMetadata(const duckdb::string & /*attach_query*
 	// DuckDB metadata database to ATTACH and no duckdb_secrets to load (the base AttachMetadata does
 	// both on the DuckDB connection). Return an empty success result so Initialize() proceeds to the
 	// MetadataExists() existence check.
-	duckdb::vector<duckdb::string> names;
-	duckdb::StatementProperties properties;
-	duckdb::ClientProperties client_properties;
-	auto &allocator = duckdb::Allocator::DefaultAllocator();
-	auto empty_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator);
-	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::SELECT_STATEMENT, properties,
-	                                                          names, std::move(empty_collection), client_properties);
+	return CreateEmptyResult(duckdb::StatementType::SELECT_STATEMENT);
 }
 
 void
@@ -648,7 +628,7 @@ GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_ve
 	}
 
 	Form_pg_class reltup = (Form_pg_class)GETSTRUCT(tp);
-	char *table_name = NameStr(reltup->relname);
+	char *table_name = pstrdup(NameStr(reltup->relname));
 	Oid schema_oid = reltup->relnamespace;
 	ReleaseSysCache(tp);
 
@@ -659,7 +639,7 @@ GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_ve
 	}
 
 	Form_pg_namespace nstup = (Form_pg_namespace)GETSTRUCT(ntp);
-	char *schema_name = NameStr(nstup->nspname);
+	char *schema_name = pstrdup(NameStr(nstup->nspname));
 	ReleaseSysCache(ntp);
 
 	/* Single SPI query that returns all the information we need:
@@ -679,27 +659,28 @@ GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_ve
 	 * schema_version) and rejected with TI_SCHEMA_VERSION_MISMATCH, but
 	 * that was stricter than DuckLake's own contract and broke every
 	 * direct insert after any schema-bumping ALTER (issue #197). */
-	StringInfoData query;
-	initStringInfo(&query);
-	appendStringInfo(&query,
-	                 "SELECT dt.table_id, "
-	                 "       (SELECT MAX(idt.schema_version) "
-	                 "        FROM ducklake.ducklake_inlined_data_tables idt "
-	                 "        WHERE idt.table_id = dt.table_id), "
-	                 "       (SELECT m.value::bigint "
-	                 "        FROM ducklake.ducklake_metadata m "
-	                 "        WHERE m.key = 'data_inlining_row_limit' "
-	                 "        AND m.scope IS NULL) "
-	                 "FROM ducklake.ducklake_table dt "
-	                 "JOIN ducklake.ducklake_schema ds ON dt.schema_id = ds.schema_id "
-	                 "WHERE dt.table_name = '%s' "
-	                 "AND ds.schema_name = '%s' "
-	                 "AND dt.end_snapshot IS NULL "
-	                 "AND ds.end_snapshot IS NULL "
-	                 "LIMIT 1",
-	                 table_name, schema_name);
+	// Names are passed as query parameters, not interpolated: PG names may
+	// contain quotes ('CREATE TABLE "o''brien"'), and they are data values
+	// here, not identifiers.
+	const char *query = "SELECT dt.table_id, "
+	                    "       (SELECT MAX(idt.schema_version) "
+	                    "        FROM ducklake.ducklake_inlined_data_tables idt "
+	                    "        WHERE idt.table_id = dt.table_id), "
+	                    "       (SELECT m.value::bigint "
+	                    "        FROM ducklake.ducklake_metadata m "
+	                    "        WHERE m.key = 'data_inlining_row_limit' "
+	                    "        AND m.scope IS NULL) "
+	                    "FROM ducklake.ducklake_table dt "
+	                    "JOIN ducklake.ducklake_schema ds ON dt.schema_id = ds.schema_id "
+	                    "WHERE dt.table_name = $1 "
+	                    "AND ds.schema_name = $2 "
+	                    "AND dt.end_snapshot IS NULL "
+	                    "AND ds.end_snapshot IS NULL "
+	                    "LIMIT 1";
+	Oid arg_types[2] = {TEXTOID, TEXTOID};
+	Datum arg_values[2] = {CStringGetTextDatum(table_name), CStringGetTextDatum(schema_name)};
 
-	ret = SPI_execute(query.data, true, 1);
+	ret = SPI_execute_with_args(query, 2, arg_types, arg_values, NULL, true, 1);
 	if (ret == SPI_OK_SELECT && SPI_processed > 0) {
 		HeapTuple tuple = SPI_tuptable->vals[0];
 		bool isnull;

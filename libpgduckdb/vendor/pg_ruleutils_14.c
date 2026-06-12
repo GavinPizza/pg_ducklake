@@ -10541,7 +10541,8 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 			break;
 
 		default:
-			simple_quote_literal(buf, extval);
+			if (!pgddb_deparse_const_literal(constval, buf))
+				simple_quote_literal(buf, extval);
 			break;
 	}
 

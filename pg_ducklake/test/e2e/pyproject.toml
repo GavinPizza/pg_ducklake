@@ -1,0 +1,31 @@
+# Integration / end-to-end test suite for pg_ducklake.
+#
+# Run via `make -C pg_ducklake check-e2e PG_CONFIG=...` or directly:
+#   PG_CONFIG=/path/to/pg_config uv run --project test/e2e pytest test/e2e
+#
+# See conftest.py for the harness and environment knobs.
+
+[project]
+name = "pg-ducklake-e2e"
+version = "0.0.0"
+description = "Integration / end-to-end tests for pg_ducklake"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "asyncpg>=0.30",
+    "duckdb>=1.4",
+    "minio>=7.2",
+    "filelock>=3.13",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Generous: the first s3 test may pull the MinIO image and the first s3
+# backend connection may download the httpfs duckdb extension.
+timeout = 300
+addopts = "-ra --tb=short"

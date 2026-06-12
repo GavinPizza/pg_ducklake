@@ -203,6 +203,12 @@ jobs:
         if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
         run: cat pg_ducklake/test/regression/log/postmaster.log || true
 
+      - name: Print pg_ducklake isolation diffs and log on failure
+        if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
+        run: |
+          cat pg_ducklake/test/isolation/output_iso/regression.diffs || true
+          cat pg_ducklake/test/isolation/output_iso/log/postmaster.log || true
+
       - name: Upload pg_ducklake regression artifacts on failure
         if: failure() && steps.pgducklake_installcheck.outcome == 'failure'
         uses: actions/upload-artifact@v4
@@ -213,3 +219,23 @@ jobs:
             pg_ducklake/test/regression/regression.out
             pg_ducklake/test/regression/results/
             pg_ducklake/test/regression/log/
+            pg_ducklake/test/isolation/output_iso/
+
+      # ---- pg_ducklake e2e (pg_ducklake/test/e2e: uv + pytest + asyncpg +
+      # external duckdb client + dockerized MinIO for s3:// coverage) ----
+      - name: Install uv (pg_ducklake e2e suite)
+        uses: astral-sh/setup-uv@v5
+
+      - name: pg_ducklake e2e
+        id: pgducklake_e2e
+        timeout-minutes: 20
+        env:
+          # CI runners have docker and network access, so the S3 tests must
+          # actually run -- fail instead of skipping when MinIO/httpfs are
+          # unavailable.
+          E2E_REQUIRE_S3: "1"
+        run: make pg_ducklake/check-e2e
+
+      - name: Print pg_ducklake e2e PG log on failure
+        if: failure() && steps.pgducklake_e2e.outcome == 'failure'
+        run: cat /tmp/pytest-of-*/pytest-current/pgdata*/pg.log || true

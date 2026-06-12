@@ -95,6 +95,12 @@ typedef int (*pgddb_show_type_hook_t)(Const *constval, int original_showtype);
 PGDDB_EXPORT void Register_pgddb_show_type(pgddb_show_type_hook_t fn);
 int pgddb_show_type(Const *constval, int original_showtype);
 
+// Kernel override for Const literals whose PG text form DuckDB would
+// misread (e.g. bytea). Writes the literal to buf and returns true when it
+// handled the type; the vendored deparser falls back to
+// simple_quote_literal otherwise. Generic kernel rule, no per-consumer hooks.
+bool pgddb_deparse_const_literal(Const *constval, StringInfo buf);
+
 // Star reconstruction step. Mutate ctx and return true if handled.
 typedef bool (*pgddb_reconstruct_star_step_hook_t)(StarReconstructionContext *ctx, ListCell *tle_cell);
 PGDDB_EXPORT void Register_pgddb_reconstruct_star_step(pgddb_reconstruct_star_step_hook_t fn);

@@ -1,0 +1,21 @@
+-- Identifiers containing quotes must survive both the SPI metadata lookups
+-- (passed as query parameters, not interpolated into literals) and the
+-- DuckDB DDL deparse (quoted identifiers, e.g. the drop trigger).
+CREATE TABLE "o'brien" (id int, val text) USING ducklake;
+INSERT INTO "o'brien" VALUES (1, 'a'), (2, 'b');
+SELECT * FROM "o'brien" ORDER BY id;
+ id | val 
+----+-----
+  1 | a
+  2 | b
+(2 rows)
+
+UPDATE "o'brien" SET val = 'z' WHERE id = 2;
+SELECT * FROM "o'brien" ORDER BY id;
+ id | val 
+----+-----
+  1 | a
+  2 | z
+(2 rows)
+
+DROP TABLE "o'brien";

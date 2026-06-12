@@ -1,0 +1,542 @@
+# End-to-end harness for pg_ducklake.
+#
+# What it does:
+#   - boots a throwaway PostgreSQL cluster (initdb + pg_ctl) with
+#     shared_preload_libraries='pg_ducklake', resolved via $PG_CONFIG
+#   - creates one fresh database (+ CREATE EXTENSION pg_ducklake) per test
+#   - optionally starts a dockerized MinIO server and parametrizes tests
+#     over local vs s3:// table storage (the `lake` fixture)
+#   - connects through real clients: asyncpg (PG wire, extended protocol)
+#     and the duckdb python client (external DuckLake reader/writer via
+#     ATTACH 'ducklake:postgres:...')
+#
+# Environment knobs:
+#   PG_CONFIG          pg_config of the install tree with pg_ducklake
+#                      installed (default: `pg_config` on PATH)
+#   E2E_MINIO_IMAGE    docker image for MinIO (default: minio/minio:latest)
+#   MINIO_ENDPOINT     use an already-running S3 server instead of docker,
+#                      host:port (with MINIO_ACCESS_KEY/MINIO_SECRET_KEY,
+#                      both default 'minioadmin')
+#   E2E_REQUIRE_S3=1   make s3-dependent tests fail instead of skip when
+#                      docker / MinIO / httpfs are unavailable
+#
+# Requirements honesty: httpfs is NOT statically bundled into pg_ducklake,
+# so the first s3:// access INSTALLs it from extensions.duckdb.org into the
+# postgres OS user's duckdb extension dir (cached afterwards). s3 tests and
+# duckdb-client tests therefore need network access on first run.
+
+import os
+import shutil
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+import uuid
+from contextlib import closing
+from dataclasses import dataclass, field
+from pathlib import Path
+from tempfile import gettempdir
+
+import asyncpg
+import duckdb
+import filelock
+import pytest
+
+PGHOST = "127.0.0.1"
+
+
+def run(cmd, **kwargs):
+    kwargs.setdefault("check", True)
+    kwargs.setdefault("text", True)
+    return subprocess.run([str(c) for c in cmd], **kwargs)
+
+
+def capture(cmd, **kwargs):
+    return run(cmd, stdout=subprocess.PIPE, **kwargs).stdout
+
+
+def get_bin_dir():
+    pg_config = os.environ.get("PG_CONFIG", "pg_config")
+    return capture([pg_config, "--bindir"]).strip()
+
+
+def skip_or_fail(reason):
+    """Honor E2E_REQUIRE_S3: optional infrastructure gaps normally skip."""
+    if os.environ.get("E2E_REQUIRE_S3"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+# ---------------------------------------------------------------------------
+# Port allocation (same scheme as pg_duckdb/test/pycheck): a filelock plus a
+# bind probe, in a range above most OS ephemeral-port starts.
+
+PORT_LOWER_BOUND = 10200
+PORT_UPPER_BOUND = 32768
+
+_next_port = PORT_LOWER_BOUND
+
+
+class PortLock:
+    def __init__(self):
+        global _next_port
+        while True:
+            _next_port += 1
+            if _next_port >= PORT_UPPER_BOUND:
+                _next_port = PORT_LOWER_BOUND
+
+            self.lock = filelock.FileLock(
+                Path(gettempdir()) / f"port-{_next_port}.lock"
+            )
+            try:
+                self.lock.acquire(timeout=0)
+            except filelock.Timeout:
+                continue
+
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+                try:
+                    s.bind((PGHOST, _next_port))
+                    self.port = _next_port
+                    break
+                except Exception:
+                    self.lock.release()
+                    continue
+
+    def release(self):
+        self.lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Throwaway PostgreSQL cluster
+
+
+class PgCluster:
+    def __init__(self, pgdata: Path):
+        self.pgdata = pgdata
+        self.log_path = pgdata / "pg.log"
+        self.bindir = get_bin_dir()
+        self.port_lock = PortLock()
+        self.port = self.port_lock.port
+        self.host = PGHOST
+
+    def bin(self, name):
+        return os.path.join(self.bindir, name)
+
+    def subprocess_env(self):
+        # Drop AWS_* so DuckDB's credential chain cannot accidentally pick
+        # up the developer's real credentials: "no DuckDB secret" must
+        # deterministically mean "no S3 access" in the tests. Drop PG* too
+        # (except PG_CONFIG) so psql/pg_ctl see only our explicit flags.
+        return {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("AWS_")
+            and (not k.startswith("PG") or k == "PG_CONFIG")
+        }
+
+    def initdb(self):
+        run(
+            [
+                self.bin("initdb"),
+                "-A",
+                "trust",
+                "--nosync",
+                "--username",
+                "postgres",
+                "--pgdata",
+                self.pgdata,
+            ],
+            stdout=subprocess.DEVNULL,
+            env=self.subprocess_env(),
+        )
+        with (self.pgdata / "postgresql.conf").open("a") as conf:
+            conf.write(f"listen_addresses = '{PGHOST}'\n")
+            conf.write("unix_socket_directories = '/tmp'\n")
+            conf.write("shared_preload_libraries = 'pg_ducklake'\n")
+            # No background flush/compaction: tests drive maintenance
+            # explicitly so file layouts stay deterministic.
+            conf.write("ducklake.maintenance_enabled = false\n")
+            # No max_parallel_workers=0 workaround here (unlike
+            # test/regression/regression.conf): the kernel defaults DuckDB
+            # to a single thread, so recursive PostgresTableReader scans run
+            # on the backend's main thread and PG parallelism is safe.
+            conf.write("fsync = off\n")
+            conf.write("logging_collector = off\n")
+            conf.write("log_destination = stderr\n")
+
+    def pgctl(self, command, **kwargs):
+        kwargs.setdefault("env", self.subprocess_env())
+        run([self.bin("pg_ctl"), "-w", "--pgdata", self.pgdata, *command], **kwargs)
+
+    def start(self):
+        try:
+            self.pgctl(["-o", f"-p {self.port}", "-l", self.log_path, "start"])
+        except Exception:
+            if self.log_path.exists():
+                print(self.log_path.read_text())
+            raise
+
+    def stop(self):
+        self.pgctl(["-m", "fast", "stop"], check=False)
+
+    def psql(self, dbname, *statements):
+        """Run statements through psql (simple query protocol)."""
+        cmd = [
+            self.bin("psql"),
+            "-X",
+            "-Atq",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-h",
+            self.host,
+            "-p",
+            str(self.port),
+            "-U",
+            "postgres",
+            "-d",
+            dbname,
+        ]
+        for statement in statements:
+            cmd += ["-c", statement]
+        return capture(cmd, env=self.subprocess_env())
+
+    def wait_ready(self, timeout=30):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready = run(
+                [self.bin("pg_isready"), "-h", self.host, "-p", str(self.port)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                env=self.subprocess_env(),
+            )
+            if ready.returncode == 0:
+                return
+            time.sleep(0.5)
+        raise TimeoutError("PostgreSQL did not become ready")
+
+    def assert_no_crash(self):
+        if self.log_path.exists():
+            log = self.log_path.read_text()
+            assert "was terminated by signal" not in log, (
+                "a backend crashed during the e2e run, see " + str(self.log_path)
+            )
+
+
+@pytest.fixture(scope="session")
+def cluster(tmp_path_factory):
+    pg = PgCluster(tmp_path_factory.mktemp("pgdata"))
+    pg.initdb()
+    pg.start()
+    yield pg
+    pg.stop()
+    pg.port_lock.release()
+    pg.assert_no_crash()
+
+
+@pytest.fixture
+def db(cluster):
+    """A fresh database with pg_ducklake installed, dropped afterwards."""
+    name = f"e2e_{uuid.uuid4().hex[:10]}"
+    cluster.wait_ready()
+    cluster.psql("postgres", f"CREATE DATABASE {name}")
+    cluster.psql(name, "CREATE EXTENSION pg_ducklake")
+    yield name
+    run(
+        [
+            cluster.bin("psql"),
+            "-X",
+            "-h",
+            cluster.host,
+            "-p",
+            str(cluster.port),
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-c",
+            f"DROP DATABASE {name} WITH (FORCE)",
+        ],
+        check=False,
+        env=cluster.subprocess_env(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# MinIO (S3-compatible) infrastructure
+
+
+@dataclass
+class S3Server:
+    endpoint: str  # host:port, no scheme
+    access_key: str
+    secret_key: str
+
+
+@dataclass
+class S3:
+    server: S3Server
+    bucket: str
+    client: object = field(repr=False)  # minio.Minio
+
+    def secret_sql(self, name="e2e_minio"):
+        """DuckDB CREATE SECRET statement, usable both inside the
+        pg_ducklake backend (via ducklake.duckdb_raw_query) and in an
+        external duckdb client."""
+        s = self.server
+        return (
+            f"CREATE OR REPLACE SECRET {name} ("
+            f"TYPE S3, KEY_ID '{s.access_key}', SECRET '{s.secret_key}', "
+            f"ENDPOINT '{s.endpoint}', URL_STYLE 'path', USE_SSL false, "
+            f"REGION 'us-east-1')"
+        )
+
+    def object_names(self):
+        return [
+            o.object_name for o in self.client.list_objects(self.bucket, recursive=True)
+        ]
+
+
+def _docker_available():
+    if shutil.which("docker") is None:
+        return False
+    try:
+        run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_minio(endpoint, timeout=60):
+    deadline = time.time() + timeout
+    url = f"http://{endpoint}/minio/health/live"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status == 200:
+                    return
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(0.5)
+    raise TimeoutError(f"MinIO at {endpoint} did not become healthy")
+
+
+@pytest.fixture(scope="session")
+def minio_server(request):
+    """An S3Server, or None (with a reason in `minio_server_skip_reason`)
+    when no S3 endpoint can be provided."""
+    if os.environ.get("MINIO_ENDPOINT"):
+        server = S3Server(
+            endpoint=os.environ["MINIO_ENDPOINT"],
+            access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+            secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+        )
+        _wait_for_minio(server.endpoint)
+        return server
+
+    if not _docker_available():
+        request.session.minio_skip_reason = "docker is not available for MinIO"
+        return None
+
+    if os.environ.get("E2E_MINIO_IMAGE"):
+        images = [os.environ["E2E_MINIO_IMAGE"]]
+    else:
+        # quay.io mirrors docker hub's minio/minio; try both since either
+        # registry may be unreachable from a given network
+        images = ["minio/minio:latest", "quay.io/minio/minio:latest"]
+    cid = None
+    errors = []
+    for image in images:
+        try:
+            cid = capture(
+                [
+                    "docker", "run", "-d", "--rm",
+                    "-e", "MINIO_ROOT_USER=minioadmin",
+                    "-e", "MINIO_ROOT_PASSWORD=minioadmin",
+                    # random host port, loopback only
+                    "-p", "127.0.0.1:0:9000",
+                    image, "server", "/data",
+                ],
+                timeout=300,  # may pull the image
+                stderr=subprocess.PIPE,
+            ).strip()
+            break
+        except subprocess.CalledProcessError as e:
+            errors.append(f"{image}: {e.stderr.strip()}")
+        except Exception as e:
+            errors.append(f"{image}: {e}")
+    if cid is None:
+        request.session.minio_skip_reason = (
+            "could not start MinIO container: " + "; ".join(errors)
+        )
+        return None
+
+    request.addfinalizer(
+        lambda: run(["docker", "stop", cid], check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    )
+    endpoint = capture(["docker", "port", cid, "9000/tcp"]).splitlines()[0].strip()
+    _wait_for_minio(endpoint)
+    return S3Server(endpoint=endpoint, access_key="minioadmin",
+                    secret_key="minioadmin")
+
+
+@pytest.fixture
+def s3(minio_server, request):
+    """A per-test bucket on the session MinIO server."""
+    if minio_server is None:
+        skip_or_fail(getattr(request.session, "minio_skip_reason", "no S3 server"))
+
+    from minio import Minio
+
+    client = Minio(
+        minio_server.endpoint,
+        access_key=minio_server.access_key,
+        secret_key=minio_server.secret_key,
+        secure=False,
+    )
+    bucket = f"e2e-{uuid.uuid4().hex[:12]}"
+    client.make_bucket(bucket)
+    ctx = S3(server=minio_server, bucket=bucket, client=client)
+    yield ctx
+    try:
+        for name in ctx.object_names():
+            client.remove_object(bucket, name)
+        client.remove_bucket(bucket)
+    except Exception:
+        pass  # best-effort; the container is removed at session end anyway
+
+
+# ---------------------------------------------------------------------------
+# Lake: one pg_ducklake database plus its storage backend
+
+
+class Lake:
+    def __init__(self, cluster, dbname, s3=None):
+        self.cluster = cluster
+        self.dbname = dbname
+        self.s3 = s3
+
+    @property
+    def storage(self):
+        return "s3" if self.s3 else "local"
+
+    @property
+    def table_path(self):
+        assert self.s3
+        return f"s3://{self.s3.bucket}/lake/"
+
+    async def connect(self, configure=True, **kwargs):
+        conn = await asyncpg.connect(
+            host=self.cluster.host,
+            port=self.cluster.port,
+            user="postgres",
+            database=self.dbname,
+            **kwargs,
+        )
+        if configure and self.s3:
+            await self.configure_s3(conn)
+        return conn
+
+    async def configure_s3(self, conn):
+        """Make this backend's DuckDB instance able to read/write the
+        MinIO bucket, and point new tables at it.
+
+        DuckDB secrets are per-DuckDB-instance and non-persistent, so this
+        must run on every new PG connection (and again after
+        ducklake.recycle_ddb()).
+        """
+        # httpfs is not bundled into pg_ducklake; INSTALL downloads it on
+        # first use (cached in the duckdb extension dir afterwards).
+        try:
+            await conn.execute(
+                "SELECT ducklake.duckdb_raw_query('INSTALL httpfs')"
+            )
+        except asyncpg.PostgresError as e:
+            skip_or_fail(f"backend cannot INSTALL httpfs (offline?): {e}")
+        await conn.execute("SELECT ducklake.duckdb_raw_query('LOAD httpfs')")
+        await conn.execute(
+            f"SELECT ducklake.duckdb_raw_query($e2e${self.s3.secret_sql()}$e2e$)"
+        )
+        await conn.execute(
+            f"SET ducklake.default_table_path = '{self.table_path}'"
+        )
+
+    def psql(self, *statements):
+        """Simple-protocol escape hatch (each statement via psql -c).
+
+        Useful for ducklake.* SETOF duckdb_row functions whose result shape
+        cannot be described under the extended protocol that asyncpg uses.
+        S3 configuration is prepended when applicable.
+        """
+        if self.s3:
+            statements = (
+                "SELECT ducklake.duckdb_raw_query('INSTALL httpfs')",
+                "SELECT ducklake.duckdb_raw_query('LOAD httpfs')",
+                f"SELECT ducklake.duckdb_raw_query($e2e${self.s3.secret_sql()}$e2e$)",
+                f"SET ducklake.default_table_path = '{self.table_path}'",
+            ) + statements
+        return self.cluster.psql(self.dbname, *statements)
+
+    def duckdb(self, read_only=False):
+        """An external duckdb client attached to this lake's DuckLake
+        catalog through the PostgreSQL metadata server."""
+        con = duckdb.connect()
+        try:
+            for ext in ("ducklake", "postgres"):
+                con.execute(f"INSTALL {ext}")
+                con.execute(f"LOAD {ext}")
+            if self.s3:
+                con.execute("INSTALL httpfs")
+                con.execute("LOAD httpfs")
+        except duckdb.Error as e:
+            con.close()
+            skip_or_fail(f"duckdb client cannot install extensions (offline?): {e}")
+        if self.s3:
+            con.execute(self.s3.secret_sql("e2e_minio_client"))
+        options = "METADATA_SCHEMA 'ducklake'"
+        if read_only:
+            options += ", READ_ONLY"
+        con.execute(
+            f"ATTACH 'ducklake:postgres:host={self.cluster.host} "
+            f"port={self.cluster.port} dbname={self.dbname} user=postgres' "
+            f"AS lake ({options})"
+        )
+        return con
+
+
+@pytest.fixture(params=["local", "s3"])
+def lake(request, cluster, db):
+    """The same lake-backed database, parametrized over storage backends.
+
+    The 'local' variant uses the default DATA_PATH under $PGDATA (no MinIO
+    involved at all) with the product's default config, where small writes
+    stay inlined in PG heap metadata tables. The 's3' variant stores table
+    data in a per-test MinIO bucket and disables data inlining so every
+    write genuinely performs S3 I/O (otherwise inlined rows would make the
+    whole s3 run pass without ever touching the bucket); it skips when no
+    S3 infrastructure is available.
+    """
+    s3ctx = request.getfixturevalue("s3") if request.param == "s3" else None
+    if s3ctx:
+        # catalog option, persisted in metadata: applies to all backends of
+        # this database; set_option only writes PG tables, no secret needed
+        cluster.psql(db, "CALL ducklake.set_option('data_inlining_row_limit', 0)")
+    yield Lake(cluster, db, s3ctx)
+    if s3ctx:
+        # canary: an s3-parametrized test that never produced a single
+        # bucket object was not actually testing s3 storage
+        assert s3ctx.object_names(), (
+            "s3-parametrized test wrote nothing to the bucket; "
+            "ducklake.default_table_path is probably not taking effect"
+        )
+
+
+@pytest.fixture
+async def conn(lake):
+    c = await lake.connect()
+    try:
+        yield c
+    finally:
+        await c.close()

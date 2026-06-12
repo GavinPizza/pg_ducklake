@@ -665,8 +665,9 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 		char *schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
 
-		std::string drop_ddl = duckdb::StringUtil::Format("DROP TABLE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG ".%s.%s",
-		                                                  schema_name, table_name);
+		std::string drop_ddl =
+		    duckdb::StringUtil::Format("DROP TABLE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG ".%s.%s",
+		                               duckdb::SQLIdentifier(schema_name), duckdb::SQLIdentifier(table_name));
 
 		elog(DEBUG1, "Dropping DuckLake table: %s", drop_ddl.c_str());
 

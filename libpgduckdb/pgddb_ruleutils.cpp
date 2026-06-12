@@ -198,6 +198,27 @@ pgddb_show_type(Const *constval, int original_showtype) {
 }
 
 bool
+pgddb_deparse_const_literal(Const *constval, StringInfo buf) {
+	if (constval->consttype != BYTEAOID) {
+		return false;
+	}
+	/* PG renders bytea as one whole-string hex literal ('\x68656c6c6f'),
+	 * but DuckDB's VARCHAR->BLOB cast decodes \xHH escapes per byte,
+	 * silently corrupting the value. Emit the per-byte form instead; the
+	 * ::bytea label appended by get_const_expr stays valid (bytea is a
+	 * BLOB alias in DuckDB). */
+	bytea *vlena = DatumGetByteaPP(constval->constvalue);
+	const unsigned char *vdata = (const unsigned char *)VARDATA_ANY(vlena);
+	int vlen = VARSIZE_ANY_EXHDR(vlena);
+	appendStringInfoChar(buf, '\'');
+	for (int i = 0; i < vlen; i++) {
+		appendStringInfo(buf, "\\x%02x", vdata[i]);
+	}
+	appendStringInfoChar(buf, '\'');
+	return true;
+}
+
+bool
 pgddb_reconstruct_star_step(StarReconstructionContext *ctx, ListCell *tle_cell) {
 	for (auto fn : g_reconstruct_star_step_hooks) {
 		if (fn(ctx, tle_cell)) {

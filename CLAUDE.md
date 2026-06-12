@@ -26,8 +26,8 @@ Ordered groups, blank line between, alphabetical within each:
    pgddb C headers like `pgddb_ruleutils.h` }
 
 Postgres last keeps the FATAL ordering automatic. Postgres-dependent pgddb
-*C++* headers (`utility/cpp_wrapper.hpp`, `pgddb_node.hpp`) go between groups
-4 and 5.
+*C++* headers (`utility/cpp_wrapper.hpp`, `pgddb_node.hpp`) go AFTER group 5
+(after the `extern "C"` block), without an explanatory comment.
 
 `.clang-format` uses `SortIncludes: false` / `IncludeBlocks: Preserve` -- order
 is manual. ASCII only.

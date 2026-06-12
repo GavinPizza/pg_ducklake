@@ -13,7 +13,7 @@ public:
 	DuckDBManager()
 	    : database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"), duckdb_temp_directory(strdup("")),
 	      duckdb_extension_directory(strdup("")), duckdb_max_temp_directory_size(strdup("")), duckdb_maximum_memory(0),
-	      duckdb_threads(-1) {
+	      duckdb_threads(1) {
 	}
 	virtual ~DuckDBManager() = default;
 
@@ -92,7 +92,12 @@ protected:
 	char *duckdb_max_temp_directory_size;
 	// The maximum memory DuckDB can use in MB (e.g., 4096 for 4GB)
 	int duckdb_maximum_memory;
-	// Maximum number of DuckDB threads per Postgres backend
+	// Maximum number of DuckDB threads per Postgres backend. Defaults to 1
+	// so all DuckDB work runs on the backend's main thread: PG routines
+	// reached from DuckDB execution (e.g. PostgresTableReader scans) are not
+	// thread-safe off the main thread. Consumers that accept that risk can
+	// raise it (pg_duckdb overrides this from its duckdb.max_threads GUC in
+	// ApplyGucConfig; -1 means leave DuckDB's default, i.e. all cores).
 	int duckdb_threads;
 
 public:

@@ -121,7 +121,7 @@ $(shlib): $(FULL_DUCKDB_LIB) $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB) $(O
 # Project formatting (project files only, not third_party/).
 FORMAT_FILES = $(shell find src/ include/ -name '*.cpp' -o -name '*.hpp' -o -name '*.h')
 
-.PHONY: format check-format check-regression clean-regression check-isolation clean-isolation clean-all
+.PHONY: format check-format check-regression clean-regression check-isolation clean-isolation check-e2e clean-all
 
 format:
 	clang-format -i $(FORMAT_FILES)
@@ -140,6 +140,15 @@ clean-regression:
 
 check-isolation:
 	$(MAKE) -C test/isolation check-isolation
+
+# End-to-end integration suite (test/e2e): throwaway PG cluster + asyncpg +
+# external duckdb client, with optional dockerized MinIO for s3:// storage
+# coverage (those tests skip when docker is unavailable; E2E_REQUIRE_S3=1
+# turns the skips into failures). Needs `uv` on PATH; not part of
+# installcheck because of the docker/network dependencies.
+# Usage: make check-e2e [TEST=<pytest -k expr>] [E2E_PYTEST_ARGS=...]
+check-e2e: all install
+	PG_CONFIG='$(PG_CONFIG)' uv run --project test/e2e -- pytest test/e2e $(if $(TEST),-k '$(TEST)') $(E2E_PYTEST_ARGS)
 
 clean-isolation:
 	$(MAKE) -C test/isolation clean-isolation

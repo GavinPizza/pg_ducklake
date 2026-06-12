@@ -16,6 +16,8 @@ int GetTupleDescNatts(const TupleDesc tupleDesc);
 
 const char *GetAttName(const Form_pg_attribute);
 
+bool AttIsDropped(const Form_pg_attribute att);
+
 Form_pg_attribute GetAttr(const TupleDesc tupleDesc, int i);
 
 bool TupleIsNull(TupleTableSlot *slot);

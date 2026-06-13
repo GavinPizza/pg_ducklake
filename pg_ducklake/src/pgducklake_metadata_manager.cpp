@@ -1,12 +1,7 @@
 /*
  * pgducklake_metadata_manager.cpp -- PostgreSQL-backed DuckLake metadata
- * manager.
- *
- * @scope duckdb-instance: per-transaction PgDuckLakeMetadataManager,
- *   SPI query execution, snapshot trigger setup
- *
- * Implements DuckLake metadata operations by translating DuckDB requests into
- * SQL against the ducklake_* metadata tables in PostgreSQL.
+ * manager: translates DuckDB metadata requests into SQL against the
+ * ducklake_* tables.
  */
 
 #include "pgducklake/catalog_sync.hpp"
@@ -76,12 +71,10 @@ ConvertSPIResultToDuckStatementType(int result) {
 	case SPI_OK_UPDATE_RETURNING:
 		return duckdb::StatementType::UPDATE_STATEMENT;
 	default:
-		// For now, we should not use other types query in SPI.
 		return duckdb::StatementType::INVALID_STATEMENT;
 	}
 }
 
-/* An empty MaterializedQueryResult of the given statement type. */
 static duckdb::unique_ptr<duckdb::MaterializedQueryResult>
 CreateEmptyResult(duckdb::StatementType type) {
 	duckdb::vector<duckdb::string> names;
@@ -94,28 +87,9 @@ CreateEmptyResult(duckdb::StatementType type) {
 }
 
 /*
- * Run one SPI_execute inside an internal subtransaction so a PostgreSQL
- * ERROR (e.g. a unique-violation raised by a concurrent DuckLake commit)
- * can be caught and reported to DuckDB without corrupting backend state.
- *
- * Catching the longjmp WITHOUT a subtransaction (the previous approach)
- * leaks every resource the failed executor had open -- most visibly the
- * ActiveSnapshot entries it pushed, which later trip the
- * "portal->portalSnapshot == GetActiveSnapshot()" assertion (pquery.c)
- * when the enclosing statement's portal completes. The subtransaction
- * rollback is what unwinds those.
- *
- * Discipline notes (mirrors PL/pgSQL's exception blocks):
- * - SetAllowSubtransaction(true) opens the DuckLakeSubXactCallback gate
- *   that otherwise rejects SAVEPOINTs while DuckDB holds a transaction.
- * - CurrentResourceOwner must be restored by hand after both
- *   ReleaseCurrentSubTransaction and RollbackAndReleaseCurrentSubTransaction;
- *   forgetting it leaves later snapshot registrations owned by the dead
- *   subtransaction's resource owner ("snapshot reference is not owned by
- *   resource owner TopTransaction" at commit).
- * - The GUC nest level is created OUTSIDE the subtransaction (our
- *   client_min_messages override must survive the rollback) and popped
- *   explicitly at the end.
+ * Catch PG ERRORs inside a subtransaction: a bare longjmp catch leaks
+ * ActiveSnapshot/executor resources. CurrentResourceOwner must be restored by
+ * hand after release/rollback; the GUC nest level stays outside the subxact.
  */
 static int
 SPIExecuteInSubtransaction(const duckdb::string &query, bool &had_error, duckdb::string &error_message) {
@@ -124,10 +98,8 @@ SPIExecuteInSubtransaction(const duckdb::string &query, bool &had_error, duckdb:
 	int ret = -1;
 	had_error = false;
 
-	/* Suppress NOTICE-level chatter from internal metadata SQL run via SPI. DuckLake emits
-	 * CREATE TABLE IF NOT EXISTS for per-table inlined-delete tables; DuckDB silently ignores
-	 * re-creates, but real PostgreSQL raises a NOTICE that would otherwise leak to the client.
-	 * Scoped via a GUC nest level and restored by AtEOXact_GUC below (and on transaction abort). */
+	/* Suppress NOTICEs: DuckLake re-runs CREATE TABLE IF NOT EXISTS for
+	 * inlined-delete tables, and PG's NOTICE would leak to the client. */
 	int save_nestlevel = NewGUCNestLevel();
 	::SetConfigOption("client_min_messages", "warning", PGC_USERSET, PGC_S_SESSION);
 
@@ -189,7 +161,6 @@ CreateSPIResult(const duckdb::string &query) {
 		return duckdb::make_uniq<duckdb::MaterializedQueryResult>(std::move(error));
 	}
 
-	// Get the result table
 	SPITupleTable *tuptable = SPI_tuptable;
 	if (!tuptable) {
 		PopActiveSnapshot();
@@ -201,7 +172,6 @@ CreateSPIResult(const duckdb::string &query) {
 	int num_columns = tupdesc->natts;
 	uint64 num_rows = tuptable->numvals;
 
-	// Convert column types and names
 	duckdb::vector<duckdb::LogicalType> types;
 	duckdb::vector<duckdb::string> names;
 
@@ -210,14 +180,11 @@ CreateSPIResult(const duckdb::string &query) {
 
 		D_ASSERT(!attr->attisdropped);
 
-		// Get column name
 		names.push_back(NameStr(attr->attname));
 
-		// Convert Postgres type to DuckDB type
 		types.push_back(pgddb::ConvertPostgresToDuckColumnType(attr));
 	}
 
-	// Create a ColumnDataCollection to store the results
 	duckdb::ClientProperties client_properties;
 	auto &allocator = duckdb::Allocator::DefaultAllocator();
 	auto collection_p = duckdb::make_uniq<duckdb::ColumnDataCollection>(allocator, types);
@@ -258,16 +225,13 @@ CreateSPIResult(const duckdb::string &query) {
 	PopActiveSnapshot();
 	SPI_finish();
 
-	// Create and return the MaterializedQueryResult
 	duckdb::StatementProperties properties;
 	return duckdb::make_uniq<duckdb::MaterializedQueryResult>(duckdb::StatementType::SELECT_STATEMENT, properties,
 	                                                          names, std::move(collection_p), client_properties);
 }
 
 /*
- * Substitute DuckLake catalog/schema placeholders with the PostgreSQL schema
- * constants. We avoid calling transaction.GetCatalog() here because during
- * DuckLake initialization (FinalizeLoad -> InitializeDuckLake -> Execute), the
+ * Avoids transaction.GetCatalog(): during DuckLake initialization the
  * AttachedDatabase is not yet reachable via the db_manager.
  */
 static void
@@ -281,11 +245,9 @@ SubstitutePgCatalogPlaceholders(duckdb::string &query) {
 }
 
 /*
- * Execute a write query in a subtransaction and convert any PostgreSQL ERROR
- * into a duckdb::TransactionException. This allows DuckLake's FlushChanges()
- * retry loop to intercept duplicate-key / unique-constraint failures that
- * arise from concurrent commits, rather than having a PostgreSQL longjmp
- * bypass the C++ catch block and crash the backend.
+ * Convert PG ERRORs into duckdb::TransactionException so DuckLake's
+ * FlushChanges() retry loop can intercept unique-violations from concurrent
+ * commits instead of a PG longjmp bypassing the C++ catch.
  */
 static duckdb::unique_ptr<duckdb::QueryResult>
 CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
@@ -295,12 +257,9 @@ CreateSPIExecuteInSubtransaction(const duckdb::string &query) {
 	pgddb::PostgresScopedStackReset scoped_stack_reset;
 
 	SPI_connect();
-	// The commit batch can run from the PRE_COMMIT xact callback at the end
-	// of a pipelined implicit transaction (extended protocol, e.g. asyncpg
-	// executemany: finish_xact_command at Sync), where no portal and no
-	// active snapshot exist -- SPI then rejects the batch with "cannot
-	// execute SQL without an outer snapshot or portal". Push one explicitly,
-	// like CreateSPIResult does for reads.
+	// The PRE_COMMIT path of a pipelined implicit transaction (extended
+	// protocol) has no portal or active snapshot; SPI rejects the batch
+	// unless one is pushed explicitly.
 	PushActiveSnapshot(GetTransactionSnapshot());
 
 	duckdb::string error_message;
@@ -331,10 +290,8 @@ PgDuckLakeMetadataManager::~PgDuckLakeMetadataManager() {
 }
 
 /*
- * Replace {DATA_PATH} and {METADATA_PATH} from the DuckLakeCatalog when the
- * query actually contains them.  We guard with find() because GetCatalog()
- * is not safe during initialization (the AttachedDatabase is not yet
- * reachable), but these placeholders never appear in init queries.
+ * Guarded with find() because GetCatalog() is not safe during initialization;
+ * these placeholders never appear in init queries.
  */
 static void
 SubstitutePathPlaceholders(duckdb::string &query, duckdb::DuckLakeTransaction &transaction) {
@@ -355,10 +312,7 @@ PgDuckLakeMetadataManager::Query(duckdb::string query) {
 	return CreateSPIResult(query);
 }
 
-/*
- * Build a SELECT column list from the columns_to_read vector.
- * Mirrors the static GetProjection() in ducklake_metadata_manager.cpp.
- */
+/* Mirrors the static GetProjection() in ducklake_metadata_manager.cpp. */
 static duckdb::string
 BuildProjection(const duckdb::vector<duckdb::string> &columns_to_read) {
 	duckdb::string result;
@@ -373,10 +327,8 @@ BuildProjection(const duckdb::vector<duckdb::string> &columns_to_read) {
 }
 
 /*
- * ReadInlinedData override: route through DuckDB's query engine instead of
- * SPI.  DuckDB resolves pgduckdb."ducklake".table through PostgresCatalog
- * -> PostgresTableReader, which acquires GlobalProcessLock in 32-tuple
- * batches instead of holding it for the entire SPI operation.
+ * Route through DuckDB instead of SPI: PostgresTableReader acquires the
+ * GlobalProcessLock in 32-tuple batches rather than for the whole operation.
  */
 duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::ReadInlinedData(duckdb::DuckLakeSnapshot snapshot, const duckdb::string &inlined_table_name,
@@ -395,11 +347,8 @@ ORDER BY row_id;)",
 }
 
 /*
- * ReadAllInlinedDataForFlush override: same routing as ReadInlinedData -- go
- * through DuckDB so PostgresTableReader streams in 32-tuple batches instead
- * of SPI materializing the full result into the PG heap.  The flush query
- * differs from ReadInlinedData by including deleted rows (no end_snapshot
- * filter) so deletion vectors can be applied downstream.
+ * Same DuckDB routing as ReadInlinedData; the flush query keeps deleted rows
+ * (no end_snapshot filter) so deletion vectors can be applied downstream.
  */
 duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::ReadAllInlinedDataForFlush(duckdb::DuckLakeSnapshot snapshot,
@@ -440,11 +389,9 @@ duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::ExecuteCommit(duckdb::DuckLakeSnapshot snapshot, duckdb::string query) {
 	DuckLakeMetadataManager::FillSnapshotArgs(query, snapshot);
 	SubstitutePgCatalogPlaceholders(query);
-	/* Skip the snapshot sync trigger during commit.  The trigger exists
-	 * for external DuckDB clients that write directly to the ducklake
-	 * metadata tables; pg_ducklake's own commits have nothing to
-	 * reverse-sync.  Running the trigger on a DuckDB worker thread
-	 * crashes because PG's InterruptHoldoffCount is not thread-safe. */
+	/* Skip the snapshot sync trigger: our own commits have nothing to
+	 * reverse-sync, and running it on a DuckDB worker thread crashes
+	 * (PG's InterruptHoldoffCount is not thread-safe). */
 	SkipSnapshotSyncGuard sync_guard;
 	return CreateSPIExecuteInSubtransaction(query);
 }
@@ -475,7 +422,6 @@ PgDuckLakeMetadataManager::IsInitialized() {
 		Form_pg_class classForm = (Form_pg_class)GETSTRUCT(tup);
 		const char *relname = NameStr(classForm->relname);
 
-		/* Match LIKE 'ducklake_%' */
 		if (strncmp(relname, "ducklake_", 9) == 0 && classForm->relkind == RELKIND_RELATION) {
 			found = true;
 			break;
@@ -489,13 +435,8 @@ PgDuckLakeMetadataManager::IsInitialized() {
 }
 
 /*
- * Ensure the snapshot sync trigger exists on ducklake.ducklake_snapshot.
- * Called during metadata manager initialization (IsInitialized / InitializeDuckLake)
- * so the trigger is created exactly once per backend.
- *
- * Uses the same SPI pattern as CreateSPIResult (lock, snapshot, force_execution
- * GUC) since this runs inside DuckDB's ATTACH path where re-entering DuckDB
- * would cause infinite recursion.
+ * Uses raw SPI because this runs inside DuckDB's ATTACH path, where
+ * re-entering DuckDB would recurse infinitely.
  */
 void
 PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
@@ -508,11 +449,8 @@ PgDuckLakeMetadataManager::EnsureSnapshotTrigger() {
 	auto save_nestlevel = NewGUCNestLevel();
 	::SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
-	// Both statements run through SPIExecuteInSubtransaction so a PG ERROR
-	// (query cancel, permission failure, ...) cannot longjmp out while the
-	// GlobalProcessLock lock_guard above is held -- a longjmp skips C++
-	// destructors and would leak the mutex. Failures surface as a thrown
-	// duckdb exception after cleanup, like the other helpers here.
+	// SPIExecuteInSubtransaction keeps a PG ERROR from longjmp-ing out while
+	// the GlobalProcessLock lock_guard is held (longjmp skips C++ destructors).
 	duckdb::string error_message;
 	bool had_error = false;
 	int ret = SPIExecuteInSubtransaction(R"(
@@ -562,10 +500,8 @@ PgDuckLakeMetadataManager::MetadataExists() {
 
 duckdb::unique_ptr<duckdb::QueryResult>
 PgDuckLakeMetadataManager::AttachMetadata(const duckdb::string & /*attach_query*/) {
-	// The in-process SPI backend keeps its metadata in PostgreSQL (reached via SPI), so there is no
-	// DuckDB metadata database to ATTACH and no duckdb_secrets to load (the base AttachMetadata does
-	// both on the DuckDB connection). Return an empty success result so Initialize() proceeds to the
-	// MetadataExists() existence check.
+	// Metadata lives in PostgreSQL via SPI; there is no DuckDB metadata database
+	// to ATTACH. Return empty success so Initialize() proceeds to MetadataExists().
 	return CreateEmptyResult(duckdb::StatementType::SELECT_STATEMENT);
 }
 
@@ -642,23 +578,9 @@ GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_ve
 	char *schema_name = pstrdup(NameStr(nstup->nspname));
 	ReleaseSysCache(ntp);
 
-	/* Single SPI query that returns all the information we need:
-	 *   col 0: table_id          -- from ducklake_table
-	 *   col 1: inlined schema_version -- MAX over ducklake_inlined_data_tables
-	 *   col 2: data_inlining_row_limit -- from ducklake_metadata (NULL if unset)
-	 *
-	 * On a schema-bumping DDL (ADD COLUMN, SET PARTITION KEY, ...)
-	 * DuckLake's commit path inserts a new ducklake_inlined_data_tables
-	 * row at the new schema_version *and* keeps the old one, then routes
-	 * subsequent inlined writes to the latest by selecting the row with
-	 * MAX(schema_version) for the table_id (see DuckLakeMetadataManager::
-	 * WriteNewInlinedData in third_party/ducklake).  We mirror that here:
-	 * always read the row with MAX(schema_version) so we plan against the
-	 * inlined heap table DuckLake itself would write to.  An earlier
-	 * version also compared this against MAX(ducklake_schema_versions.
-	 * schema_version) and rejected with TI_SCHEMA_VERSION_MISMATCH, but
-	 * that was stricter than DuckLake's own contract and broke every
-	 * direct insert after any schema-bumping ALTER (issue #197). */
+	/* Mirror DuckLake's WriteNewInlinedData: schema-bumping DDL keeps the old
+	 * inlined-data row, so read the MAX(schema_version) one. Rejecting on a
+	 * version mismatch broke direct inserts after ALTER (issue #197). */
 	// Names are passed as query parameters, not interpolated: PG names may
 	// contain quotes ('CREATE TABLE "o''brien"'), and they are data values
 	// here, not identifiers.
@@ -737,10 +659,8 @@ GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version) {
 		return 0;
 	}
 
-	/* Read next_row_id from ducklake_table_stats (O(1) index lookup).
-	 * CreateSnapshotForDirectInsert keeps this row up to date after
-	 * each direct insert.  If no row exists (first insert into this
-	 * table), fall back to MAX(row_id) + 1 from the inlined data table. */
+	/* next_row_id is kept current by CreateSnapshotForDirectInsert; fall back
+	 * to MAX(row_id) + 1 when no stats row exists yet (first insert). */
 	StringInfoData query;
 	initStringInfo(&query);
 	appendStringInfo(&query,
@@ -758,7 +678,6 @@ GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version) {
 			next_row_id = DatumGetInt64(row_id_datum);
 		}
 	} else if (ret == SPI_OK_SELECT) {
-		/* No stats row -- fall back to scanning the inlined data table. */
 		StringInfoData fallback;
 		initStringInfo(&fallback);
 		appendStringInfo(&fallback,
@@ -784,7 +703,7 @@ GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version) {
 uint64_t
 GetNextSnapshotId() {
 	int ret;
-	uint64_t next_snapshot_id = 1; // Default to 1 if no snapshots exist yet
+	uint64_t next_snapshot_id = 1;
 
 	if ((ret = SPI_connect()) < 0) {
 		elog(ERROR, "SPI_connect failed: %d", ret);
@@ -819,12 +738,9 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 		return;
 	}
 
-	/* Read the latest snapshot via primary-key index backward scan (O(1))
-	 * rather than MAX() over the full table.  We carry its schema_version
-	 * forward: direct insert is a data-only change, so the new snapshot
-	 * must preserve the global catalog view (which tables are visible).
-	 * Using a per-table schema_version here would effectively roll back
-	 * the catalog and hide tables created after this one. */
+	/* Carry the latest snapshot's schema_version forward: direct insert is
+	 * data-only, and a per-table schema_version would roll back the global
+	 * catalog view and hide tables created after this one. */
 	const char *query_state = "SELECT COALESCE(next_catalog_id, 1), COALESCE(next_file_id, 0), "
 	                          "       COALESCE(schema_version, 0) "
 	                          "FROM ducklake.ducklake_snapshot "
@@ -872,8 +788,6 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 		elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot: %d", ret);
 	}
 
-	// Build INSERT for ducklake_snapshot_changes
-	// Use a simple description for the changes_made field
 	StringInfoData changes_insert;
 	initStringInfo(&changes_insert);
 	appendStringInfo(&changes_insert,
@@ -888,12 +802,9 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 		elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot changes: %d", ret);
 	}
 
-	/* Update ducklake_table_stats, or create it if this is the first insert.
-	 * DuckDB normally creates this row on its first data commit, but the
-	 * direct-insert path bypasses DuckDB entirely.  When inserting a new
-	 * stats row we must also populate ducklake_table_column_stats so that
-	 * DuckDB's GetGlobalTableStats LEFT JOIN doesn't produce a NULL
-	 * column_id (TransformGlobalStatsRow reads it without a null check). */
+	/* Direct insert bypasses DuckDB, which normally creates the stats row.
+	 * A new stats row must also populate ducklake_table_column_stats:
+	 * TransformGlobalStatsRow reads the LEFT JOINed column_id with no null check. */
 	StringInfoData stats_update;
 	initStringInfo(&stats_update);
 	appendStringInfo(&stats_update,
@@ -909,7 +820,6 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 	}
 
 	if (SPI_processed == 0) {
-		/* No existing stats row -- first direct insert into this table. */
 		StringInfoData stats_insert;
 		initStringInfo(&stats_insert);
 		appendStringInfo(&stats_insert,
@@ -923,7 +833,6 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 			elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert table stats: %d", ret);
 		}
 
-		/* Populate ducklake_table_column_stats for each active column. */
 		StringInfoData col_stats_insert;
 		initStringInfo(&col_stats_insert);
 		appendStringInfo(&col_stats_insert,

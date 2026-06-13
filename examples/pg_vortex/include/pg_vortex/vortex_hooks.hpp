@@ -2,8 +2,7 @@
 
 namespace pg_vortex {
 
-// Installs pg_vortex's planner_hook and ExplainOneQuery_hook. Call from
-// _PG_init after vortex_node::InitNode().
+// Installs pg_vortex's planner_hook.
 void InitHooks();
 
 } // namespace pg_vortex

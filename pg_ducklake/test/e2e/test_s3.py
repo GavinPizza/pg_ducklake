@@ -1,11 +1,6 @@
-# S3-specific end-to-end tests: pg_ducklake writing table data to a MinIO
-# bucket via `SET ducklake.default_table_path = 's3://...'` plus a DuckDB
-# S3 secret created through ducklake.duckdb_raw_query().
-#
-# These tests always require the S3 infrastructure (dockerized MinIO by
-# default); they skip when it is unavailable unless E2E_REQUIRE_S3=1.
-# Storage-agnostic behavior lives in test_crud.py, which is parametrized
-# over local and s3 backends.
+# S3-specific e2e tests: pg_ducklake writing table data to a MinIO bucket via
+# ducklake.default_table_path plus a DuckDB S3 secret. Skips without S3 infra
+# (unless E2E_REQUIRE_S3=1); storage-agnostic behavior lives in test_crud.py.
 
 import asyncpg
 import pytest
@@ -21,13 +16,9 @@ def s3lake(cluster, db, s3):
 @pytest.fixture
 async def s3conn(s3lake):
     c = await s3lake.connect()
-    # By default small writes (plain VALUES inserts, UPDATE/DELETE row
-    # outputs) are inlined into PG heap metadata tables and only reach the
-    # bucket on flush. Disable inlining (a persistent catalog option, so it
-    # covers every backend of this database) so writes land in the bucket
-    # immediately and object/path assertions are deterministic; mirrors
-    # test/regression/sql/default_table_path.sql. The inlined path on s3 is
-    # still covered by test_crud.py::test_copy_from_stdin[s3].
+    # Disable inlining (a persistent catalog option) so writes land in the
+    # bucket immediately and object assertions are deterministic; the inlined
+    # s3 path is still covered by test_crud.py::test_copy_from_stdin[s3].
     await c.execute("CALL ducklake.set_option('data_inlining_row_limit', 0)")
     try:
         yield c
@@ -85,7 +76,6 @@ async def test_fresh_backend_needs_secret(s3lake, s3conn):
         # test: the failure must come from the s3 data-file access
         with pytest.raises(asyncpg.PostgresError, match=s3lake.s3.bucket):
             await bare.fetch("SELECT * FROM t")
-        # after configuring the secret, the same backend can read
         await s3lake.configure_s3(bare)
         assert await bare.fetchval("SELECT count(*) FROM t") == 2
     finally:

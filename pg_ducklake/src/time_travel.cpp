@@ -1,9 +1,6 @@
 /*
  * time_travel.cpp -- DuckDB table function for time-travel queries
  *
- * @scope duckdb-instance: build the time_travel table function set
- *   (registered on the instance by RegisterDucklakeFunctions)
- *
  * Implements time_travel() as a DuckDB table function with three calling
  * conventions:
  *   time_travel(table_name, version/timestamp)        -- single-string name

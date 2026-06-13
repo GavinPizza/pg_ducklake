@@ -4,26 +4,9 @@
 # dependencies = ["psycopg[binary]", "pyarrow"]
 # ///
 #
-# Data inlining benchmark for pg_ducklake (and heap baseline).
-#
-# BENCH_MODE=ducklake (default):
-#   Direct insert into a ducklake table via PREPARE/EXECUTE UNNEST.
-#   Measures insert, queries before/after flush.
-#
-# BENCH_MODE=heap:
-#   Regular INSERT into a PostgreSQL heap table (no ducklake).
-#   Baseline for write throughput vs query performance tradeoff.
-#
-# Sibling script: bench_duckdb_ducklake.py (queries kept in sync via hits_schema.py).
-#
-# Environment variables:
-#   BENCH_MODE            - "ducklake" (default) or "heap"
-#   BENCH_TOTAL_ROWS      - rows to load (default 300000)
-#   BENCH_BATCH_SIZE      - rows per INSERT batch (default 10)
-#   BENCH_PG_CONNSTR      - libpq connection string
-#   BENCH_HITS_FILE_HOST  - parquet path on host (default /tmp/hits_0.parquet)
-#
-# Progress -> stderr; JSON results -> stdout.
+# Data inlining benchmark for pg_ducklake: BENCH_MODE=ducklake (default) does
+# direct insert via PREPARE/EXECUTE UNNEST, measuring queries before/after flush;
+# BENCH_MODE=heap is the plain-PG baseline. Queries shared via hits_schema.py.
 
 import json
 import os
@@ -134,7 +117,6 @@ def main():
 
     conn = psycopg.connect(PG_CONNSTR, autocommit=True)
 
-    # Capture key settings for the report
     settings = {}
     for guc in ("duckdb.memory_limit", "duckdb.threads", "duckdb.worker_threads",
                 "ducklake.enable_direct_insert"):

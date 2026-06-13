@@ -1,14 +1,6 @@
-// pg_vortex's CustomScan node. Copied + adapted from
-// libpgduckdb/pgddb_node.cpp (pgduckdb_node.cpp at the time). Differences:
-// - CustomScanMethods/ExecMethods tagged "VortexScan" (must be globally
-//   unique when both pg_duckdb and pg_vortex load in the same backend).
-// - References pg_vortex::Prepare instead of DuckdbPrepare.
-// - ContainsPostgresTable inlined locally (pg_vortex's check is simpler: no
-//   IsDuckdbTable filter; any RTE with a valid relid is treated as a
-//   non-vortex table, which forces materialized results).
-// - EXPLAIN-globals (duckdb_explain_analyze etc.) kept as plain globals at
-//   namespace pg_vortex; pg_vortex's _PG_init wires its own
-//   ExplainOneQuery_hook to set them (B7).
+// pg_vortex's CustomScan node, adapted from libpgduckdb/pgddb_node.cpp.
+// The "VortexScan" method names must stay globally unique so pg_duckdb and
+// pg_vortex can load in the same backend.
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -37,8 +29,6 @@ extern "C" {
 
 namespace pg_vortex {
 
-// EXPLAIN-time flags. Set by pg_vortex's ExplainOneQuery hook (B7) before
-// the planner runs; consumed by Explain callback below.
 bool vortex_explain_analyze = false;
 duckdb::ExplainFormat vortex_explain_format = duckdb::ExplainFormat::DEFAULT;
 
@@ -72,14 +62,13 @@ ContainsPostgresTable(Node *node, void * /*context*/) {
 		List *rtable = query->rtable;
 		foreach_node(RangeTblEntry, rte, rtable) {
 			if (rte->relid == InvalidOid) {
-				// Function RTEs (read_vortex) have invalid relid -- skip.
+				// Function RTEs (read_vortex) have invalid relid.
 				continue;
 			}
 			char relkind = get_rel_relkind(rte->relid);
 			if (relkind == RELKIND_VIEW) {
 				continue;
 			}
-			// Any other RTE with a valid relid is a real PG table.
 			return true;
 		}
 #if PG_VERSION_NUM >= 160000

@@ -1,11 +1,5 @@
 #pragma once
 
-/*
- * copy_from.hpp -- COPY FROM STDIN into inlined DuckLake tables.
- *
- * @scope backend: COPY FROM STDIN handler for inlined DuckLake tables
- */
-
 #include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {

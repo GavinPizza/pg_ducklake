@@ -1,6 +1,5 @@
 #pragma once
 
-// PostgreSQL extension name
 #define PGDUCKLAKE_PG_EXTENSION "pg_ducklake"
 
 // Catalog in DuckDB. Where DuckLake metadata + tables live.
@@ -15,10 +14,9 @@
 #define PGDUCKLAKE_PG_SCHEMA        "ducklake"
 #define PGDUCKLAKE_PG_SCHEMA_QUOTED "'ducklake'"
 
-// PostgreSQL table access method name (matches `CREATE ACCESS METHOD
-// ducklake` in pg_ducklake--0.1.0.sql). Also the catalog prefix returned
-// by pgducklake's pgddb::table_am_get_name_hook so the lib deparser can
-// recognize ducklake-AM relations.
+// Table AM name; must match `CREATE ACCESS METHOD ducklake` in
+// pg_ducklake--0.1.0.sql, and is the catalog prefix returned by the
+// table_am_get_name_hook so the lib deparser recognizes ducklake relations.
 #define PGDUCKLAKE_TABLE_AM "ducklake"
 
 // Index access method.

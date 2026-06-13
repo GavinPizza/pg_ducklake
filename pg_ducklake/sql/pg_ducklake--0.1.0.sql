@@ -5,17 +5,9 @@ GRANT USAGE ON SCHEMA ducklake TO PUBLIC;
 -- ============================================================
 -- ducklake.duckdb_row pseudo-type
 -- ============================================================
--- Return type for the passthrough functions (snapshots, table_info,
--- table_insertions, table_changes, ...) whose implementations live in
--- DuckDB. The planner intercepts calls to these functions and routes
--- them to DuckDB at execution time; the I/O functions here are only
--- exercised on direct user materialization, which should not happen in
--- the libpgddb consumer's planner-hook flow.
---
--- Mirrors pg_duckdb's duckdb.row but lives in the ducklake schema so
--- the two extensions can coexist in the same database. Two-step type
--- creation (shell type, then in/out functions, then full CREATE TYPE)
--- is needed because the in/out functions reference the type.
+-- Return type for the DuckDB passthrough functions; the planner routes
+-- these to DuckDB, so the I/O functions are rarely exercised. Mirrors
+-- pg_duckdb's duckdb.row but lives in ducklake so both extensions coexist.
 
 CREATE TYPE ducklake.duckdb_row;
 
@@ -33,13 +25,9 @@ CREATE TYPE ducklake.duckdb_row (
     SUBSCRIPT = ducklake.duckdb_row_subscript
 );
 
--- Explicit casts to common SQL types so `r['col']::int` etc. parse at
--- CREATE VIEW time. PG's default cast resolution refuses I/O casts
--- between two user-defined types (category 'U') and most builtins, so we
--- register the standard set the same way pg_duckdb does for
--- duckdb.unresolved_type. The cast functions never actually run -- any
--- query referencing a duckdb_row is routed to DuckDB by the planner
--- hook -- but PG's parser still requires them to type the expression.
+-- Explicit casts so `r['col']::int` etc. parse at CREATE VIEW time; PG
+-- refuses implicit I/O casts between user-defined types and builtins.
+-- The cast functions never run -- the planner routes such queries to DuckDB.
 CREATE CAST (ducklake.duckdb_row AS boolean)        WITH INOUT;
 CREATE CAST (ducklake.duckdb_row AS smallint)       WITH INOUT;
 CREATE CAST (ducklake.duckdb_row AS integer)        WITH INOUT;
@@ -60,10 +48,8 @@ CREATE CAST (ducklake.duckdb_row AS bytea)          WITH INOUT;
 -- ============================================================
 -- ducklake.duckdb_struct pseudo-type
 -- ============================================================
--- Passthrough type for DuckDB STRUCT values returned to PG. Used when the
--- DuckDB result has STRUCT columns that don't map to any concrete PG
--- composite type (e.g. flush_inlined_data, freeze status, json_transform).
--- Mirrors pg_duckdb's duckdb.struct.
+-- Passthrough type for DuckDB STRUCT results with no concrete PG composite
+-- type. Mirrors pg_duckdb's duckdb.struct.
 
 CREATE TYPE ducklake.duckdb_struct;
 
@@ -193,11 +179,9 @@ CREATE EVENT TRIGGER ducklake_comment_trigger ON ddl_command_end
     WHEN tag IN ('COMMENT')
     EXECUTE FUNCTION ducklake._comment_trigger();
 
--- Metadata sync trigger function: DuckDB->PG catalog sync.
--- When an external DuckDB client creates/drops tables (writing directly to
--- ducklake metadata tables), this trigger creates/drops corresponding
--- pg_class entries so the tables become visible from PostgreSQL.
--- The trigger itself is created by the metadata manager during initialization.
+-- DuckDB->PG catalog sync: creates/drops pg_class entries when an external
+-- DuckDB client changes ducklake metadata tables. The trigger itself is
+-- created by the metadata manager during initialization.
 CREATE FUNCTION ducklake._snapshot_trigger()
     RETURNS trigger
     SET search_path = pg_catalog, pg_temp
@@ -224,13 +208,9 @@ CREATE FOREIGN DATA WRAPPER ducklake_fdw
 
 -- ============================================================
 -- Functions & Procedures
---
--- Kind legend:
---   passthrough     SQL stub; pg_duckdb routes the query to DuckDB as-is
---   rewrite         planner rewrites regclass -> (schema, table) then routes
---   duckdb-only     CALL intercepted by utility hook, executed in DuckDB
---   native          procedure runs in PostgreSQL (C language)
---   pure SQL        executes entirely in PostgreSQL
+-- Kinds: passthrough (routed to DuckDB as-is), rewrite (regclass ->
+-- (schema, table) then routed), duckdb-only (CALL run in DuckDB),
+-- native (C, runs in PG), pure SQL (runs in PG).
 -- ============================================================
 
 -- Options -----------------------------------------------------------
@@ -673,18 +653,14 @@ LANGUAGE C;
 -- Diagnostics -------------------------------------------------------
 
 -- native SRF: planner/exec counters for the direct-insert optimization.
--- Rows are one per (pattern, reason) bucket actually tracked:
---   matched_unnest, ok
---   matched_values, ok
---   unmatched, <every non-ok reason>
--- Counters live in shared memory; counts persist across backends until
--- the postmaster restarts or ducklake.reset_direct_insert_stats() runs.
+-- Counters live in shared memory and persist until postmaster restart or
+-- ducklake.reset_direct_insert_stats().
 CREATE FUNCTION ducklake.direct_insert_stats()
     RETURNS TABLE (pattern text, reason text, count bigint)
     AS 'MODULE_PATHNAME', 'ducklake_direct_insert_stats'
     LANGUAGE C STRICT VOLATILE;
 
--- native: zero all direct-insert counters.
+-- native
 CREATE FUNCTION ducklake.reset_direct_insert_stats()
     RETURNS void
     AS 'MODULE_PATHNAME', 'ducklake_reset_direct_insert_stats'
@@ -717,13 +693,9 @@ CREATE TYPE ducklake.variant (
     OUTPUT = ducklake._variant_out
 );
 
--- Variant field extraction (DuckDB-only stubs).
--- The planner hook rewrites -> / ->> operators to the corresponding FuncExpr
--- nodes before pg_duckdb deparses the query. In DuckDB, scalar macros expand
--- these to json_extract / json_extract_string calls on v::VARCHAR.
---
--- -> returns variant (preserves JSON structure, enables chaining).
--- ->> returns text (extracts as string).
+-- Variant extraction stubs: the planner hook rewrites -> / ->> to these;
+-- DuckDB scalar macros expand them to json_extract(_string) on v::VARCHAR.
+-- -> returns variant (chainable), ->> returns text.
 CREATE FUNCTION ducklake.pg_variant_extract_json(ducklake.variant, text)
     RETURNS ducklake.variant
     AS 'MODULE_PATHNAME', 'duckdb_only_function' LANGUAGE C IMMUTABLE STRICT;
@@ -757,10 +729,8 @@ CREATE OPERATOR pg_catalog.->> (
 -- Virtual Columns
 -- ============================================================
 
--- DuckLake virtual column accessors.  These are scalar DuckDB-only stubs;
--- in DuckDB a scalar macro expands each to the corresponding virtual column
--- reference (e.g. row_id() -> rowid).  Use in SELECT to access virtual
--- columns that are not part of the regular column list.
+-- Virtual column accessors: scalar DuckDB-only stubs; a DuckDB macro
+-- expands each to the corresponding virtual column (e.g. row_id() -> rowid).
 CREATE FUNCTION ducklake.rowid()
     RETURNS bigint
     AS 'MODULE_PATHNAME', 'duckdb_only_function' LANGUAGE C IMMUTABLE STRICT;
@@ -780,11 +750,8 @@ CREATE FUNCTION ducklake.file_index()
 -- ============================================================
 -- File readers (mirrors pg_duckdb's read_csv / read_parquet)
 -- ============================================================
---
--- Installed in @extschema@ (public by default) so users can call
--- read_csv('...') / read_parquet('...') unqualified, matching the
--- README examples and pg_duckdb's UX. The planner hook intercepts
--- these duckdb_only_function calls and routes them to DuckDB.
+-- Installed in @extschema@ (public by default) so read_csv/read_parquet
+-- can be called unqualified, matching pg_duckdb's UX.
 
 CREATE FUNCTION @extschema@.read_csv(path text, all_varchar BOOLEAN DEFAULT FALSE,
                                                allow_quoted_nulls BOOLEAN DEFAULT TRUE,
@@ -886,8 +853,7 @@ REVOKE ALL ON PROCEDURE ducklake.recycle_ddb() FROM PUBLIC;
 GRANT ALL ON PROCEDURE ducklake.recycle_ddb() TO PUBLIC;
 
 -- Run an arbitrary string against the embedded DuckDB instance, ignoring
--- its result set. Used by regression tests to ATTACH a frozen DuckLake
--- bundle and verify it materialized correctly.
+-- its result set.
 CREATE FUNCTION ducklake.duckdb_raw_query(query TEXT)
     RETURNS void
     SET search_path = pg_catalog, pg_temp
@@ -923,21 +889,9 @@ BEGIN
 END
 $$;
 
--- Predefined roles for DuckLake access control.
--- https://ducklake.select/docs/stable/duckdb/guides/access_control
---
--- Role names are configured via GUCs (ducklake.superuser_role,
--- ducklake.writer_role, ducklake.reader_role). Set an empty string to skip
--- creating that role. Defaults: ducklake_superuser, ducklake_writer,
--- ducklake_reader.
---
--- These are GROUP roles (NOLOGIN). Create LOGIN users and grant membership:
---   CREATE USER analyst IN ROLE ducklake_reader;
---
--- duckdb_group is a marker role that mirrors pg_duckdb's "DuckDB-capable"
--- role. It's not load-bearing in pg_ducklake (DuckDB access goes via the
--- ducklake_* roles) but is created for compatibility with pg_duckdb-era
--- user scripts and test fixtures.
+-- Predefined NOLOGIN group roles for access control, named via the
+-- ducklake.superuser_role/writer_role/reader_role GUCs (empty string skips
+-- creation). duckdb_group is a pg_duckdb-compatibility marker role.
 DO $$
 DECLARE
     duckdb_role text;

@@ -1,9 +1,3 @@
-/*
- * partitioned_by.cpp -- Partition procs: ducklake.set_partition / reset_partition.
- *
- * @scope extension: ducklake.set_partition, ducklake.reset_partition procs
- */
-
 #include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/ducklake_table.hpp"
 

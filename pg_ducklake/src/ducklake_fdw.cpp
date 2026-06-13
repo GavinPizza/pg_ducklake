@@ -1,28 +1,9 @@
 /*
  * ducklake_fdw.cpp -- Foreign Data Wrapper for DuckLake tables
  *
- * @scope extension: ducklake_fdw handler and validator
- * @scope backend: register external table check, relation name callback,
- *   FDW utility hook; cached FDW OID
- * @scope duckdb-instance: attach DuckLake databases for FDW queries
- *
- * Implements a PostgreSQL FDW that provides access to DuckLake tables.
- * Regular FDW tables (PostgreSQL-backed) support full DML; frozen
- * snapshots remain read-only.  Supports two modes:
- *
- *   1. Regular FDW -- references a DuckLake catalog backed by a PostgreSQL
- *      metadata database (options: dbname, metadata_schema).
- *   2. Frozen FDW -- references a static .ducklake snapshot file hosted over
- *      HTTP/HTTPS (option: frozen_url).
- *
- * Queries are not executed through the FDW scan callbacks.  Instead, the
- * FDW registers itself with pg_duckdb's external-table-check hook so that
- * the planner routes the entire query to DuckDB, and a relation-name
- * callback supplies the DuckDB-qualified table name.
- *
- * Column inference:  CREATE FOREIGN TABLE without column definitions
- * automatically probes the remote schema via a temporary DuckDB connection
- * and populates columns from the prepared-statement result types.
+ * Two modes: regular (PostgreSQL-backed metadata, full DML) and frozen
+ * (static .ducklake snapshot over HTTP, read-only). Queries never run
+ * through the FDW scan callbacks: the planner routes them whole to DuckDB.
  */
 
 #include "pgducklake/duckdb_manager.hpp"
@@ -213,10 +194,6 @@ BuildAttachQuery(ForeignServer *server, const char *db_alias, bool if_not_exists
 
 /* ----------------------------------------------------------------
  * Relation name callback (registered with pg_duckdb)
- *
- * Returns the DuckDB-qualified name for a ducklake FDW table:
- *   Regular: fdw_db_<dbname>.<schema>.<table>
- *   Frozen:  <servername>.<schema>.<table>
  * ---------------------------------------------------------------- */
 
 static char *
@@ -261,11 +238,8 @@ AttachDucklakeDatabase(ForeignServer *server) {
  * Query-tree walker: ATTACH databases and block DML
  * ---------------------------------------------------------------- */
 
-// Returns true if any RTE under `query` references a ducklake_fdw
-// foreign table. Walks subqueries and CTEs. Used by the planner hook
-// alongside QueryReferencesRegisteredTableAm so that foreign-table
-// queries route through DuckDB rather than hitting the FDW direct-scan
-// stub (which errors out by design).
+// Used by the planner hook so foreign-table queries route through DuckDB
+// rather than hitting the FDW direct-scan stub (which errors out by design).
 bool
 pgducklake::QueryReferencesDucklakeForeignTable(Query *query) {
 	if (!query)
@@ -329,7 +303,6 @@ pgducklake::RegisterForeignTablesInQuery(Query *query) {
 		AttachDucklakeDatabase(server);
 	}
 
-	/* Walk CTEs */
 	foreach (lc, query->cteList) {
 		CommonTableExpr *cte = (CommonTableExpr *)lfirst(lc);
 		if (IsA(cte->ctequery, Query))
@@ -368,16 +341,13 @@ pgducklake::RegisterForeignTablesInQuery(Query *query) {
 }
 
 /* ----------------------------------------------------------------
- * Column inference: probe remote schema via DuckDB connection
- *
- * Uses the runtime database alias (with IF NOT EXISTS) rather than a
- * separate probe alias.  This avoids file-handle conflicts when the
- * catalog is already ATTACHed (e.g. frozen .ducklake files).
+ * Column inference: probe remote schema via DuckDB connection.
+ * Reuses the runtime database alias (IF NOT EXISTS) to avoid file-handle
+ * conflicts when the catalog is already ATTACHed (frozen .ducklake files).
  * ---------------------------------------------------------------- */
 
 static List *
 InferForeignTableColumns(CreateForeignTableStmt *stmt) {
-	/* Ensure DuckDB is initialized */
 	if (!pgducklake::DuckDBManager::IsInitialized()) {
 		try {
 			pgducklake::DuckDBQueryOrThrow("SELECT 1");
@@ -386,7 +356,6 @@ InferForeignTableColumns(CreateForeignTableStmt *stmt) {
 		}
 	}
 
-	/* Resolve server options */
 	const char *server_name = stmt->servername;
 	ForeignServer *server = GetForeignServerByName(server_name, false);
 
@@ -419,7 +388,6 @@ InferForeignTableColumns(CreateForeignTableStmt *stmt) {
 		     prepared->error.Message().c_str());
 	}
 
-	/* Build ColumnDef list from prepared statement types */
 	List *columns = NIL;
 	auto &names = prepared->GetNames();
 	auto &types = prepared->GetTypes();
@@ -441,7 +409,6 @@ InferForeignTableColumns(CreateForeignTableStmt *stmt) {
 
 static List *
 DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
-	/* Ensure DuckDB is initialized */
 	if (!pgducklake::DuckDBManager::IsInitialized()) {
 		try {
 			pgducklake::DuckDBQueryOrThrow("SELECT 1");
@@ -452,8 +419,6 @@ DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
 
 	ForeignServer *server = GetForeignServer(serverOid);
 
-	/* ATTACH the remote catalog using the runtime alias (IF NOT EXISTS
-	 * handles the case where it is already ATTACHed). */
 	auto conn = pgducklake::DuckDBManager::Get().GetConnection();
 	duckdb::string db_alias = GetDatabaseAlias(server);
 	duckdb::string attach_query = BuildAttachQuery(server, db_alias.c_str(), true);
@@ -478,7 +443,6 @@ DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
 			elog(ERROR, "ducklake_fdw: cannot list tables in schema \"%s\": %s", stmt->remote_schema,
 			     list_result->GetError().c_str());
 
-		/* Collect table names, applying LIMIT TO / EXCEPT filtering */
 		duckdb::vector<duckdb::string> table_names;
 		for (idx_t row = 0; row < list_result->RowCount(); row++) {
 			duckdb::string tname = list_result->GetValue(0, row).ToString();
@@ -512,7 +476,6 @@ DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
 			table_names.push_back(tname);
 		}
 
-		/* For each table, probe columns and build CREATE FOREIGN TABLE SQL */
 		for (auto &tname : table_names) {
 			duckdb::string select_query =
 			    duckdb::StringUtil::Format("SELECT * FROM \"%s\".%s.%s LIMIT 0", db_alias.c_str(),
@@ -527,7 +490,6 @@ DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
 			auto &names = prepared->GetNames();
 			auto &types = prepared->GetTypes();
 
-			/* Build column definitions */
 			StringInfoData col_buf;
 			initStringInfo(&col_buf);
 			for (size_t i = 0; i < names.size(); i++) {
@@ -540,7 +502,6 @@ DucklakeImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid) {
 				appendStringInfo(&col_buf, "%s %s", quote_identifier(names[i].c_str()), type_name);
 			}
 
-			/* Build the full CREATE FOREIGN TABLE statement */
 			StringInfoData sql;
 			initStringInfo(&sql);
 			appendStringInfo(&sql,
@@ -570,12 +531,10 @@ DucklakeFdwUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_o
 	if (pstmt->utilityStmt && IsA(pstmt->utilityStmt, CreateForeignTableStmt)) {
 		auto *cft = castNode(CreateForeignTableStmt, pstmt->utilityStmt);
 
-		/* Check if this is for our FDW */
 		ForeignDataWrapper *fdw = GetForeignDataWrapperByName(FDW_NAME, true);
 		if (fdw) {
 			ForeignServer *server = GetForeignServerByName(cft->servername, true);
 			if (server && server->fdwid == fdw->fdwid) {
-				/* Infer columns when none are provided; allow explicit columns */
 				if (cft->base.tableElts == NIL) {
 					/* Need a mutable copy for column inference */
 					if (read_only_tree) {
@@ -643,7 +602,6 @@ DucklakeReScanForeignScan(ForeignScanState *node) {
 
 static void
 DucklakeEndForeignScan(ForeignScanState *node) {
-	/* nothing to clean up */
 }
 
 /* ----------------------------------------------------------------
@@ -678,7 +636,6 @@ DECLARE_PG_FUNCTION(ducklake_fdw_validator) {
 		}
 	}
 
-	/* Validate mutual exclusivity of connection modes */
 	if (catalog == ForeignServerRelationId) {
 		bool has_frozen = GetOptionValue(options, "frozen_url") != nullptr;
 		bool has_dbname = GetOptionValue(options, "dbname") != nullptr;
@@ -708,7 +665,6 @@ DECLARE_PG_FUNCTION(ducklake_fdw_validator) {
 			                errmsg("\"frozen_url\" and \"updatable 'true'\" are mutually exclusive")));
 	}
 
-	/* Validate table-level updatable option */
 	if (catalog == ForeignTableRelationId) {
 		const char *updatable_val = GetOptionValue(options, "updatable");
 		if (updatable_val && pg_strcasecmp(updatable_val, "true") != 0 && pg_strcasecmp(updatable_val, "false") != 0)
@@ -729,10 +685,8 @@ namespace pgducklake {
 
 void
 InitFDW() {
-	// libpgddb's deparser uses this hook to override the qualified
-	// "<catalog>.<schema>.<rel>" string for foreign tables backed by
-	// ducklake_fdw. Each FDW server is ATTACHed in DuckDB as fdw_db_*;
-	// the hook returns the fully-quoted alias.
+	// libpgddb's deparser uses this hook for the DuckDB-qualified name of
+	// ducklake_fdw foreign tables (servers are ATTACHed as fdw_db_* aliases).
 	Register_pgddb_relation_name(GetDucklakeForeignTableName);
 
 	prev_fdw_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;

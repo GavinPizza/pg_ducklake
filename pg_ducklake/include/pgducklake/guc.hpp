@@ -13,7 +13,6 @@ extern char *superuser_role;
 extern char *writer_role;
 extern char *reader_role;
 
-/* Maintenance worker GUCs */
 extern bool maintenance_enabled;
 extern int maintenance_naptime;
 extern int maintenance_max_workers;

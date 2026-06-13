@@ -1,16 +1,10 @@
 /*
  * copy_from.cpp -- COPY FROM STDIN into inlined DuckLake tables.
  *
- * @scope backend: COPY FROM STDIN handler for inlined DuckLake tables
- *
  * When a COPY <ducklake_table> FROM STDIN is intercepted by the utility
  * hook, this module reads tuples via PG's COPY protocol, converts them
  * to the inlined data table's column types, and inserts via
  * table_multi_insert() for native heap performance.
- *
- * The inlined data table is a regular PG heap table in the ducklake
- * schema with columns: (row_id BIGINT, begin_snapshot BIGINT,
- * end_snapshot BIGINT, <user_col1> <type1>, ...).
  */
 
 #include "pgducklake/catalog_sync.hpp"

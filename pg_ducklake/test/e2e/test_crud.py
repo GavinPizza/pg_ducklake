@@ -1,10 +1,6 @@
-# CRUD end-to-end tests for ducklake tables, driven through asyncpg.
-#
-# Every test runs twice via the `lake` fixture: once against local storage
-# (default DATA_PATH under $PGDATA, no MinIO involved) and once against an
-# s3:// bucket on MinIO. asyncpg always speaks the extended query protocol
-# (Parse/Describe/Bind/Execute), so this suite also covers the protocol
-# surface that pg_regress (simple protocol) cannot.
+# CRUD e2e tests for ducklake tables; the `lake` fixture runs each test
+# against local and s3 storage. asyncpg speaks the extended query protocol,
+# covering the protocol surface that pg_regress (simple protocol) cannot.
 
 import io
 
@@ -161,14 +157,10 @@ async def _id_column_minmax(conn, table="t"):
 
 
 async def test_alter_column_type_preserves_stats(conn):
-    """Regression for an upstream DuckLake client-side-commit defect (fixed
-    by ducklake patch 007 half 1): the per-instance stats cache was keyed
-    without schema_version, so the first insert-commit after ALTER COLUMN
-    ... TYPE seeded its merge from a stale-typed cache entry and nulled the
-    table-level min/max; the next commit rebuilt them from its own file
-    alone, and scans then mis-decoded pre-ALTER rows by +256 through
-    DuckDB's compressed materialization. The pre-ALTER SELECT is
-    load-bearing: it warms the stats cache that triggers the bug."""
+    """Regression for an upstream DuckLake stats-cache defect (ducklake patch
+    007 half 1): the cache was keyed without schema_version, nulling table
+    min/max after ALTER TYPE. The pre-ALTER SELECT warms the cache that
+    triggers the bug."""
     await conn.execute("CALL ducklake.set_option('data_inlining_row_limit', 0)")
     await conn.execute("CREATE TABLE t (id int) USING ducklake")
     await conn.execute("INSERT INTO t VALUES (1)")
@@ -183,11 +175,9 @@ async def test_alter_column_type_preserves_stats(conn):
 
 
 async def test_alter_column_type_in_txn_preserves_stats(conn):
-    """The intra-transaction variant: ALTER TYPE + INSERT committing
-    together. The commit's stats seed is legitimately read at the txn-start
-    snapshot (pre-ALTER type) while the new file carries the new type, so
-    no cache fix can help; only the merge-side type reconciliation
-    (ducklake patch 007 half 2) keeps the min/max."""
+    """Intra-transaction variant (ALTER TYPE + INSERT commit together): the
+    stats seed legitimately reads the pre-ALTER type, so only merge-side type
+    reconciliation (ducklake patch 007 half 2) keeps the min/max."""
     await conn.execute("CALL ducklake.set_option('data_inlining_row_limit', 0)")
     await conn.execute("CREATE TABLE t (id int) USING ducklake")
     await conn.execute("INSERT INTO t VALUES (1)")
@@ -276,11 +266,8 @@ async def test_parameterized_dml(conn):
 
 async def test_executemany_pipeline(conn):
     """asyncpg's executemany pipelines Bind/Execute in one implicit
-    transaction, so the DuckLake commit runs at Sync-time PRE_COMMIT with
-    no portal or active snapshot. This used to SIGABRT the backend (the
-    commit batch's SPI errored and the TransactionException escaped
-    uncaught through the C xact-callback frame); fixed by pushing a
-    snapshot around the commit batch and guarding the callback."""
+    transaction, so the DuckLake commit runs at Sync-time PRE_COMMIT with no
+    portal or active snapshot; this used to SIGABRT the backend."""
     await conn.execute("CREATE TABLE t (id int, name text) USING ducklake")
     await conn.executemany(
         "INSERT INTO t VALUES ($1, $2)", [(1, "a"), (2, "b"), (3, "c")]
@@ -303,16 +290,11 @@ async def test_prepared_statement_reuse(conn):
 
 async def test_copy_from_stdin(conn, lake):
     """COPY ... FROM STDIN goes through the inlined-data path: it requires
-    data inlining to be enabled (the error hint only mentions
-    ensure_inlined_data_table, but GetTableInliningInfo also rejects when
-    data_inlining_row_limit is unset or 0), plus the inlined data table.
-    Flushing afterwards materializes parquet files on the lake storage."""
-    # Ordering is load-bearing: inlining must be enabled, and the backend's
-    # DuckDB instance recycled to pick it up, BEFORE the table is created.
-    # A table created (or an instance attached) while inlining is disabled
-    # never reads inlined rows back, even after the option is re-enabled:
-    # COPY then succeeds but SELECT silently returns nothing. The [s3] lake
-    # fixture starts with the option at 0, which is how this was found.
+    data inlining enabled plus the inlined data table; flushing afterwards
+    materializes parquet files on the lake storage."""
+    # Ordering is load-bearing: enable inlining and recycle the DuckDB
+    # instance BEFORE creating the table. A table created while inlining is
+    # off never reads inlined rows back (COPY succeeds, SELECT returns nothing).
     await conn.execute("CALL ducklake.set_option('data_inlining_row_limit', 1000)")
     await conn.execute("CALL ducklake.recycle_ddb()")
     if lake.s3:
@@ -391,11 +373,9 @@ async def test_aggregates_numeric_seam(conn):
 
 
 async def test_add_column_with_text_default(conn):
-    """String-literal column DEFAULTs: PG's expression deparse decorates
-    string constants with a cast ('x'::text), and DuckLake rejected any
-    cast-decorated default as non-literal (numeric literals deparse bare
-    and always worked). Fixed in DuckLake itself -- patch 008 constant-
-    folds cast-over-constant defaults (upstreamable)."""
+    """PG deparses string DEFAULTs with a cast ('x'::text), which DuckLake
+    rejected as non-literal; ducklake patch 008 constant-folds
+    cast-over-constant defaults."""
     await conn.execute("CREATE TABLE t (id int) USING ducklake")
     await conn.execute("INSERT INTO t VALUES (1)")
     await conn.execute("ALTER TABLE t ADD COLUMN tag text DEFAULT 'x'")
@@ -407,13 +387,10 @@ async def test_add_column_with_text_default(conn):
 
 
 async def test_column_default_literal_edge_cases(conn):
-    """Edge cases of column-default handling through the deparse +
-    DuckLake fold (patch 008): explicitly cast string constants, special
-    float values ('NaN'::float8 -- must arrive quoted, bare NaN parses as
-    a column reference in DuckDB), backslash-containing strings (PG emits
-    E'...' escape strings, which DuckDB accepts), and bytea (PG's
-    whole-string hex form silently decodes wrong through DuckDB's per-byte
-    VARCHAR->BLOB cast; get_const_expr now emits the per-byte form)."""
+    """Default-literal edge cases through deparse + patch 008: 'NaN' must
+    arrive quoted (bare NaN is a column reference in DuckDB), E'...' backslash
+    strings, and bytea must deparse per-byte (whole-string hex silently
+    decodes wrong through DuckDB's VARCHAR->BLOB cast)."""
     import math
 
     await conn.execute("CREATE TABLE t (id int) USING ducklake")

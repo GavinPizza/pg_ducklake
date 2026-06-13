@@ -1,12 +1,6 @@
-# Interop with an external DuckDB client: the same DuckLake catalog that
-# pg_ducklake manages (metadata in PG, data files on the lake storage) is
-# attached from a separate duckdb process via
-#   ATTACH 'ducklake:postgres:host=... port=... dbname=...'
-#        AS lake (METADATA_SCHEMA 'ducklake')
-# which is the README's advertised "access your data with DuckDB" path.
-#
-# These tests run against local lake storage; the s3 variant of the same
-# read path is covered by test_s3.py::test_duckdb_client_reads_s3_lake.
+# Interop with an external duckdb process attached to the same DuckLake
+# catalog via ATTACH 'ducklake:postgres:...' (the README's "access your data
+# with DuckDB" path). s3 read path: test_s3.py::test_duckdb_client_reads_s3_lake.
 
 import pytest
 

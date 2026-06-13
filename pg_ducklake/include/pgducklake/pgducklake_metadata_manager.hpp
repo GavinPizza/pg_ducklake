@@ -23,7 +23,7 @@ public:
 		return duckdb::make_uniq<PgDuckLakeMetadataManager>(transaction);
 	}
 
-	// No-snapshot SPI execution primitive (overrides the base virtual).
+	// No-snapshot SPI execution primitive.
 	duckdb::unique_ptr<duckdb::QueryResult> Execute(duckdb::string query) override;
 	duckdb::unique_ptr<duckdb::QueryResult> Execute(duckdb::DuckLakeSnapshot snapshot, duckdb::string query) override;
 	duckdb::unique_ptr<duckdb::QueryResult> ExecuteCommit(duckdb::DuckLakeSnapshot snapshot,
@@ -52,7 +52,6 @@ private:
 	static void EnsureSnapshotTrigger();
 
 protected:
-	// Postgres-specific implementations for parsing query results
 	duckdb::string GetInlinedTableQueries(duckdb::DuckLakeSnapshot commit_snapshot,
 	                                      const duckdb::DuckLakeTableInfo &table, duckdb::string &inlined_tables,
 	                                      duckdb::string &inlined_table_queries) override;
@@ -64,13 +63,9 @@ protected:
 	                                              duckdb::TableIndex table_id) override;
 };
 
-// Helper functions for direct insert optimization
-
-/* Direct-insert planner-time state for a candidate target table.  The
- * bare bool GetTableInliningInfo() below returns true only for TI_OK
- * and discards the specific failure reason; callers that need to
- * surface the reason (e.g. the stats counters) use
- * GetTableInliningState() directly. */
+/* Direct-insert planner-time state.  GetTableInliningInfo() returns true only
+ * for TI_OK and discards the reason; callers that need it (the stats counters)
+ * use GetTableInliningState() directly. */
 enum TableInliningState {
 	TI_OK = 0,
 	TI_NO_TABLE,                /* table not found in ducklake metadata */
@@ -78,12 +73,11 @@ enum TableInliningState {
 	TI_SCHEMA_VERSION_MISMATCH, /* inlined schema_version != max schema_version */
 };
 
-/* Extended version: also returns data_inlining_row_limit when state == TI_OK.
- * row_limit_out may be NULL if the caller doesn't need the limit. */
+/* Also returns data_inlining_row_limit when state == TI_OK; row_limit_out may
+ * be NULL. */
 TableInliningState GetTableInliningState(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out,
                                          int64_t *row_limit_out);
 
-/* Thin wrapper kept for existing callers that only need the bool. */
 bool GetTableInliningInfo(Oid table_oid, uint64_t *table_id_out, uint64_t *schema_version_out);
 
 uint64_t GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version);

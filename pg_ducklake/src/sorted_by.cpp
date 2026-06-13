@@ -1,21 +1,10 @@
 /*
  * sorted_by.cpp -- ducklake_sorted index AM, procedures, and sync.
  *
- * @scope extension: ducklake_sorted index AM, procs ducklake.set_sort
- *   and ducklake.reset_sort
- * @scope backend: sort_synced_from_pg guard bool
- * @scope duckdb-instance: sync sorted indexes between DuckDB and pg_class.
- *   SyncSortKeys is registered as a sync handler with catalog_sync.cpp.
- *
- * Provides a minimal IndexAmRoutine so that CREATE INDEX ... USING
- * ducklake_sorted registers a real pg_class entry. The index stores no data
- * and is never used by the planner; it exists only as a catalog marker that
- * the utility hook translates into ALTER TABLE ... SET SORTED BY in DuckDB.
- *
- * Also contains: ducklake.set_sort/reset_sort SQL procedures,
- * ApplyCreateSortedIndex, HandleDropSortedIndex, FindSortedIndexDrops,
- * SyncSortKeys, and pg_class sync helpers called from hooks.cpp
- * and catalog_sync.cpp.
+ * Ducklake sorted_by is exposed to Postgres as an index AM.
+ * The index AM stores no data and is never used by the planner. it exists
+ * only as a pg_class marker that the utility hook translates into
+ * ALTER TABLE ... SET SORTED BY in DuckDB.
  */
 
 #include "pgducklake/constants.hpp"
@@ -225,7 +214,6 @@ DECLARE_PG_FUNCTION(ducklake_set_sort) {
 	}
 	pgducklake::sort_synced_from_pg = false;
 
-	/* Sync pg_class: drop old ducklake_sorted index, create new one. */
 	SPI_connect();
 	pgducklake::syncing_from_metadata = true;
 	pgducklake::CreateSortedIndexForTable(relid, spec.c_str());
@@ -253,7 +241,6 @@ DECLARE_PG_FUNCTION(ducklake_reset_sort) {
 	}
 	pgducklake::sort_synced_from_pg = false;
 
-	/* Drop any ducklake_sorted index on this table */
 	SPI_connect();
 	pgducklake::syncing_from_metadata = true;
 	pgducklake::DropSortedIndexForTable(relid);
@@ -284,10 +271,6 @@ EscapeSQLString(const char *str) {
 	return result;
 }
 
-/*
- * Convert a raw parse-tree Node into SQL text.
- * Handles ColumnRef, FuncCall, A_Const, TypeCast.
- */
 std::string
 NodeToSQL(Node *node) {
 	if (node == NULL)
@@ -507,18 +490,13 @@ FindSortedIndexDrops(DropStmt *drop) {
 	return result;
 }
 
-/*
- * Batch-sync ducklake_sorted pg_class indexes.
- * Drops old sorted indexes on all affected tables, then creates new ones.
- * Caller must have an active SPI connection and syncing_from_metadata = true.
- */
+/* Caller must have an active SPI connection and syncing_from_metadata = true. */
 void
 SyncSortedIndexes(const std::vector<SortedIndexCreate> &creates, const std::vector<Oid> &resets) {
 	Oid sorted_am_oid = get_am_oid(PGDUCKLAKE_SORTED_AM, true);
 	if (!OidIsValid(sorted_am_oid))
 		return;
 
-	/* Helper: drop all ducklake_sorted indexes on a table */
 	auto drop_indexes = [sorted_am_oid](Oid relid) {
 		char *sql = psprintf(R"(
 		SELECT c.oid FROM pg_catalog.pg_index i
@@ -569,11 +547,7 @@ DropSortedIndexForTable(Oid relid) {
 	SyncSortedIndexes({}, {relid});
 }
 
-/*
- * Post-DROP INDEX handler: reset sort order in DuckDB for each dropped
- * ducklake_sorted index.  Called from the utility hook after the DROP
- * has been executed by PostgreSQL.
- */
+/* Called from the utility hook after PostgreSQL has executed the DROP INDEX. */
 void
 HandleDropSortedIndex(const std::vector<SortedIndexDrop> &drops) {
 	if (drops.empty() || syncing_from_metadata)
@@ -596,11 +570,7 @@ HandleDropSortedIndex(const std::vector<SortedIndexDrop> &drops) {
 	PopActiveSnapshot();
 }
 
-/*
- * Sync sort keys from DuckLake metadata: create/drop ducklake_sorted
- * pg_class indexes to match sort_info changes in this snapshot.
- * Caller must have an active SPI connection with syncing_from_metadata = true.
- */
+/* Caller must have an active SPI connection with syncing_from_metadata = true. */
 void
 SyncSortKeys(const char *sid) {
 	/* Skip sort-key sync when sort was set from PostgreSQL (set_sort/
@@ -628,7 +598,6 @@ SyncSortKeys(const char *sid) {
 	if (ret != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", SPI_result_code_string(ret));
 
-	/* Collect (relid, sort_spec) pairs from SPI results, then batch-execute. */
 	std::vector<SortedIndexCreate> sort_creates;
 
 	if (SPI_processed > 0) {
@@ -654,7 +623,6 @@ SyncSortKeys(const char *sid) {
 			sort_keys.push_back(std::move(sk));
 		}
 
-		/* Group by table and build sort spec */
 		std::string prev_schema, prev_table, idx_cols;
 		auto flush = [&]() {
 			if (idx_cols.empty())

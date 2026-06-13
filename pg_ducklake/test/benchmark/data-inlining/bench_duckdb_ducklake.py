@@ -4,22 +4,9 @@
 # dependencies = ["duckdb>=1.3", "pyarrow"]
 # ///
 #
-# Data inlining benchmark for standalone DuckDB + DuckLake (PG catalog).
-#
-# Reads a ClickBench HITS partition via pyarrow, streams 10-row batches
-# into a ducklake table, then measures aggregation query latency before
-# and after flushing inlined data.
-#
-# Sibling script: bench_pg_ducklake.py (queries kept in sync via hits_schema.py).
-#
-# Environment variables:
-#   BENCH_TOTAL_ROWS         - rows to load (default 300000)
-#   BENCH_BATCH_SIZE         - rows per INSERT batch (default 10)
-#   BENCH_PG_CATALOG_CONNSTR - libpq-style connstr for the catalog PG
-#   BENCH_HITS_FILE          - path to hits parquet (default /tmp/hits_0.parquet)
-#   BENCH_DATA_PATH          - local dir for DuckLake Parquet data files
-#
-# Progress -> stderr; JSON results -> stdout.
+# Data inlining benchmark for standalone DuckDB + DuckLake (PG catalog): stream
+# small ClickBench HITS batches into a ducklake table, measure query latency
+# before/after flush. BENCH_* env vars configure; queries shared via hits_schema.py.
 
 import json
 import os
@@ -103,7 +90,6 @@ def main():
             f"(DATA_PATH '{data_path}', OVERRIDE_DATA_PATH true)"
         )
 
-        # Capture DuckDB settings
         settings = {}
         for name in ("memory_limit", "threads", "worker_threads"):
             val = db.execute(f"SELECT current_setting('{name}')").fetchone()[0]

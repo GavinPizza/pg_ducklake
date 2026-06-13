@@ -1,33 +1,8 @@
 /*
  * functions.cpp -- DuckLake function exposing.
  *
- * @scope backend: register DuckDB-only function names with pg_duckdb
- * @scope duckdb-instance: register wrapper macros, maintenance and
- *   flush table functions in DuckDB catalog
- * @scope extension: duckdb_only_function, ducklake_only_procedure and
- *   ducklake_function_mapping safety-net C stubs (the planner reroutes these
- *   calls before the body runs)
- *
- * Exposes upstream DuckLake functions as PostgreSQL functions in the
- * `ducklake` schema. Two layers are involved:
- *
- *   C++ side (this file)
- *     - Registers function names with pg_duckdb via RegisterDuckdbOnlyFunction
- *       so the planner routes queries to DuckDB.
- *     - Registers wrapper table macros in DuckDB's system.main catalog that
- *       inject the catalog constant and delegate to ducklake_<name>() globals.
- *     - Registers DuckDB table functions (TableFunctionSet) for functions
- *       that need overloaded signatures (e.g., cleanup_old_files,
- *       flush_inlined_data).
- *
- *   SQL side (pg_ducklake--0.1.0.sql)
- *     - Defines the actual PG function signatures as DuckDB-only C stubs.
- *
- * === Function Mapping Rules ===
- *
- * pg_duckdb's DuckDB-only routing rewrites a PG function call to:
- *
- *     system.main.<pg_function_name>(args...)
+ * Exposes DuckLake functions as PostgreSQL functions in the
+ * `ducklake` schema.
  *
  * DuckLake extension registers its functions globally as ducklake_<name>
  * with a catalog arg. Two bridging mechanisms are used:

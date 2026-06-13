@@ -74,11 +74,11 @@ Requirements:
 git clone https://github.com/relytcloud/pg_ducklake
 cd pg_ducklake
 # (Optional) install pg_duckdb
-# make install-pg_duckdb
+# make pg_duckdb/install
 make install
 ```
 
-_See [documentation](docs/README.md) for detailed instructions._
+_See [documentation](pg_ducklake/docs/README.md) for detailed instructions._
 
 ## Usecases
 
@@ -116,7 +116,7 @@ GROUP BY "Pclass", "Sex";
 
 ## Roadmap
 
-For a detailed comparison of upstream DuckLake features and what pg_ducklake currently supports, see [DuckLake Feature Coverage](docs/ducklake_feature_coverage.md).
+For a detailed comparison of upstream DuckLake features and what pg_ducklake currently supports, see [DuckLake Feature Coverage](pg_ducklake/docs/ducklake_feature_coverage.md).
 
 ### pg_ducklake
 
@@ -126,11 +126,11 @@ For a detailed comparison of upstream DuckLake features and what pg_ducklake cur
 
 ## Documentation
 
-See [docs/](docs/README.md) for full documentation including SQL reference, settings, access control, and feature coverage.
+See [docs/](pg_ducklake/docs/README.md) for full documentation including SQL reference, settings, access control, and feature coverage.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](../CONTRIBUTING.md) for how to get involved.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
 
 ## Acknowledgments
 

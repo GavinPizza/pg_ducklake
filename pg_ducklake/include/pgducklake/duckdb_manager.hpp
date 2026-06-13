@@ -1,12 +1,5 @@
 #pragma once
 
-/*
- * duckdb_manager.hpp -- C++ interface for DuckDB/DuckLake operations
- *
- * Provides functions for DuckLake extension lifecycle management and the
- * pg_ducklake-flavored DuckDBManager subclass.
- */
-
 #include "pgddb/pgddb_duckdb.hpp"
 
 #include <exception>
@@ -31,28 +24,15 @@ private:
 	static duckdb::unique_ptr<DuckDBManager> instance_;
 };
 
-/*
- * Execute a query against the pg_ducklake DuckDB connection and return its
- * result, throwing a duckdb exception on error. Mirrors pg_duckdb's
- * DuckDBQueryOrThrow. Thrown exceptions are turned into PG errors by the
- * DECLARE_PG_FUNCTION / InvokeCPPFunc guard at the entry point (see
- * utility/cpp_wrapper.hpp); call sites that need cleanup or non-fatal
- * handling catch them locally instead.
- *
- * The (query) overload runs on DuckDBManager::Get()'s cached connection
- * with the standard transaction policy applied.
- */
+/* Throws a duckdb exception on error; the DECLARE_PG_FUNCTION/InvokeCPPFunc
+ * guard turns it into a PG error at the entry point.  The (query) overload
+ * runs on DuckDBManager::Get()'s cached connection. */
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(duckdb::ClientContext &context, const std::string &query);
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(duckdb::Connection &connection, const std::string &query);
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(const std::string &query);
 
-/*
- * Extract a human-readable message from an exception thrown by
- * DuckDBQueryOrThrow. Those exceptions carry a JSON-serialized duckdb
- * ErrorData blob in what(); this unwraps it to the plain message (matching
- * the DECLARE_PG_FUNCTION / InvokeCPPFunc guard). Use at local catch sites
- * that surface the message via elog/ereport instead of re-throwing.
- */
+/* Unwraps the JSON-serialized duckdb ErrorData blob in e.what() to the plain
+ * message, for catch sites that report via elog/ereport instead of re-throwing. */
 std::string DuckDBErrorMessage(const std::exception &e);
 
 } // namespace pgducklake
@@ -69,13 +49,8 @@ void ducklake_attach_catalog();
 
 namespace pgducklake {
 
-/*
- * Toggle the SUBXACT_EVENT_START_SUB guard. Set true around code paths that
- * legitimately need to open a PG subtransaction while DuckDB has an active
- * transaction (e.g. DuckLake metadata commit's FlushChanges retry loop);
- * set false everywhere else. Backs the pgduckdb::DuckdbAllowSubtransaction
- * contract shim.
- */
+/* Toggle the SUBXACT_EVENT_START_SUB guard: allow opening a PG subtransaction
+ * while DuckDB has an active transaction (e.g. DuckLake FlushChanges retry loop). */
 void SetAllowSubtransaction(bool allow);
 
 } // namespace pgducklake

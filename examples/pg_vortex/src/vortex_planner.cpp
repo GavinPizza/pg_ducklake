@@ -1,11 +1,6 @@
-// pg_vortex's planner. Copied + adapted from
-// libpgduckdb/pgddb_planner.cpp (pgduckdb_planner.cpp at the time). Differences:
-// - namespace pg_vortex (vs no namespace) to avoid symbol clashes when both
-//   extensions are loaded in the same backend.
-// - References vortex_scan_scan_methods (defined in vortex_node.cpp) rather
-//   than duckdb_scan_scan_methods.
-// - No EXPLAIN-time globals (duckdb_explain_*); pg_vortex grows those later
-//   if/when we wire an ExplainOneQuery hook.
+// pg_vortex's planner, adapted from libpgduckdb/pgddb_planner.cpp; wrapped
+// in namespace pg_vortex to avoid symbol clashes when loaded alongside
+// pg_duckdb.
 
 #include "pg_vortex/vortex_planner.hpp"
 

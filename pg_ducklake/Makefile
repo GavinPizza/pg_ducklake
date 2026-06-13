@@ -15,10 +15,8 @@ OBJS += $(C_SRCS:.c=.o)
 # Kernel objects compiled in-place at $(ROOT_DIR)/libpgduckdb/.
 OBJS += $(PGDDB_OBJS)
 
-# Vendored ducklake: pristine community submodule + ordered customization patches.
-# The submodule is pinned to a community duckdb/ducklake commit; our delta lives in
-# third_party/ducklake-NNN-<desc>.patch and is applied onto the pristine checkout at build
-# time (apply-once, stamp-guarded; see the stamp rule below and CLAUDE.md).
+# Vendored ducklake: pristine community submodule + ordered patches
+# (third_party/ducklake-NNN-*.patch) applied at build time, stamp-guarded.
 DUCKLAKE_DIR := $(CURDIR)/third_party/ducklake
 DUCKLAKE_PATCHES := $(sort $(wildcard $(CURDIR)/third_party/ducklake-*.patch))
 DUCKLAKE_STAMP := $(DUCKLAKE_DIR)/.patched
@@ -32,16 +30,9 @@ DUCKLAKE_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/ducklake/libducklake_extension
 
 POSTGRES_SCANNER_EXT_LIB := $(DUCKDB_BUILD_DIR)/extension/postgres_scanner/libpostgres_scanner_extension.a
 
-# DuckLake >= v1.5 needs CRoaring for deletion vectors: the vendored ducklake's
-# CMakeLists does find_package(roaring CONFIG REQUIRED), declared in its
-# vcpkg.json. Mirroring upstream ducklake CI (its .github/workflows/Catalogs.yml),
-# a vcpkg toolchain provided via VCPKG_TOOLCHAIN_PATH (set job-wide in our CI) is
-# passed into the duckdb configure with the vendored ducklake dir as the manifest
-# dir, so vcpkg builds roaring during configure. These are the same variables
-# duckdb's own Makefile wires for VCPKG builds ("Enable VCPKG for this build" in
-# duckdb/Makefile). Appending after the root include is safe: the
-# variable is only expanded in the duckdb configure recipe. Without a toolchain
-# (local macOS dev) find_package falls back to a system croaring (homebrew).
+# DuckLake needs CRoaring (deletion vectors). CI provides a vcpkg toolchain via
+# VCPKG_TOOLCHAIN_PATH, with the vendored ducklake dir as the manifest dir;
+# without one (local macOS) find_package falls back to homebrew croaring.
 ifneq ($(VCPKG_TOOLCHAIN_PATH),)
 DUCKDB_EXTRA_CMAKE_VARS += -DCMAKE_TOOLCHAIN_FILE='$(VCPKG_TOOLCHAIN_PATH)' -DVCPKG_BUILD=1
 DUCKDB_EXTRA_CMAKE_VARS += -DVCPKG_MANIFEST_DIR='$(DUCKLAKE_DIR)'
@@ -59,12 +50,8 @@ ifeq ($(shell uname -s),Darwin)
 else
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,--whole-archive $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB) -Wl,--no-whole-archive
 endif
-# -lroaring: vcpkg-built in CI (see above), homebrew croaring on local macOS
-# (resolved via LIBRARY_PATH=/opt/homebrew/lib). It must come AFTER the
-# whole-archive'd extension archives: GNU ld resolves static archives in a
-# single left-to-right pass, so a libroaring.a listed earlier contributes
-# nothing (no roaring symbol is undefined yet at that point) and the ducklake
-# extension's references would stay unresolved.
+# -lroaring must come AFTER the whole-archive'd extension archives: GNU ld
+# resolves static archives in a single left-to-right pass.
 PG_DUCKLAKE_LINK_FLAGS += -lssl -lcrypto -lstdc++ -llz4
 ifneq ($(ROARING_LIB_DIR),)
 	PG_DUCKLAKE_LINK_FLAGS += -L$(ROARING_LIB_DIR)
@@ -81,15 +68,12 @@ EXTRA_CLEAN += $(DUCKLAKE_STAMP)
 
 include $(ROOT_DIR)/Makefile.pgxs
 
-# Init the ducklake submodule non-recursively: its inner duckdb / extension-ci-tools
-# submodules are only for ducklake's own CI; the SOURCE_DIR extension build uses src/ only.
+# Non-recursive init: ducklake's inner submodules are only for its own CI.
 $(DUCKLAKE_SUBMODULE_HEAD):
 	git -C $(ROOT_DIR) submodule update --init pg_ducklake/third_party/ducklake
 
-# Apply our customization patches onto the pristine ducklake submodule (apply-once,
-# stamp-guarded). Reset to the pinned commit first so editing a patch and rebuilding
-# re-applies from a clean base. The submodule working tree is intentionally left dirty
-# (patched); the gitlink stays at the pinned community commit.
+# Apply patches onto the pristine submodule; reset first so editing a patch
+# re-applies from a clean base. The working tree is intentionally left dirty.
 $(DUCKLAKE_STAMP): $(DUCKLAKE_PATCHES) $(DUCKLAKE_SUBMODULE_HEAD)
 	git -C $(DUCKLAKE_DIR) checkout -q .
 	git -C $(DUCKLAKE_DIR) clean -fdq src
@@ -99,26 +83,17 @@ $(DUCKLAKE_STAMP): $(DUCKLAKE_PATCHES) $(DUCKLAKE_SUBMODULE_HEAD)
 	done
 	touch $@
 
-# Extension .o files include patched ducklake headers and the duckdb build configures
-# ducklake via SOURCE_DIR, so both must see the patched source: gate them on the stamp
-# (which transitively inits the submodule) and on the duckdb submodule HEAD marker.
+# Extension .o files and the duckdb build both consume patched ducklake source.
 $(OBJS): $(PGDDB_DIR)/.git/modules/duckdb/HEAD $(DUCKLAKE_STAMP)
 $(FULL_DUCKDB_LIB): $(DUCKLAKE_STAMP)
 
-# The ducklake / postgres_scanner extension archives are produced as a side effect of the duckdb
-# cmake build ($(FULL_DUCKDB_LIB)) and have no rule of their own. Declare that so a clean build
-# (empty build dir, e.g. CI) builds duckdb first instead of aborting with "No rule to make target
-# .../libducklake_extension.a" while resolving the $(shlib) prerequisites below. (Locally it was
-# masked by a pre-populated build dir.)
+# Both archives are side effects of the duckdb cmake build; declaring that lets
+# a clean build make duckdb first, and listing them as $(shlib) prereqs relinks
+# the dylib when only the vendored ducklake source changed.
 $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB): $(FULL_DUCKDB_LIB)
 
-# shlib pulls in $(FULL_DUCKDB_LIB) before linking. The ducklake / postgres_scanner
-# extension archives are force_load'd via SHLIB_LINK, so list them as prerequisites
-# too -- otherwise rebuilding only the vendored ducklake source (which regenerates
-# these .a's but no extension .o) would not relink the dylib.
 $(shlib): $(FULL_DUCKDB_LIB) $(DUCKLAKE_EXT_LIB) $(POSTGRES_SCANNER_EXT_LIB) $(OBJS)
 
-# Project formatting (project files only, not third_party/).
 FORMAT_FILES = $(shell find src/ include/ -name '*.cpp' -o -name '*.hpp' -o -name '*.h')
 
 .PHONY: format check-format check-regression clean-regression check-isolation clean-isolation check-e2e clean-all
@@ -141,11 +116,8 @@ clean-regression:
 check-isolation:
 	$(MAKE) -C test/isolation check-isolation
 
-# End-to-end integration suite (test/e2e): throwaway PG cluster + asyncpg +
-# external duckdb client, with optional dockerized MinIO for s3:// storage
-# coverage (those tests skip when docker is unavailable; E2E_REQUIRE_S3=1
-# turns the skips into failures). Needs `uv` on PATH; not part of
-# installcheck because of the docker/network dependencies.
+# Needs `uv`; s3:// tests use dockerized MinIO and skip without docker
+# (E2E_REQUIRE_S3=1 turns skips into failures).
 # Usage: make check-e2e [TEST=<pytest -k expr>] [E2E_PYTEST_ARGS=...]
 check-e2e: all install
 	PG_CONFIG='$(PG_CONFIG)' uv run --project test/e2e -- pytest test/e2e $(if $(TEST),-k '$(TEST)') $(E2E_PYTEST_ARGS)

@@ -4,9 +4,8 @@
 
 namespace pg_vortex {
 
-// pg_vortex uses the base pgddb::DuckDBManager as-is and only hosts the
-// per-backend singleton. Override OnInit/OnPostInit here for custom DuckDB
-// setup (e.g. LOAD vortex on startup).
+// Hosts the per-backend singleton; override OnInit/OnPostInit for custom
+// DuckDB setup (e.g. LOAD vortex on startup).
 class DuckDBManager : public pgddb::DuckDBManager {
 public:
 	static bool IsInitialized();
@@ -17,7 +16,7 @@ private:
 	static duckdb::unique_ptr<DuckDBManager> instance_;
 };
 
-// Installs pgddb_get_connection_hook; called from _PG_init.
+// Installs pgddb_get_connection_hook.
 void InitDuckDBManager();
 
 } // namespace pg_vortex

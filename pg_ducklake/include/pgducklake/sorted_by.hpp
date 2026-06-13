@@ -1,12 +1,5 @@
 #pragma once
 
-/*
- * sorted_by.hpp
- *
- * Sorted index AM handler, CREATE/DROP INDEX interception, and pg_class
- * sync helpers for ducklake_sorted.
- */
-
 #include "pgducklake/catalog_sync.hpp"
 
 #include <string>
@@ -40,12 +33,10 @@ struct SortedIndexCreate {
  * syncing_from_metadata = true. */
 void SyncSortedIndexes(const std::vector<SortedIndexCreate> &creates, const std::vector<Oid> &resets);
 
-/* Single-table helpers (thin wrappers around SyncSortedIndexes). */
 void CreateSortedIndexForTable(Oid relid, const char *sort_spec);
 void DropSortedIndexForTable(Oid relid);
 
-/* Sync sort keys from DuckLake metadata for the given snapshot.
- * Registered as a SyncHandler with the snapshot trigger framework. */
+/* SyncHandler registered with the snapshot trigger framework. */
 void SyncSortKeys(const char *snapshot_id);
 
 } // namespace pgducklake

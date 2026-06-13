@@ -1,27 +1,12 @@
 /*
  * direct_insert.cpp
  *
- * @scope backend: register custom scan node methods + direct-insert outcome
- *   counters shmem; cached ducklake AM OID
- * @scope duckdb-instance: per-statement scan state (snapshot, row IDs)
+ * Planner-time detection of patterns that bypass DuckDB and
+ * write straight into the inlined data table.
  *
- * Optimization for INSERT patterns that bypass DuckDB execution:
- *   1. INSERT ... SELECT UNNEST($1), UNNEST($2), ... (parameterized arrays)
- *   2. INSERT ... VALUES (const, ...), ... (constant-value rows)
- *
- * Both paths detect the pattern at planner time, create a CustomScan plan,
- * and insert directly into the inlined data table.  UNNEST uses SPI;
- * VALUES uses table_multi_insert for native heap performance.
- *
- * Lifecycle:
- * 1. Planner hook detects pattern and creates custom scan plan
- * 2. Executor initializes state and allocates snapshot/row IDs
- * 3. Executor inserts rows (SPI for UNNEST, heap AM for VALUES)
- * 4. Executor returns completion (no tuples to output)
- *
- * The shared-memory outcome counters for this path and the
- * ducklake.direct_insert_stats() / reset_direct_insert_stats() SRFs live in
- * the "outcome counters" section near the end of this file.
+ * Current supported patterns:
+ * - INSERT ... SELECT UNNEST($n) with list shaped params
+ * - INSERT ... VALUES <const value tuples>
  */
 
 #include "pgducklake/catalog_sync.hpp"
@@ -133,7 +118,6 @@ enum DirectInsertMode {
 	DIRECT_INSERT_VALUES = 1,
 };
 
-// Define the scan state structure here (needs full CustomScanState definition)
 struct DirectInsertScanState {
 	CustomScanState css; // Must be first
 
@@ -164,7 +148,6 @@ struct DirectInsertScanState {
 	uint64_t next_row_id;
 };
 
-// Custom scan methods
 static Node *DirectInsert_CreateCustomScanState(CustomScan *cscan);
 static void DirectInsert_BeginCustomScan(CustomScanState *node, EState *estate, int eflags);
 static TupleTableSlot *DirectInsert_ExecCustomScan(CustomScanState *node);
@@ -193,7 +176,6 @@ static CustomScanMethods direct_insert_scan_methods = {
     .CreateCustomScanState = DirectInsert_CreateCustomScanState,
 };
 
-/* Context for VALUES detection (file-local) */
 struct ValuesInsertContext {
 	Oid target_table_oid;
 	uint64_t table_id;
@@ -203,15 +185,12 @@ struct ValuesInsertContext {
 	List *target_col_names;  // List of char*
 	List *inlined_col_types; // List of Oid
 	List *src_col_types;     // List of Oid (user-facing PG types)
-	/* One expression per cell.  Always non-NULL: unspecified columns are
-	 * filled with a typed NULL Const so every cell goes through
-	 * ExecInitExpr at executor start.  Const-foldable subexpressions are
-	 * already collapsed by eval_const_expressions; STABLE/PARAM-EXTERN-
-	 * free expressions stay as FuncExpr and are evaluated per row. */
+	/* One expression per cell, always non-NULL: unspecified columns get a
+	 * typed NULL Const; const-foldable subexpressions are already collapsed
+	 * by eval_const_expressions. */
 	Node **exprs;
 };
 
-/* Shared precondition result for INSERT pattern detection */
 struct InsertPreconditionResult {
 	Oid target_oid;
 	uint64_t table_id;
@@ -220,7 +199,6 @@ struct InsertPreconditionResult {
 	Relation target_rel; // caller must close
 };
 
-// Helper functions
 static bool CheckInsertPreconditions(Query *parse, InsertPreconditionResult *result_out, DirectInsertReason *reason_out,
                                      bool *is_ducklake_out);
 static bool TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditionResult *precond,
@@ -235,12 +213,9 @@ static void DirectInsertIntoInlinedTable(DirectInsertScanState *state);
 static void DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state);
 
 /*
- * Map a DuckDB type string (from ducklake_column.column_type) to the PG OID
- * used in the inlined data table.  Mirrors PostgresMetadataManager::
- * GetColumnTypeInternal / TypeIsNativelySupported.
- *
- * Returns the PG OID for the inlined column, or InvalidOid when the type
- * cannot be handled by the direct insert path (nested types, VARIANT, etc.).
+ * Map a DuckDB type string to the PG OID used in the inlined data table;
+ * mirrors PostgresMetadataManager::GetColumnTypeInternal.  InvalidOid =
+ * not handled by the direct insert path.
  */
 static Oid
 DuckDBTypeToInlinedOid(const char *duckdb_type, Oid element_type) {
@@ -262,10 +237,9 @@ DuckDBTypeToInlinedOid(const char *duckdb_type, Oid element_type) {
 		return BYTEAOID;
 	}
 
-	// Scalar types with wider DuckDB range are stored as VARCHAR.
-	// TIMESTAMPTZ is excluded: timestamptz_out crashes when called from
-	// the VALUES direct insert path after a prior direct insert modified
-	// snapshot state in the same session.
+	// Scalar types with wider DuckDB range are stored as VARCHAR.  TIMESTAMPTZ
+	// is excluded: timestamptz_out crashes in the VALUES path after a prior
+	// direct insert in the same session.
 	if (pg_strcasecmp(duckdb_type, "TIMESTAMP WITH TIME ZONE") == 0 || pg_strcasecmp(duckdb_type, "TIMESTAMPTZ") == 0) {
 		return InvalidOid;
 	}
@@ -281,12 +255,9 @@ DuckDBTypeToInlinedOid(const char *duckdb_type, Oid element_type) {
 }
 
 /*
- * Query ducklake_column metadata to determine the PG types used in the
- * inlined data table for each user column.  Returns false on bail-out
- * (nested types, missing metadata, column count mismatch).
- *
- * element_types: List of Oid -- the user-facing PG type for each column
- * (array element type for UNNEST, column type for VALUES).
+ * Determine the inlined-table PG type for each user column from
+ * ducklake_column metadata.  element_types: List of Oid, the user-facing
+ * PG type per column.  Returns false on bail-out.
  */
 static bool
 GetInlinedColumnTypes(uint64_t table_id, List *element_types, List **inlined_col_types_out) {
@@ -368,16 +339,9 @@ RegisterDirectInsertNode() {
  * ---------------------------------------------------------------- */
 
 /*
- * Check preconditions for direct insert.  Two kinds of failure:
- *
- *   1. Gating (is_ducklake_out = false): not a CMD_INSERT, in tx block,
- *      bad result relation, non-ducklake AM.  Callers do NOT count these.
- *   2. Inlineability (is_ducklake_out = true): target is ducklake but
- *      can't be inlined (no_inlined_table or schema_version_mismatch).
- *      Callers DO count these as unmatched rejections.
- *
- * On success, result_out->target_rel is open with AccessShareLock --
- * the caller MUST close it.
+ * is_ducklake_out separates uncounted gating failures from counted
+ * "ducklake but not inlineable" rejections.  On success,
+ * result_out->target_rel is open with AccessShareLock; caller must close it.
  */
 static bool
 CheckInsertPreconditions(Query *parse, InsertPreconditionResult *result_out, DirectInsertReason *reason_out,
@@ -460,11 +424,8 @@ CheckInsertPreconditions(Query *parse, InsertPreconditionResult *result_out, Dir
 }
 
 /*
- * Retrieve inlined column types, using the session-level cache.
- * On cache miss, queries ducklake_column metadata via SPI and caches
- * the result in TopMemoryContext.  Caller must not free the returned list.
- *
- * element_types: List of Oid -- user-facing PG type per column.
+ * Cached wrapper around GetInlinedColumnTypes; the cached list lives in
+ * TopMemoryContext -- caller must not free it.
  */
 static bool
 GetCachedInlinedColumnTypes(uint64_t table_id, uint64_t schema_version, List *element_types,
@@ -542,7 +503,6 @@ TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params) {
 
 	/* precond.target_rel is now open; must close on every remaining path. */
 
-	/* Try UNNEST pattern first (requires bound parameters) */
 	DirectInsertContext context = {};
 	DirectInsertReason unnest_reason = DI_R_UNSUPPORTED_INSERT_SHAPE;
 	if (TryMatchUnnest(parse, bound_params, &precond, &context, &unnest_reason)) {
@@ -555,7 +515,6 @@ TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params) {
 		return CreateDirectInsertPlan(parse, &context);
 	}
 
-	/* Try VALUES pattern */
 	ValuesInsertContext values_ctx = {};
 	DirectInsertReason values_reason = DI_R_UNSUPPORTED_INSERT_SHAPE;
 	if (TryMatchValues(parse, &precond, &values_ctx, &values_reason)) {
@@ -574,7 +533,7 @@ TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params) {
 }
 
 /* ----------------------------------------------------------------
- * UNNEST pattern detection (existing, refactored to use shared preconditions)
+ * UNNEST pattern detection
  * ---------------------------------------------------------------- */
 
 /*
@@ -589,12 +548,10 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 
 	Relation target_rel = precond->target_rel;
 
-	// Check 6: Must have SELECT query as source
 	if (!parse->jointree || !parse->jointree->fromlist || list_length(parse->jointree->fromlist) != 1) {
 		return false;
 	}
 
-	// Extract the SELECT subquery
 	Node *from_node = (Node *)linitial(parse->jointree->fromlist);
 	if (!IsA(from_node, RangeTblRef)) {
 		return false;
@@ -603,7 +560,6 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 	int from_rtindex = ((RangeTblRef *)from_node)->rtindex;
 	RangeTblEntry *from_rte = (RangeTblEntry *)list_nth(parse->rtable, from_rtindex - 1);
 
-	// Check if it's a subquery RTE
 	Query *subquery = NULL;
 	if (from_rte->rtekind == RTE_SUBQUERY) {
 		subquery = from_rte->subquery;
@@ -614,13 +570,10 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 		return false;
 	}
 
-	// Check 7: Target list must contain only UNNEST(Param) expressions
 	if (!subquery->targetList) {
 		return false;
 	}
 
-	// Get target table column names from tuple descriptor (relation is already
-	// open)
 	TupleDesc tupdesc = RelationGetDescr(target_rel);
 
 	List *param_infos = NIL;
@@ -638,12 +591,10 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 			return false;
 		}
 
-		// Store parameter info
 		ParamInfo *pinfo = (ParamInfo *)palloc(sizeof(ParamInfo));
 		pinfo->param_id = param_id;
 		pinfo->param_type = param_type;
 
-		// Get element type
 		Oid element_type = get_element_type(param_type);
 		if (!OidIsValid(element_type)) {
 			return false;
@@ -652,7 +603,6 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 
 		param_infos = lappend(param_infos, pinfo);
 
-		// Get actual column name from target relation
 		if (attno >= tupdesc->natts) {
 			return false;
 		}
@@ -662,7 +612,6 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 		attno++;
 	}
 
-	// Check 8: All parameters must be present and have matching array lengths
 	int expected_row_count = 0;
 	List *param_ids = NIL;
 	foreach (lc, param_infos) {
@@ -681,7 +630,6 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 		return false;
 	}
 
-	// Check 9: Inlined column types
 	List *element_types = NIL;
 	foreach (lc, param_infos) {
 		ParamInfo *pinfo = (ParamInfo *)lfirst(lc);
@@ -694,7 +642,6 @@ TryMatchUnnest(Query *parse, ParamListInfo bound_params, const InsertPreconditio
 		return false;
 	}
 
-	// All checks passed, fill context
 	context_out->target_table_oid = precond->target_oid;
 	context_out->table_id = precond->table_id;
 	context_out->schema_version = precond->schema_version;
@@ -713,17 +660,14 @@ IsUnnestOfParam(Node *node, int *param_id_out, Oid *param_type_out) {
 		return false;
 	}
 
-	// Handle FuncExpr
 	if (IsA(node, FuncExpr)) {
 		FuncExpr *funcexpr = (FuncExpr *)node;
 
-		// Check if it's UNNEST function
 		char *funcname = get_func_name(funcexpr->funcid);
 		if (!funcname || strcmp(funcname, "unnest") != 0) {
 			return false;
 		}
 
-		// Check if argument is a Param node
 		if (list_length(funcexpr->args) != 1) {
 			return false;
 		}
@@ -769,13 +713,11 @@ ValidateArrayLengths(ParamListInfo bound_params, List *param_ids, int *expected_
 			return false;
 		}
 
-		// Must be an array
 		Oid param_type = pdata->ptype;
 		if (!type_is_array(param_type)) {
 			return false;
 		}
 
-		// Get array length
 		ArrayType *arr = DatumGetArrayTypeP(pdata->value);
 		int ndims = ARR_NDIM(arr);
 		if (ndims != 1) {
@@ -787,7 +729,6 @@ ValidateArrayLengths(ParamListInfo bound_params, List *param_ids, int *expected_
 		if (expected_length == -1) {
 			expected_length = arr_length;
 		} else if (arr_length != expected_length) {
-			// Array length mismatch
 			return false;
 		}
 	}
@@ -805,24 +746,9 @@ ValidateArrayLengths(ParamListInfo bound_params, List *param_ids, int *expected_
  * ---------------------------------------------------------------- */
 
 /*
- * Reject expression trees that we can't safely evaluate at executor
- * start without access to a tuple stream, an outer query, or an SPI
- * context.  Anything else (Const, RelabelType wrapping a Const, STABLE
- * function on Const args, etc.) is fine -- ExecInitExpr handles it.
- *
- * Reasons to reject:
- *   Var          - needs a per-row tuple slot
- *   Param        - bound parameter or correlated-outer reference;
- *                  conservatively reject for now (a future change can
- *                  allow PARAM_EXTERN for INSERT INTO t VALUES ($1))
- *   Aggref / GroupingFunc / WindowFunc - aggregate context
- *   SubLink / SubPlan / AlternativeSubPlan - subquery
- *   CurrentOfExpr - WHERE CURRENT OF cursor
- *   VOLATILE function (FuncExpr/OpExpr/DistinctExpr/NullIfExpr) -
- *                  output may differ across calls and PG's standard
- *                  executor evaluates it per-row; we still defer eval
- *                  to exec time, but rejecting volatile keeps direct
- *                  insert observably equivalent to the DuckDB path.
+ * Reject expressions that need a tuple stream, outer query, or aggregate
+ * context; also VOLATILE functions, so direct insert stays observably
+ * equivalent to the DuckDB path.
  */
 static bool
 ValuesExprUnsafeWalker(Node *node, void *unused) {
@@ -849,10 +775,8 @@ ValuesExprUnsafeWalker(Node *node, void *unused) {
 		if (func_volatile(fe->funcid) == PROVOLATILE_VOLATILE)
 			return true;
 	} else if (IsA(node, OpExpr) || IsA(node, DistinctExpr) || IsA(node, NullIfExpr)) {
-		/* OpExpr, DistinctExpr, NullIfExpr share the same struct prefix;
-		 * opfuncid is the underlying function.  func_volatile handles
-		 * InvalidOid by returning PROVOLATILE_VOLATILE, which is a safer
-		 * default than treating an unresolved op as immutable. */
+		/* DistinctExpr and NullIfExpr share OpExpr's struct prefix;
+		 * an unresolved opfuncid is treated as volatile. */
 		OpExpr *oe = (OpExpr *)node;
 		if (!OidIsValid(oe->opfuncid))
 			return true;
@@ -883,7 +807,6 @@ TryMatchValues(Query *parse, const InsertPreconditionResult *precond, ValuesInse
 
 	Relation target_rel = precond->target_rel;
 
-	/* VALUES-specific bail-outs */
 	if (parse->returningList != NIL || parse->onConflict != NULL || parse->cteList != NIL) {
 		return false;
 	}
@@ -907,14 +830,9 @@ TryMatchValues(Query *parse, const InsertPreconditionResult *precond, ValuesInse
 		}
 	}
 
-	/* Guard: ensure the parse tree is shaped like a pure VALUES INSERT.
-	 * A WHERE clause or a FROM clause that isn't the values_rte means
-	 * the user wrote INSERT ... SELECT FROM table; we cannot direct-
-	 * insert that because the SELECT may produce a different number of
-	 * rows than the targetList suggests.  Without this guard, deferred
-	 * cell evaluation would silently accept INSERT ... SELECT NULL FROM
-	 * t WHERE ... (no Var in the targetList) and produce wrong row
-	 * counts. */
+	/* Require a pure VALUES shape: a WHERE clause or a FROM entry other
+	 * than the values_rte means INSERT ... SELECT, which can produce a
+	 * different row count than the targetList suggests. */
 	if (parse->jointree && parse->jointree->quals != NULL) {
 		return false;
 	}
@@ -970,21 +888,9 @@ TryMatchValues(Query *parse, const InsertPreconditionResult *precond, ValuesInse
 	TupleDesc tupdesc = RelationGetDescr(target_rel);
 	int num_table_cols = tupdesc->natts;
 
-	/* For each table column, choose one source:
-	 *   values_col_idx[col] >= 0  -> values_lists[row][values_col_idx[col]]
-	 *   target_expr[col] != NULL  -> evaluate this expression once per row
-	 *                                (default / explicit constant; same value
-	 *                                across rows so eval_const_expressions
-	 *                                can fold it)
-	 *   neither set               -> typed NULL filler
-	 *
-	 * Multi-row VALUES distinguishes the two by inspecting each targetList
-	 * entry: a Var pointing at the RTE_VALUES is per-row, anything else
-	 * (default expr, plain Const) is row-independent.
-	 *
-	 * Single-row VALUES inlines the source expressions directly into the
-	 * targetList, with one entry per non-junk TargetEntry; the synthetic
-	 * values_lists we built mirrors that order. */
+	/* Per table column: values_col_idx[col] >= 0 selects the per-row VALUES
+	 * cell (a targetList Var pointing at the RTE_VALUES); target_expr[col]
+	 * is a row-independent default/const; neither set -> typed NULL filler. */
 	int *values_col_idx = (int *)palloc(sizeof(int) * num_table_cols);
 	Node **target_expr = (Node **)palloc0(sizeof(Node *) * num_table_cols);
 	for (int i = 0; i < num_table_cols; i++)
@@ -1072,7 +978,6 @@ TryMatchValues(Query *parse, const InsertPreconditionResult *precond, ValuesInse
 	pfree(values_col_idx);
 	pfree(target_expr);
 
-	/* Collect user-facing column types + names from TupleDesc */
 	List *src_col_types = NIL;
 	List *target_col_names = NIL;
 	for (int i = 0; i < num_table_cols; i++) {
@@ -1106,10 +1011,6 @@ TryMatchValues(Query *parse, const InsertPreconditionResult *precond, ValuesInse
  * Plan creation
  * ---------------------------------------------------------------- */
 
-/*
- * Build a PlannedStmt shell with a CustomScan node.  Shared by both
- * UNNEST and VALUES paths.
- */
 static PlannedStmt *
 MakeDirectInsertPlannedStmt(Query *parse, List *custom_private) {
 	PlannedStmt *pstmt = makeNode(PlannedStmt);
@@ -1223,7 +1124,6 @@ CreateValuesInsertPlan(Query *parse, ValuesInsertContext *context) {
  * CustomScan state creation / decode
  * ---------------------------------------------------------------- */
 
-/* Helper: advance ListCell and return current node. */
 static inline Node *
 NextPrivate(List *priv, ListCell **lc) {
 	Node *n = (Node *)lfirst(*lc);
@@ -1337,8 +1237,7 @@ DirectInsert_BeginCustomScan(CustomScanState *node, EState *estate, int eflags) 
 	state->inlined_table_name = buf.data;
 
 	if (state->mode == DIRECT_INSERT_VALUES) {
-		/* Build one ExprState per cell.  Cheap for Const cells (just wraps
-		 * the constvalue), and necessary for STABLE coercions / other
+		/* One ExprState per cell -- needed for STABLE coercions and other
 		 * non-Const expressions that survived eval_const_expressions. */
 		int total = state->values_num_rows * state->values_num_cols;
 		state->values_estates = (ExprState **)palloc(sizeof(ExprState *) * total);
@@ -1349,10 +1248,8 @@ DirectInsert_BeginCustomScan(CustomScanState *node, EState *estate, int eflags) 
 		MemoryContextSwitchTo(old_ctx);
 	}
 
-	/* begin_snapshot / next_row_id are assigned inside the retry loop in
-	 * DirectInsert_ExecCustomScan -- under concurrent direct inserts the
-	 * snapshot_id may already be taken and we need to re-read it after a
-	 * unique_violation rollback. */
+	/* begin_snapshot / next_row_id are assigned in ExecCustomScan: after a
+	 * unique_violation rollback they must be re-read, not reused. */
 }
 
 static TupleTableSlot *
@@ -1363,11 +1260,9 @@ DirectInsert_ExecCustomScan(CustomScanState *node) {
 		return NULL;
 	}
 
-	/* Concurrent direct inserts can both compute the same MAX(snapshot_id)+1
-	 * and one will lose the PK race with 23505.  Translate that to 40001 so
-	 * client retry adapters (pgx, jdbc, pgbench --max-tries) handle it
-	 * transparently; the autocommit txn rollback discards the inlined rows
-	 * we tagged, so the retry runs from a fresh next_row_id with no overlap. */
+	/* Concurrent direct inserts race on MAX(snapshot_id)+1; the loser hits
+	 * 23505.  Translate to 40001 so client retry adapters retry transparently;
+	 * the autocommit rollback discards the rows this attempt tagged. */
 	MemoryContext old_ctx = CurrentMemoryContext;
 	PG_TRY();
 	{
@@ -1412,7 +1307,6 @@ DirectInsert_ExecCustomScan(CustomScanState *node) {
 
 static void
 DirectInsert_EndCustomScan(CustomScanState *node) {
-	// Cleanup (if needed)
 }
 
 static void
@@ -1436,19 +1330,17 @@ DirectInsert_ExplainCustomScan(CustomScanState *node, List *ancestors, ExplainSt
 }
 
 /* ----------------------------------------------------------------
- * UNNEST execution (existing, unchanged)
+ * UNNEST execution
  * ---------------------------------------------------------------- */
 
 static void
 DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 	int ret;
 
-	// Connect to SPI
 	if ((ret = SPI_connect()) < 0) {
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("SPI_connect failed: %d", ret)));
 	}
 
-	// Extract arrays from parameters
 	int num_params = list_length(state->param_ids);
 	ArrayType **arrays = (ArrayType **)palloc(sizeof(ArrayType *) * num_params);
 	Oid *element_types = (Oid *)palloc(sizeof(Oid) * num_params);
@@ -1468,7 +1360,6 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 		param_idx++;
 	}
 
-	// Validate array lengths (should already be validated, but double-check)
 	int arr_length = ArrayGetNItems(ARR_NDIM(arrays[0]), ARR_DIMS(arrays[0]));
 	for (int i = 1; i < num_params; i++) {
 		int len = ArrayGetNItems(ARR_NDIM(arrays[i]), ARR_DIMS(arrays[i]));
@@ -1477,7 +1368,6 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 		}
 	}
 
-	// Build INSERT statement
 	StringInfoData query;
 	initStringInfo(&query);
 	appendStringInfo(&query, "INSERT INTO %s (row_id, begin_snapshot, end_snapshot", state->inlined_table_name);
@@ -1514,13 +1404,11 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 		param_types[i + 2] = inlined_types[i];
 	}
 
-	// Prepare statement
 	SPIPlanPtr plan = SPI_prepare(query.data, num_params + 2, param_types);
 	if (!plan) {
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("SPI_prepare failed")));
 	}
 
-	// Insert rows
 	Datum *values = (Datum *)palloc(sizeof(Datum) * (num_params + 2));
 	char *nulls = (char *)palloc(sizeof(char) * (num_params + 2));
 	memset(nulls, ' ', num_params + 2); // ' ' means not null
@@ -1574,7 +1462,6 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 			}
 		}
 
-		// Execute INSERT
 		ret = SPI_execute_plan(plan, values, nulls, false, 0);
 		if (ret != SPI_OK_INSERT) {
 			ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("SPI_execute_plan failed: %d", ret)));
@@ -1597,12 +1484,8 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
  * row_id, begin_snapshot, end_snapshot. */
 #define INLINED_SYSTEM_COLS 3
 
-/* Max tuples to batch before flushing. */
 #define MAX_BUFFERED_TUPLES 1000
 
-/*
- * Per-column conversion info for VALUES -> inlined table type mapping.
- */
 struct ValuesColumnConvInfo {
 	bool needs_text_conv;
 	FmgrInfo typoutput_finfo; /* cached output function */
@@ -1614,7 +1497,6 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 	int num_cols = state->values_num_cols;
 	ExprContext *econtext = state->css.ss.ps.ps_ExprContext;
 
-	/* Open inlined data table by name */
 	char relname[NAMEDATALEN];
 	snprintf(relname, sizeof(relname), "ducklake_inlined_data_%llu_%llu", (unsigned long long)state->table_id,
 	         (unsigned long long)state->schema_version);
@@ -1628,7 +1510,6 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 	Relation inlined_rel = table_open(relid, RowExclusiveLock);
 	TupleDesc inlined_tupdesc = RelationGetDescr(inlined_rel);
 
-	/* Build per-column conversion info */
 	ValuesColumnConvInfo *conv = (ValuesColumnConvInfo *)palloc0(sizeof(ValuesColumnConvInfo) * num_cols);
 	ListCell *inl_lc = list_head(state->column_types);
 
@@ -1648,10 +1529,8 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 			fmgr_info(typoutput, &conv[i].typoutput_finfo);
 			conv[i].needs_text_conv = true;
 		} else if (inl_type == BYTEAOID) {
-			/* DuckDB VARCHAR/BLOB columns use BYTEA in the inlined table.
-			 * PG text/varchar and bytea share the same varlena binary
-			 * layout (length header + payload bytes), so the Datum can
-			 * be stored as-is without conversion. */
+			/* DuckDB VARCHAR/BLOB inline as BYTEA; text/varchar and bytea
+			 * share the same varlena layout, so store the Datum as-is. */
 			conv[i].needs_text_conv = false;
 		} else {
 			conv[i].needs_text_conv = false;
@@ -1675,7 +1554,6 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 		DateOrder = DATEORDER_YMD;
 	}
 
-	/* Allocate slots for batched insert */
 	int batch_size = (num_rows < MAX_BUFFERED_TUPLES) ? num_rows : MAX_BUFFERED_TUPLES;
 	TupleTableSlot **slots = (TupleTableSlot **)palloc(sizeof(TupleTableSlot *) * batch_size);
 	for (int i = 0; i < batch_size; i++) {
@@ -1738,7 +1616,6 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 		}
 	}
 
-	/* Flush remaining */
 	if (nslots > 0) {
 		table_multi_insert(inlined_rel, slots, nslots, cid, 0, bistate);
 	}
@@ -1766,8 +1643,6 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 
 /* ================================================================
  * Direct-insert outcome counters (shared memory)
- *
- * Mirrors the shmem init pattern used by src/maintenance_worker.cpp.
  * ================================================================ */
 
 namespace {
@@ -1913,13 +1788,8 @@ DirectInsertReasonName(DirectInsertReason reason) {
 extern "C" {
 
 /*
- * Return the (pattern, reason) combos that actually occur:
- *   matched_unnest + ok
- *   matched_values + ok
- *   unmatched + every reason except ok
- *
- * Always emits the same 1 + 1 + (DI_R_NUM - 1) rows so the schema is
- * stable across resets (no NULL gaps in dashboards).
+ * Emits a fixed row set (matched_unnest/matched_values + ok, unmatched x
+ * every non-ok reason) so the shape is stable across resets.
  */
 PG_FUNCTION_INFO_V1(ducklake_direct_insert_stats);
 Datum

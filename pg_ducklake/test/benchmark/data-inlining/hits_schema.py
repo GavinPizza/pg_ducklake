@@ -1,9 +1,6 @@
-# ClickBench HITS schema constants for data-inlining benchmarks.
-# Source: athena_partitioned/hits_0.parquet (105 columns).
-#
-# The parquet stores timestamps as epoch-seconds (int64), dates as
-# days-since-epoch (uint16), and booleans as int16.  Both benchmark
-# scripts convert these to proper Python/Arrow types before insertion.
+# ClickBench HITS schema constants for the data-inlining benchmarks. The source
+# parquet (athena_partitioned/hits_0.parquet, 105 cols) stores timestamps as
+# epoch-seconds, dates as days-since-epoch, booleans as int16; scripts convert.
 
 from datetime import date, datetime, timezone
 
@@ -226,12 +223,8 @@ CREATE_HEAP_TABLE_SQL = CREATE_TABLE_SQL.replace(
 )
 
 # -- Queries (full ClickBench Q0-Q42) ------------------------------------
-#
-# All 43 official ClickBench queries adapted for the HITS schema.
-# PG queries use double-quoted identifiers and PG-native boolean syntax
-# (our schema declares IsRefresh/DontCountHits/etc. as BOOLEAN, whereas
-# ClickBench originals use integer columns with = 0 / <> 0 comparisons).
-# DuckDB queries are derived via _pg_to_duckdb() transformation.
+# Adapted for this schema: BOOLEAN columns replace ClickBench's integer
+# = 0 / <> 0 comparisons; DuckDB variants are derived via _pg_to_duckdb().
 
 # Q29: 90 SUM expressions on ResolutionWidth (generated to avoid a wall of text)
 _Q29_SUMS = ', '.join(f'SUM("ResolutionWidth" + {i})' for i in range(90))
@@ -327,11 +320,9 @@ QUERIES_PG = [
 
 
 def _pg_to_duckdb(q):
-    """Convert PG-syntax query to DuckDB-syntax for lake.main.hits.
-
-    Transformations: table name, remove PG identifier quoting, remove
-    ::int casts (DuckDB SUMs booleans natively), length -> STRLEN.
-    """
+    """Convert a PG-syntax query to DuckDB syntax for lake.main.hits: table
+    name, strip identifier quoting and ::int casts (DuckDB SUMs booleans
+    natively), length -> STRLEN."""
     q = q.replace(' FROM hits', ' FROM lake.main.hits')
     q = q.replace('::int', '')
     q = q.replace('"', '')

@@ -1,14 +1,10 @@
 /*
- * ducklake_table.cpp -- Table lifecycle: AM handler + DDL event triggers.
+ * ducklake_table.cpp -- Ducklake table in Postgres interface
  *
- * @scope extension: ducklake table AM handler, DDL event triggers
- *   (ducklake_create_table_trigger, ducklake_drop_table_trigger,
- *   ducklake_alter_table_trigger, ducklake_comment_trigger), EnsureDuckLakeTable
- * @scope duckdb-instance: SyncNewTables, SyncDroppedTables (snapshot sync)
- *
- * Provides the PostgreSQL TableAM implementation for DuckLake tables and
- * the DDL event triggers that synchronize table CREATE/DROP/ALTER from
- * PostgreSQL to DuckDB.
+ * - Dummy table AM handler
+ * - DDL handlers that deparse commands to DuckDB execution
+ * - Snapshot sync routines that capture changes of ducklake metadata
+ * tabke and notify DuckDB
  */
 
 #include "pgducklake/catalog_sync.hpp"
@@ -67,30 +63,15 @@ extern "C" {
 
 PG_FUNCTION_INFO_V1(ducklake_am_handler);
 
-/* ------------------------------------------------------------------------
- * Slot related callbacks for duckdb AM
- * ------------------------------------------------------------------------
- */
-
 static const TupleTableSlotOps *
 ducklake_slot_callbacks(Relation /*relation*/) {
-	/*
-	 * Here we would most likely want to invent your own set of slot
-	 * callbacks for our AM. For now we just use the minimal tuple slot, we
-	 * only implement this function to make sure ANALYZE does not fail.
-	 */
+	/* Minimal tuple slot only, so that ANALYZE does not fail. */
 	return &TTSOpsMinimalTuple;
 }
 
-/* ------------------------------------------------------------------------
- * Table Scan Callbacks for duckdb AM
- * ------------------------------------------------------------------------
- */
-
 typedef struct DuckdbScanDescData {
-	TableScanDescData rs_base; /* AM independent part of the descriptor */
+	TableScanDescData rs_base;
 
-	/* Add more fields here as needed by the AM. */
 } DuckdbScanDescData;
 typedef struct DuckdbScanDescData *DuckdbScanDesc;
 
@@ -123,22 +104,12 @@ duckdb_scan_rescan(TableScanDesc /*sscan*/, ScanKey /*key*/, bool /*set_params*/
 
 static bool
 duckdb_scan_getnextslot(TableScanDesc /*sscan*/, ScanDirection /*direction*/, TupleTableSlot *slot) {
-	// Real user-issued SELECTs on a ducklake table are intercepted by the
-	// planner hook and never reach the AM-level scan. The only code paths
-	// that do reach here are PG-internal scans -- ALTER TABLE rewrite,
-	// ANALYZE, CLUSTER, REINDEX, etc. -- all of which can safely treat the
-	// table as empty: the row data lives in DuckLake, not in PG heap, and
-	// type/metadata changes are synchronized via the DDL event triggers.
-	// Returning false signals "end of scan" and lets ALTER TABLE complete
-	// without trying to copy nonexistent heap pages.
+	// User SELECTs are intercepted by the planner hook; only PG-internal
+	// scans (ALTER TABLE rewrite, ANALYZE, ...) reach here, and they can
+	// treat the table as empty: row data lives in DuckLake, not PG heap.
 	ExecClearTuple(slot);
 	return false;
 }
-
-/* ------------------------------------------------------------------------
- * Index Scan Callbacks for duckdb AM
- * ------------------------------------------------------------------------
- */
 
 static IndexFetchTableData *
 duckdb_index_fetch_begin(Relation /*rel*/) {
@@ -160,12 +131,6 @@ duckdb_index_fetch_tuple(struct IndexFetchTableData * /*scan*/, ItemPointer /*ti
                          TupleTableSlot * /*slot*/, bool * /*call_again*/, bool * /*all_dead*/) {
 	NOT_IMPLEMENTED();
 }
-
-/* ------------------------------------------------------------------------
- * Callbacks for non-modifying operations on individual tuples for
- * duckdb AM.
- * ------------------------------------------------------------------------
- */
 
 static bool
 duckdb_fetch_row_version(Relation /*relation*/, ItemPointer /*tid*/, Snapshot /*snapshot*/, TupleTableSlot * /*slot*/) {
@@ -191,11 +156,6 @@ static TransactionId
 duckdb_index_delete_tuples(Relation /*rel*/, TM_IndexDeleteOp * /*delstate*/) {
 	NOT_IMPLEMENTED();
 }
-
-/* ----------------------------------------------------------------------------
- *  Functions for manipulations of physical tuples for duckdb AM.
- * ----------------------------------------------------------------------------
- */
 
 static void
 duckdb_tuple_insert(Relation /*relation*/, TupleTableSlot * /*slot*/, CommandId /*cid*/, int /*options*/,
@@ -260,11 +220,6 @@ static void
 duckdb_finish_bulk_insert(Relation /*relation*/, int /*options*/) {
 	/* No-op */
 }
-
-/* ------------------------------------------------------------------------
- * DDL related callbacks for duckdb AM.
- * ------------------------------------------------------------------------
- */
 
 #if PG_VERSION_NUM >= 160000
 
@@ -346,10 +301,8 @@ duckdb_index_build_range_scan(Relation /*tableRelation*/, Relation /*indexRelati
                               bool /*allow_sync*/, bool /*anyvisible*/, bool /*progress*/,
                               BlockNumber /*start_blockno*/, BlockNumber /*numblocks*/, IndexBuildCallback /*callback*/,
                               void * /*callback_state*/, TableScanDesc /*scan*/) {
-	// Same reasoning as duckdb_scan_getnextslot: PG-internal index-build
-	// scans treat the ducklake table as empty. CREATE INDEX on a
-	// ducklake-AM table is a no-op at the PG side; ducklake_sorted index
-	// metadata is built via the DDL trigger.
+	// As in duckdb_scan_getnextslot, PG-internal index builds treat the
+	// table as empty; index metadata is synced via the DDL trigger.
 	return 0;
 }
 
@@ -359,34 +312,17 @@ duckdb_index_validate_scan(Relation /*tableRelation*/, Relation /*indexRelation*
 	NOT_IMPLEMENTED();
 }
 
-/* ------------------------------------------------------------------------
- * Miscellaneous callbacks for the duckdb AM
- * ------------------------------------------------------------------------
- */
-
 static uint64
 duckdb_relation_size(Relation /*rel*/, ForkNumber /*forkNumber*/) {
-	/*
-	 * For now we just return 0. We should probably want return something more
-	 * useful in the future though.
-	 */
 	return 0;
 }
 
-/*
- * Check to see whether the table needs a TOAST table.
- */
 static bool
 duckdb_relation_needs_toast_table(Relation /*rel*/) {
 
 	/* we don't need toast, because everything is stored in duckdb */
 	return false;
 }
-
-/* ------------------------------------------------------------------------
- * Planner related callbacks for the duckdb AM
- * ------------------------------------------------------------------------
- */
 
 static void
 duckdb_estimate_rel_size(Relation /*rel*/, int32 *attr_widths, BlockNumber *pages, double *tuples, double *allvisfrac) {
@@ -400,11 +336,6 @@ duckdb_estimate_rel_size(Relation /*rel*/, int32 *attr_widths, BlockNumber *page
 	if (allvisfrac)
 		*allvisfrac = 0;
 }
-
-/* ------------------------------------------------------------------------
- * Executor related callbacks for the duckdb AM
- * ------------------------------------------------------------------------
- */
 
 #if PG_VERSION_NUM >= 180000
 
@@ -438,11 +369,6 @@ duckdb_scan_sample_next_tuple(TableScanDesc /*scan*/, SampleScanState * /*scanst
 	NOT_IMPLEMENTED();
 }
 
-/* ------------------------------------------------------------------------
- * Definition of the duckdb table access method.
- * ------------------------------------------------------------------------
- */
-
 static const TableAmRoutine ducklake_methods = {.type = T_TableAmRoutine,
 
                                                 .slot_callbacks = ducklake_slot_callbacks,
@@ -456,7 +382,6 @@ static const TableAmRoutine ducklake_methods = {.type = T_TableAmRoutine,
                                                 .scan_set_tidrange = NULL,
                                                 .scan_getnextslot_tidrange = NULL,
 
-                                                /* these are common helper functions */
                                                 .parallelscan_estimate = table_block_parallelscan_estimate,
                                                 .parallelscan_initialize = table_block_parallelscan_initialize,
                                                 .parallelscan_reinitialize = table_block_parallelscan_reinitialize,
@@ -523,7 +448,7 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	if (pgducklake::syncing_from_metadata)
 		PG_RETURN_NULL();
 
-	if (!CALLED_AS_EVENT_TRIGGER(fcinfo)) /* internal error */
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
 		elog(ERROR, "not fired by event trigger manager");
 
 	EventTriggerData *trigger_data = (EventTriggerData *)fcinfo->context;
@@ -548,7 +473,6 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	if (ret != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: error code %s", SPI_result_code_string(ret));
 
-	/* if we selected a row it was a duckdb table */
 	auto is_ducklake_table = SPI_processed > 0;
 	if (!is_ducklake_table) {
 		/* Reject variant columns on non-ducklake tables */
@@ -604,14 +528,11 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 		                                                        "access method")));
 	}
 
-	// Generate CREATE TABLE DDL for DuckDB
 	std::string create_table_ddl(pgducklake::Ruleutils().get_tabledef(relid));
 	elog(DEBUG1, "Creating DuckLake table: %s", create_table_ddl.c_str());
 
-	// Execute CREATE TABLE in DuckDB.
 	pgducklake::DuckDBQueryOrThrow(create_table_ddl);
 
-	// Handle CREATE TABLE AS (CTAS) - populate data via DuckDB
 	if (IsA(parsetree, CreateTableAsStmt) && !pgducklake::ctas_skip_data) {
 		auto ctas_stmt = castNode(CreateTableAsStmt, parsetree);
 		auto ctas_query = (Query *)ctas_stmt->query;
@@ -630,16 +551,13 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 	if (pgducklake::syncing_from_metadata)
 		PG_RETURN_NULL();
 
-	if (!CALLED_AS_EVENT_TRIGGER(fcinfo)) /* internal error */
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
 		elog(ERROR, "not fired by event trigger manager");
 
 	pgddb::SPIGuard<true> spi_guard;
 	SetConfigOption("search_path", "pg_catalog, pg_temp", PGC_USERSET, PGC_S_SESSION);
 
-	/*
-	 * Query DuckLake metadata to find tables that need to be dropped.
-	 * We can't use pg_class here since the tables are already dropped.
-	 */
+	/* Can't use pg_class here: the tables are already dropped. */
 	int ret = SPI_exec(R"(
 		SELECT cmds.schema_name, cmds.object_name
 		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
@@ -658,7 +576,6 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 		elog(ERROR, "SPI_exec failed: error code %s", SPI_result_code_string(ret));
 	}
 
-	// Drop corresponding DuckDB tables
 	for (uint64_t proc = 0; proc < SPI_processed; ++proc) {
 		HeapTuple tuple = SPI_tuptable->vals[proc];
 
@@ -748,7 +665,6 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 
 	Oid relid = DatumGetObjectId(relid_datum);
 
-	/* Generate DDL using the kernel's DuckdbRuleutils deparser */
 	std::string ddl_str;
 	if (IsA(parsetree, RenameStmt)) {
 		ddl_str = pgducklake::Ruleutils().get_rename_relationdef(relid, (RenameStmt *)parsetree);
@@ -780,7 +696,6 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 
 	CommentStmt *comment_stmt = (CommentStmt *)parsetree;
 
-	/* Only handle table and column comments */
 	if (comment_stmt->objtype != OBJECT_TABLE && comment_stmt->objtype != OBJECT_COLUMN)
 		PG_RETURN_NULL();
 
@@ -818,7 +733,6 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 	Datum subid_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 2, &isnull);
 	int32 objsubid = isnull ? 0 : DatumGetInt32(subid_datum);
 
-	/* Build DuckDB COMMENT SQL */
 	std::string comment_ddl;
 	std::string rel_name(pgddb_relation_name(relid));
 

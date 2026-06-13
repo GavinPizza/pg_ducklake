@@ -36,10 +36,7 @@ pg_vortex_version(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text("pg_vortex 0.1.0"));
 }
 
-// Marker stub: any direct call to a duckdb-only function falls through here
-// because the planner_hook should have offloaded the query to DuckDB. If we
-// reach this body, the offload check missed (e.g., the function was called
-// inside a context the walker doesn't traverse).
+// Stub for marker UDFs; reached only when the planner offload check missed.
 PG_FUNCTION_INFO_V1(duckdb_only_function);
 Datum
 duckdb_only_function(PG_FUNCTION_ARGS)

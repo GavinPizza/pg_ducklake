@@ -1,11 +1,5 @@
-// pg_vortex's planner hook. Modelled on
-// pg_duckdb/src/pgduckdb_hooks.cpp but stripped to a single
-// planner_hook that detects calls to pg_vortex.read_vortex via a tiny per-
-// extension OID cache and routes to pg_vortex::PlanNode; chains otherwise.
-// No ExecutorStart/Finish (no mixed-write tracking; read-only). No
-// ProcessUtility / emit_log (no DDL, no MotherDuck hints). No
-// ExplainOneQuery (EXPLAIN ANALYZE timings won't propagate to DuckDB; plain
-// EXPLAIN still works through the CustomScan's Explain callback).
+// pg_vortex's planner hook (stripped-down pg_duckdb/src/pgduckdb_hooks.cpp):
+// routes queries calling pg_vortex.read_vortex to PlanNode, chains otherwise.
 
 #include "duckdb.hpp"
 
@@ -38,11 +32,8 @@ namespace pg_vortex {
 
 static planner_hook_type prev_planner_hook = nullptr;
 
-// --- Per-extension OID cache ---
-//
-// We only need to know one OID: pg_vortex.read_vortex(text). The cache is
-// invalidated whenever the pg_extension catalog changes (so CREATE/DROP
-// EXTENSION pg_vortex re-resolves the OID on the next query).
+// OID cache for pg_vortex.read_vortex(text); invalidated via syscache
+// callback so CREATE/DROP EXTENSION re-resolves on the next query.
 struct VortexCache {
 	bool valid = false;
 	Oid extension_oid = InvalidOid;
@@ -56,8 +47,6 @@ InvalidateVortexCache(Datum /*arg*/, int /*cacheid*/, uint32 /*hashvalue*/) {
 	g_cache.valid = false;
 }
 
-// Look up read_vortex by name within the pg_vortex extension. Returns
-// InvalidOid if the extension is not installed or the function not found.
 static Oid
 FindReadVortexOid(Oid extension_oid) {
 	CatCList *catlist = SearchSysCacheList1(PROCNAMEARGSNSP, CStringGetDatum("read_vortex"));
@@ -87,8 +76,6 @@ RefreshVortexCache() {
 	}
 	g_cache.valid = true;
 }
-
-// --- Offload predicate ---
 
 static bool
 ContainsReadVortex(Node *node, void *context) {
@@ -125,8 +112,6 @@ ContainsReadVortex(Node *node, void *context) {
 #endif
 }
 
-// --- Planner hook ---
-
 static PlannedStmt *
 VortexPlannerHook_Cpp(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
 	RefreshVortexCache();
@@ -151,9 +136,8 @@ InitHooks() {
 	prev_planner_hook = planner_hook;
 	planner_hook = VortexPlannerHook;
 
-	// Invalidate the OID cache on any pg_namespace change. Creating or
-	// dropping the pg_vortex extension touches the namespace, which is the
-	// cheapest signal PG offers without a dedicated pg_extension syscache.
+	// CREATE/DROP EXTENSION touches pg_namespace; there is no dedicated
+	// pg_extension syscache, so NAMESPACENAME is the cheapest invalidation signal.
 	CacheRegisterSyscacheCallback(NAMESPACENAME, InvalidateVortexCache, (Datum)0);
 }
 

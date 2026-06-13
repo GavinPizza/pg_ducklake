@@ -20,9 +20,8 @@ PG_VORTEX_LINK_FLAGS = $(FULL_DUCKDB_LIB) -lcurl -lssl -lcrypto -lstdc++ -llz4
 ifeq ($(shell uname -s),Linux)
 	PG_VORTEX_LINK_FLAGS += -Wl,--exclude-libs,ALL
 endif
-# duckdb-vortex's Rust deps reference macOS Security framework symbols.
-# cmake propagates them via target_link_libraries; our bundle (object
-# extraction) loses that metadata, so add them here.
+# duckdb-vortex's Rust deps need macOS Security/CoreFoundation; the
+# object-extraction bundle loses cmake's link metadata, so add them here.
 ifeq ($(shell uname -s),Darwin)
 	PG_VORTEX_LINK_FLAGS += -framework Security -framework CoreFoundation
 endif
@@ -38,10 +37,7 @@ COMPILER_FLAGS = -Wno-sign-compare -Wshadow -Wswitch -Wunused-parameter -Wunreac
 
 override PG_CPPFLAGS += -Iinclude $(PGDDB_INCLUDE) $(PGDDB_DUCKDB_INCLUDE) -isystem $(INCLUDEDIR_SERVER) ${COMPILER_FLAGS}
 override PG_CXXFLAGS += -std=c++17 ${COMPILER_FLAGS} -Wno-register
-# Same override pg_duckdb applies: the vendored pg_ruleutils_*.c files
-# inherit PG's declaration-after-statement check, and with -Werror that
-# becomes fatal. We don't care about C-style strictness for the
-# Postgres-vendored helpers.
+# Vendored pg_ruleutils_*.c are not declaration-after-statement clean.
 override PG_CFLAGS += -Wno-declaration-after-statement
 
 SHLIB_LINK += $(PG_VORTEX_LINK_FLAGS)
@@ -51,9 +47,7 @@ REGRESS_OPTS = --temp-instance=./tmp_check --temp-config=$(CURDIR)/regression.co
 
 include $(ROOT_DIR)/Makefile.pgxs
 
-# Extension .o files depend on the duckdb submodule HEAD marker (defined in
-# the root Makefile) so first-time builds init the submodule before
-# compiling.
+# First-time builds must init the duckdb submodule before compiling.
 $(OBJS): $(PGDDB_DIR)/.git/modules/duckdb/HEAD
 
 $(shlib): $(FULL_DUCKDB_LIB) $(OBJS)

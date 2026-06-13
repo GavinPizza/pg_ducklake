@@ -1,29 +1,6 @@
-# End-to-end harness for pg_ducklake.
-#
-# What it does:
-#   - boots a throwaway PostgreSQL cluster (initdb + pg_ctl) with
-#     shared_preload_libraries='pg_ducklake', resolved via $PG_CONFIG
-#   - creates one fresh database (+ CREATE EXTENSION pg_ducklake) per test
-#   - optionally starts a dockerized MinIO server and parametrizes tests
-#     over local vs s3:// table storage (the `lake` fixture)
-#   - connects through real clients: asyncpg (PG wire, extended protocol)
-#     and the duckdb python client (external DuckLake reader/writer via
-#     ATTACH 'ducklake:postgres:...')
-#
-# Environment knobs:
-#   PG_CONFIG          pg_config of the install tree with pg_ducklake
-#                      installed (default: `pg_config` on PATH)
-#   E2E_MINIO_IMAGE    docker image for MinIO (default: minio/minio:latest)
-#   MINIO_ENDPOINT     use an already-running S3 server instead of docker,
-#                      host:port (with MINIO_ACCESS_KEY/MINIO_SECRET_KEY,
-#                      both default 'minioadmin')
-#   E2E_REQUIRE_S3=1   make s3-dependent tests fail instead of skip when
-#                      docker / MinIO / httpfs are unavailable
-#
-# Requirements honesty: httpfs is NOT statically bundled into pg_ducklake,
-# so the first s3:// access INSTALLs it from extensions.duckdb.org into the
-# postgres OS user's duckdb extension dir (cached afterwards). s3 tests and
-# duckdb-client tests therefore need network access on first run.
+# E2E harness: throwaway PG cluster (via $PG_CONFIG), fresh db per test, and
+# optional MinIO via docker or MINIO_ENDPOINT (E2E_REQUIRE_S3=1: fail, not skip).
+# httpfs is not bundled, so the first s3:// access INSTALLs it (needs network).
 
 import os
 import shutil
@@ -124,10 +101,8 @@ class PgCluster:
         return os.path.join(self.bindir, name)
 
     def subprocess_env(self):
-        # Drop AWS_* so DuckDB's credential chain cannot accidentally pick
-        # up the developer's real credentials: "no DuckDB secret" must
-        # deterministically mean "no S3 access" in the tests. Drop PG* too
-        # (except PG_CONFIG) so psql/pg_ctl see only our explicit flags.
+        # Drop AWS_* so "no DuckDB secret" deterministically means "no S3
+        # access"; drop PG* (except PG_CONFIG) so psql/pg_ctl see only our flags.
         return {
             k: v
             for k, v in os.environ.items()
@@ -157,10 +132,8 @@ class PgCluster:
             # No background flush/compaction: tests drive maintenance
             # explicitly so file layouts stay deterministic.
             conf.write("ducklake.maintenance_enabled = false\n")
-            # No max_parallel_workers=0 workaround here (unlike
-            # test/regression/regression.conf): the kernel defaults DuckDB
-            # to a single thread, so recursive PostgresTableReader scans run
-            # on the backend's main thread and PG parallelism is safe.
+            # No max_parallel_workers=0 workaround needed (unlike regression.conf):
+            # the kernel defaults DuckDB to one thread, so PG parallelism is safe.
             conf.write("fsync = off\n")
             conf.write("logging_collector = off\n")
             conf.write("log_destination = stderr\n")
@@ -440,13 +413,9 @@ class Lake:
         return conn
 
     async def configure_s3(self, conn):
-        """Make this backend's DuckDB instance able to read/write the
-        MinIO bucket, and point new tables at it.
-
-        DuckDB secrets are per-DuckDB-instance and non-persistent, so this
-        must run on every new PG connection (and again after
-        ducklake.recycle_ddb()).
-        """
+        """Configure this backend's DuckDB for the MinIO bucket. Secrets are
+        per-DuckDB-instance and non-persistent: rerun on every new PG
+        connection and again after ducklake.recycle_ddb()."""
         # httpfs is not bundled into pg_ducklake; INSTALL downloads it on
         # first use (cached in the duckdb extension dir afterwards).
         try:
@@ -464,12 +433,9 @@ class Lake:
         )
 
     def psql(self, *statements):
-        """Simple-protocol escape hatch (each statement via psql -c).
-
-        Useful for ducklake.* SETOF duckdb_row functions whose result shape
-        cannot be described under the extended protocol that asyncpg uses.
-        S3 configuration is prepended when applicable.
-        """
+        """Simple-protocol escape hatch (each statement via psql -c): needed
+        for SETOF duckdb_row results that asyncpg's extended protocol cannot
+        describe. S3 configuration is prepended when applicable."""
         if self.s3:
             statements = (
                 "SELECT ducklake.duckdb_raw_query('INSTALL httpfs')",
@@ -509,15 +475,8 @@ class Lake:
 @pytest.fixture(params=["local", "s3"])
 def lake(request, cluster, db):
     """The same lake-backed database, parametrized over storage backends.
-
-    The 'local' variant uses the default DATA_PATH under $PGDATA (no MinIO
-    involved at all) with the product's default config, where small writes
-    stay inlined in PG heap metadata tables. The 's3' variant stores table
-    data in a per-test MinIO bucket and disables data inlining so every
-    write genuinely performs S3 I/O (otherwise inlined rows would make the
-    whole s3 run pass without ever touching the bucket); it skips when no
-    S3 infrastructure is available.
-    """
+    The 's3' variant disables data inlining so every write genuinely performs
+    S3 I/O (inlined rows would otherwise never touch the bucket)."""
     s3ctx = request.getfixturevalue("s3") if request.param == "s3" else None
     if s3ctx:
         # catalog option, persisted in metadata: applies to all backends of

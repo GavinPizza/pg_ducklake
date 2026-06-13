@@ -1,9 +1,3 @@
-/*
- * pgddb_table_am.cpp -- hook + wrappers for resolving a table AM to its
- * DuckDB catalog name. Each consumer sets table_am_get_name_hook once in
- * _PG_init; the lib deparser and planner walker call TableAmGetName.
- */
-
 #include "pgddb/pgddb_table_am.hpp"
 
 extern "C" {

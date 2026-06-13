@@ -1,18 +1,11 @@
-# Root Makefile. Three roles (plus Makefile.pgxs, the shared PGXS include):
-#
-# 1. Delegating: `make <extension>/<target>` forwards to
-#    <extension>/Makefile via $(MAKE) -C. Extensions live at pg_duckdb/,
-#    pg_ducklake/, and examples/pg_vortex/.
-# 2. Kernel source list: extension Makefiles `include` this file to pull
-#    in PGDDB_INCLUDE / PGDDB_OBJS / PGDDB_DUCKDB_INCLUDE. They append
-#    PGDDB_OBJS to OBJS so the kernel (libpgduckdb/) gets bundled into
-#    their dylib.
-# 3. DuckDB submodule + build. Each extension's EXTENSION_CONFIGS produces
-#    its own libduckdb_bundle.a in a tagged build/<type>-<tag>/ subdir;
-#    that .a is statically linked into the extension's .so. We never publish
-#    libduckdb.so at $(PG_LIB), so extensions can't overwrite each other's
-#    runtime duckdb. cmake is driven directly (duckdb's `make release` /
-#    `make bundle-library` hard-code build/release/ so they can't share).
+# Root Makefile: libpgduckdb kernel source list, DuckDB submodule build, and
+# top-level targets. Extension Makefiles set ROOT_DIR and `include` this file,
+# then append PGDDB_OBJS to OBJS to bundle the kernel into their .so.
+
+# `all` comes from PGXS in extension dirs and from the top-level section below.
+.DEFAULT_GOAL := all
+
+# --- libpgduckdb kernel ---
 
 PGDDB_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PGDDB_INCLUDE := -I$(PGDDB_DIR)/libpgduckdb/include
@@ -24,17 +17,12 @@ PGDDB_SRCS := $(PGDDB_CPP_SRCS) $(PGDDB_C_SRCS)
 PGDDB_OBJS := $(PGDDB_CPP_SRCS:.cpp=.o) $(PGDDB_C_SRCS:.c=.o)
 
 # --- DuckDB submodule build ---
+# Each extension's EXTENSION_CONFIGS gets its own libduckdb_bundle.a in a
+# tagged build dir, statically linked into the extension's .so.
 
-# set to `make` to disable ninja
 DUCKDB_GEN ?= ninja
-# used to know what version of extensions to download
 DUCKDB_VERSION = v1.5.3
-# duckdb build tweaks
-DUCKDB_CMAKE_VARS = -DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0 -DOVERRIDE_GIT_DESCRIBE=v1.5.3
-# set to 1 to disable asserts in DuckDB. This is particularly useful in combinition with MotherDuck.
-# When asserts are enabled the released motherduck extension will fail some of
-# those asserts. By disabling asserts it's possible to run a debug build of
-# DuckDB agains the release build of MotherDuck.
+DUCKDB_CMAKE_VARS = -DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0 -DOVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION)
 DUCKDB_DISABLE_ASSERTIONS ?= 0
 
 DUCKDB_BUILD_CXX_FLAGS=
@@ -55,17 +43,13 @@ ifeq ($(DUCKDB_GEN), ninja)
 	DUCKDB_CMAKE_FORCE_COLOR := -DFORCE_COLORED_OUTPUT=1
 endif
 
-# Per-extension build dir, keyed by the EXTENSION_CONFIGS content hash
-# (plus a human-readable basename prefix) so two extensions whose configs
-# happen to share a basename can still coexist, and re-pointing an
-# extension at a different config naturally lands in a new dir.
+# Absolute path to the extension's *_extensions.cmake; empty = no third-party
+# duckdb extensions baked in.
+EXTENSION_CONFIGS ?=
+
 DUCKDB_BUILD_TAG := $(if $(EXTENSION_CONFIGS),$(basename $(notdir $(EXTENSION_CONFIGS)))-$(shell shasum -a 256 '$(EXTENSION_CONFIGS)' 2>/dev/null | cut -c1-8),default)
 DUCKDB_BUILD_DIR := $(PGDDB_DIR)/duckdb/build/$(DUCKDB_BUILD_TYPE)-$(DUCKDB_BUILD_TAG)
 FULL_DUCKDB_LIB = $(DUCKDB_BUILD_DIR)/libduckdb_bundle.a
-
-# Extension-provided absolute path to its *_extensions.cmake. Empty = no
-# third-party duckdb extensions baked in.
-EXTENSION_CONFIGS ?=
 
 .PHONY: duckdb clean-duckdb
 
@@ -74,6 +58,10 @@ duckdb: $(FULL_DUCKDB_LIB)
 $(PGDDB_DIR)/.git/modules/duckdb/HEAD:
 	git -C $(PGDDB_DIR) submodule update --init --recursive
 
+# The bundling steps inline duckdb's bundle-setup / bundle-library-o targets
+# (duckdb's own hard-code build/release/, so per-extension dirs can't use
+# them). EXTENSION_BUNDLE_EXCLUDE keeps force-load'd extensions (e.g.
+# pg_ducklake's ducklake) out of the bundle to avoid duplicate symbols.
 $(FULL_DUCKDB_LIB): $(PGDDB_DIR)/.git/modules/duckdb/HEAD $(EXTENSION_CONFIGS)
 	mkdir -p $(DUCKDB_BUILD_DIR)/vcpkg_installed
 	cmake -S $(PGDDB_DIR)/duckdb -B $(DUCKDB_BUILD_DIR) \
@@ -86,23 +74,6 @@ $(FULL_DUCKDB_LIB): $(PGDDB_DIR)/.git/modules/duckdb/HEAD $(EXTENSION_CONFIGS)
 		-DDUCKDB_EXPLICIT_VERSION="" \
 		-DCMAKE_BUILD_TYPE=$(DUCKDB_CMAKE_BUILD_TYPE)
 	cmake --build $(DUCKDB_BUILD_DIR) --config $(DUCKDB_CMAKE_BUILD_TYPE)
-	@# Inline of duckdb's bundle-setup + bundle-library-o targets (see
-	@# duckdb/Makefile `bundle-setup` / `bundle-library-o` /
-	@# `bundle-library`). Future duckdb-submodule bumps should diff
-	@# against those targets to catch divergence.
-	@#
-	@# We whitelist archive patterns rather than globbing extension/*/*.a:
-	@# lib*_extension.a is the loader stub each extension emits, and
-	@# lib*_duckdb.a is the auxiliary archive pattern duckdb-vortex (and
-	@# similar Rust-backed extensions) drop alongside it. The narrow
-	@# whitelist avoids accidentally scooping up test fixtures cmake may
-	@# leave under extension/ in future versions.
-	@#
-	@# Extensions can set EXTENSION_BUNDLE_EXCLUDE = name1 name2 ... to keep
-	@# specific duckdb extensions out of the bundle. Useful when an extension
-	@# force-loads the standalone lib<name>_extension.a separately (e.g.
-	@# pg_ducklake) -- bundling it as well causes Linux ld to fail with
-	@# multiple-definition errors.
 	rm -f $(DUCKDB_BUILD_DIR)/libduckdb_bundle.a
 	rm -rf $(DUCKDB_BUILD_DIR)/bundle
 	mkdir -p $(DUCKDB_BUILD_DIR)/bundle
@@ -122,6 +93,19 @@ $(FULL_DUCKDB_LIB): $(PGDDB_DIR)/.git/modules/duckdb/HEAD $(EXTENSION_CONFIGS)
 clean-duckdb:
 	rm -rf $(PGDDB_DIR)/duckdb/build
 
-# Delegate make <extension>/<target> to <extension>/Makefile.
+# --- Top-level targets (skipped when included from an extension) ---
+
+ifndef ROOT_DIR
+
+# `make` / `make install` etc. from the repo root operate on pg_ducklake.
+PG_DUCKLAKE_TARGETS := all install installcheck check-regression check-isolation check-e2e format check-format clean clean-all
+
+.PHONY: $(PG_DUCKLAKE_TARGETS)
+$(PG_DUCKLAKE_TARGETS):
+	$(MAKE) -C pg_ducklake $@
+
+# make <extension>/<target>
 pg_duckdb/% pg_ducklake/% examples/%:
 	$(MAKE) -C $(@D) $(@F)
+
+endif

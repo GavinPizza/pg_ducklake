@@ -1,28 +1,9 @@
 /*
  * maintenance_worker.cpp -- Background maintenance worker for DuckLake.
  *
- * @scope backend: register shmem hooks and launcher background worker
- *
- * Implements a launcher/worker architecture modeled on PostgreSQL's
- * autovacuum.  The launcher wakes periodically, scans pg_database,
- * and spawns a short-lived worker for each database.  Each worker
- * runs a two-phase maintenance pipeline:
- *
- * Phase 1 -- in-process (must run inside PG backend):
- *   - flush_inlined_data   (per-table, GUC-gated)
- *   - expire_snapshots     (catalog-level, GUC-gated)
- *
- * Phase 2 -- compaction (manipulates immutable parquet files):
- *   - rewrite_data_files   (per-table)
- *   - merge_adjacent_files (per-table)
- *   - cleanup_old_files    (catalog-level, GUC-gated)
- *
- * The two-phase split prepares for a future external DuckDB executor:
- * compaction operations only need file access + metadata, so they can
- * be offloaded to a standalone DuckDB process that reads/writes parquet
- * files and then reports metadata changes back to PG.  Phase 1 operations
- * access PG-resident data (inline tables, snapshot metadata) and must
- * stay in-process.
+ * Autovacuum-style launcher/worker: the launcher scans pg_database and
+ * spawns a short-lived worker per database, which runs in-process
+ * maintenance (flush, expire) then compaction (rewrite, merge, cleanup).
  */
 
 #include "pgducklake/constants.hpp"
@@ -163,9 +144,6 @@ Q(const std::string &s) {
 
 /* ----------------------------------------------------------------
  * Phase 1: in-process maintenance (needs PG backend)
- *
- * These operations access PG-resident data or metadata tables that
- * cannot be reached by an external process.
  * ---------------------------------------------------------------- */
 
 /* Flush inlined data from PG metadata tables to parquet files. */
@@ -199,18 +177,9 @@ MaintainCatalogInProcess() {
 }
 
 /* ----------------------------------------------------------------
- * Phase 2: compaction (manipulates immutable parquet files)
- *
- * These operations read/write/delete parquet files on storage and
- * update metadata.  They only need the DuckLake catalog connection
- * string and file access -- no PG-resident data.
- *
- * TODO: offload to an external DuckDB process.  The external executor
- * would receive the ducklake metadata connection info, execute
- * rewrite/merge/cleanup via the DuckDB CLI or embedded API, and
- * report file-level changes back.  The maintenance worker would then
- * commit the metadata updates inside PG.  This avoids holding a PG
- * backend slot during potentially long-running file I/O.
+ * Phase 2: compaction (manipulates immutable parquet files).
+ * TODO: offload to an external DuckDB process -- these only need the
+ * catalog connection string and file access, not a PG backend.
  * ---------------------------------------------------------------- */
 
 /* Rewrite data files (remove deleted rows) + merge small files. */
@@ -220,7 +189,6 @@ CompactTable(const char *schema_name, const char *table_name) {
 	std::string schema(schema_name);
 	std::string table(table_name);
 
-	/* Rewrite: purge deleted rows from data files */
 	{
 		std::string query = "SELECT * FROM ducklake_rewrite_data_files(" + Q(db) + ", " + Q(table) +
 		                    ", schema=" + Q(schema) + ", delete_threshold => " +
@@ -233,7 +201,6 @@ CompactTable(const char *schema_name, const char *table_name) {
 		}
 	}
 
-	/* Merge: consolidate small adjacent files */
 	{
 		std::string query =
 		    "SELECT * FROM ducklake_merge_adjacent_files(" + Q(db) + ", " + Q(table) + ", schema=" + Q(schema) + ")";
@@ -296,10 +263,6 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 	char **schemas = nullptr;
 	char **tables = nullptr;
 
-	/*
-	 * Check whether pg_ducklake is installed in this database.
-	 * If not, release our slot and exit immediately.
-	 */
 	StartTransactionCommand();
 	SPI_connect();
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -353,11 +316,7 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 		CommitTransactionCommand();
 	}
 
-	/*
-	 * Phase 1: in-process maintenance.
-	 * Flush inlined data per table, then expire snapshots.
-	 * These must run inside the PG backend.
-	 */
+	/* Phase 1: in-process maintenance (must run inside the PG backend). */
 	for (int i = 0; i < ntables; i++) {
 		CHECK_FOR_INTERRUPTS();
 
@@ -416,16 +375,7 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 		CommitTransactionCommand();
 	}
 
-	/*
-	 * Phase 2: compaction.
-	 * Rewrite + merge per table, then cleanup old files.
-	 *
-	 * TODO: these operations only manipulate immutable parquet files and
-	 * metadata.  They could be dispatched to an external DuckDB process
-	 * (CLI or embedded) that connects to the ducklake catalog, performs
-	 * file I/O outside the PG backend, and reports metadata changes back.
-	 * This would free the PG backend slot during long-running compaction.
-	 */
+	/* Phase 2: compaction. TODO: offload to an external DuckDB process. */
 	for (int i = 0; i < ntables; i++) {
 		CHECK_FOR_INTERRUPTS();
 
@@ -486,7 +436,6 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 		CommitTransactionCommand();
 	}
 
-	/* Free table list */
 	for (int i = 0; i < ntables; i++) {
 		pfree(schemas[i]);
 		pfree(tables[i]);
@@ -533,7 +482,6 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 		if (!pgducklake::maintenance_enabled)
 			continue;
 
-		/* Query pg_database for connectable, non-template databases */
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
 		SPI_connect();
@@ -547,11 +495,8 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 				Datum d = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
 				Oid db_oid = DatumGetObjectId(d);
 
-				/*
-				 * Pre-claim a shmem slot before spawning so that the next
-				 * loop iteration (or launcher cycle) sees the slot as in-use
-				 * even before the worker process starts.
-				 */
+				/* Pre-claim a shmem slot so it reads as in-use before the
+				 * worker process actually starts. */
 				SpinLockAcquire(&MaintShmem->lock);
 				bool already_running = HasWorkerForDatabase(db_oid);
 				int active = CountActiveWorkers();
@@ -563,7 +508,6 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 				if (slot < 0)
 					continue;
 
-				/* Spawn a worker for this database */
 				BackgroundWorker worker;
 				MemSet(&worker, 0, sizeof(BackgroundWorker));
 				worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
@@ -576,7 +520,6 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 				worker.bgw_main_arg = ObjectIdGetDatum(db_oid);
 
 				if (!RegisterDynamicBackgroundWorker(&worker, NULL)) {
-					/* Registration failed -- release the pre-claimed slot */
 					SpinLockAcquire(&MaintShmem->lock);
 					ReleaseSlot(db_oid);
 					SpinLockRelease(&MaintShmem->lock);
@@ -605,7 +548,6 @@ namespace pgducklake {
 
 void
 InitMaintenanceWorker() {
-	/* Hook shmem_request + shmem_startup for shared worker state. */
 #if PG_VERSION_NUM >= 150000
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = ShmemRequest;
@@ -616,7 +558,6 @@ InitMaintenanceWorker() {
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = ShmemStartup;
 
-	/* Register the launcher as a static background worker. */
 	BackgroundWorker worker;
 	MemSet(&worker, 0, sizeof(BackgroundWorker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;

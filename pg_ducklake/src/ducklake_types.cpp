@@ -1,29 +1,3 @@
-/*
- * ducklake_types.cpp -- libpgddb type and row-deparse hooks.
- *
- * @scope backend: install GetPostgresDuckDBType + ConvertDuckToPostgresValue
- *                 + the row-deparse hooks (var_is_row, func_returns_row,
- *                 write_row_refname, is_fake_type)
- *
- * Two related concerns live here:
- *
- * 1) DuckDB STRUCT/UNION/MAP values need to round-trip through PG as a
- *    real PG type. We map them to ducklake.duckdb_struct (a varlena
- *    passthrough type) and serialize via pgddb::ConvertToStringDatum.
- *
- * 2) DuckLake metadata functions (snapshots, table_info, flush_inlined_data,
- *    duckdb_query, ...) declare PG return type SETOF ducklake.duckdb_row.
- *    The deparser must turn a top-level Var of type duckdb_row into
- *    `<refname>.*` so DuckDB returns all underlying columns, and must
- *    suppress the spurious `::duckdb_row` / `::duckdb_struct` cast that
- *    the standard PG deparser would otherwise emit. Without these hooks
- *    `SELECT * FROM ducklake.duckdb_query('SELECT id,name FROM t')`
- *    returns a single STRUCT column instead of two scalar columns.
- *
- * All hooks chain to a previously-installed prev_hook so multiple libpgddb
- * consumers can coexist in the same backend.
- */
-
 #include "pgducklake/constants.hpp"
 #include "pgducklake/ducklake_types.hpp"
 
@@ -49,6 +23,9 @@ extern "C" {
 
 #include "pgddb/pgddb_ruleutils.h"
 }
+
+#include "pgddb/pgddb_subscript.h"
+#include "pgddb/utility/cpp_wrapper.hpp"
 
 namespace pgducklake {
 
@@ -342,9 +319,6 @@ InitTypeHooks() {
 }
 
 } // namespace pgducklake
-
-#include "pgddb/pgddb_subscript.h"
-#include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 

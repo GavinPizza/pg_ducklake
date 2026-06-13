@@ -1,12 +1,5 @@
 /*
  * catalog_sync.cpp -- Reverse sync framework: DuckDB metadata -> PG catalog.
- *
- * @scope backend: syncing_from_metadata guard bool
- * @scope duckdb-instance: ducklake_snapshot_trigger
- *
- * ducklake_snapshot_trigger fires on INSERT into ducklake.ducklake_snapshot
- * and calls all sync_handlers in order.  Add new handlers to the static
- * sync_handlers array.
  */
 
 #include "pgducklake/catalog_sync.hpp"
@@ -49,19 +42,12 @@ pgducklake::SyncHandler sync_handlers[] = {
 
 } // anonymous namespace
 
-/* ================================================================
- * Snapshot trigger
- * ================================================================ */
-
 extern "C" {
 
 /*
- * ducklake_snapshot_trigger -- AFTER INSERT trigger on ducklake.ducklake_snapshot.
- *
- * Detects tables created/dropped by external DuckDB clients (which write
- * directly to the ducklake metadata tables) and creates/drops corresponding
- * pg_class entries so the tables become visible from PostgreSQL.
- * Calls all sync_handlers in order.
+ * AFTER INSERT trigger on ducklake.ducklake_snapshot: reverse-syncs DDL made
+ * by external DuckDB clients (which write the metadata tables directly) into
+ * the PG catalog via sync_handlers.
  */
 DECLARE_PG_FUNCTION(ducklake_snapshot_trigger) {
 	if (!CALLED_AS_TRIGGER(fcinfo))
@@ -69,18 +55,13 @@ DECLARE_PG_FUNCTION(ducklake_snapshot_trigger) {
 
 	TriggerData *trigdata = (TriggerData *)fcinfo->context;
 
-	/* Skip sync when:
-	 *  - skip_snapshot_sync is set (direct insert / ExecuteCommit paths
-	 *    have no DDL changes to reverse-sync; running sync handlers on
-	 *    a DuckDB worker thread would also crash because PG's
-	 *    InterruptHoldoffCount is not thread-safe), or
-	 *  - enable_metadata_sync GUC is off (user opts out of the
-	 *    per-commit sync overhead when all DDL goes through PG). */
+	/* skip_snapshot_sync paths have no DDL to reverse-sync (and may run on a
+	 * DuckDB worker thread, where PG's InterruptHoldoffCount is not thread-safe);
+	 * enable_metadata_sync=off opts out of the per-commit sync overhead. */
 	if (pgducklake::skip_snapshot_sync || !pgducklake::enable_metadata_sync) {
 		return PointerGetDatum(trigdata->tg_trigtuple);
 	}
 
-	/* Extract snapshot_id from the NEW row */
 	bool isnull;
 	int64 snapshot_id = DatumGetInt64(SPI_getbinval(trigdata->tg_trigtuple, trigdata->tg_relation->rd_att, 1, &isnull));
 	if (isnull)

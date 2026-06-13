@@ -1,22 +1,5 @@
 /*
  * hooks.cpp -- Planner and utility hooks.
- *
- * @scope backend: install planner and utility hooks
- *
- * Installs pg_ducklake planner and utility hooks.
- *
- * Planner hook:
- * - rewrites variant -> / ->> operators into variant_extract() FuncExpr nodes
- *   so pg_duckdb deparses them as function calls, not operator syntax
- * - rewrites regclass overloads of ducklake functions into text-arg versions
- * - delegates INSERT UNNEST planning optimization to direct_insert
- *
- * Utility hook:
- * - catches explicit COMMIT utility statements and commits DuckDB early
- * - intercepts CREATE INDEX USING ducklake_sorted to set DuckLake sort order
- * - intercepts DROP INDEX on ducklake_sorted indexes to reset sort order
- * - detaches the DuckLake catalog on DROP EXTENSION pg_ducklake so that
- *   a subsequent CREATE EXTENSION can re-attach a fresh catalog
  */
 
 #include "pgducklake/constants.hpp"
@@ -97,8 +80,6 @@ struct VariantOpMutatorCtx {
 	Oid variant_type_oid;
 };
 
-/* Pre-scan: check if the query tree contains any OpExpr with a variant
- * left-arg. Returns true (stop walking) as soon as one is found. */
 static bool
 HasVariantOpWalker(Node *node, void *ctx_ptr) {
 	if (node == NULL)
@@ -129,15 +110,8 @@ HasVariantOpWalker(Node *node, void *ctx_ptr) {
 #endif
 }
 
-/*
- * Rewrite variant -> and ->> OpExpr nodes to variant_extract FuncExpr.
- *
- * DuckDB has no -> operator for VARIANT, so we convert:
- *   v -> 'key'  => pg_variant_extract_json(v, 'key')      (returns variant)
- *   v -> 0      => pg_variant_extract_json_idx(v, 0)       (returns variant)
- *   v ->> 'key' => pg_variant_extract(v, 'key')            (returns text)
- *   v ->> 0     => pg_variant_extract_idx(v, 0)             (returns text)
- */
+/* DuckDB has no -> / ->> for VARIANT: rewrite these OpExprs to the
+ * pg_variant_extract* FuncExpr stubs (-> keeps variant, ->> yields text). */
 static Node *
 RewriteVariantOpMutator(Node *node, void *ctx_ptr) {
 	if (node == NULL)
@@ -186,7 +160,6 @@ RewriteVariantOpMutator(Node *node, void *ctx_ptr) {
 		if (!OidIsValid(target_funcid))
 			goto default_mutate;
 
-		/* Recurse into children first */
 #if PG_VERSION_NUM >= 160000
 		arg1 = expression_tree_mutator(arg1, RewriteVariantOpMutator, ctx_ptr);
 		arg2 = expression_tree_mutator(arg2, RewriteVariantOpMutator, ctx_ptr);
@@ -238,12 +211,7 @@ RewriteVariantOperators(Query *parse) {
 #endif
 }
 
-/*
- * Rewrite a single FuncExpr from regclass to text-arg form.
- *
- * ducklake.list_files('t'::regclass)
- *   -> ducklake.list_files('public', 't')
- */
+/* Rewrite ducklake fn('t'::regclass) to the ('public', 't') text-arg overload. */
 void
 TryRewriteRegclassFunc(FuncExpr *func) {
 	if (list_length(func->args) < 1)
@@ -256,7 +224,6 @@ TryRewriteRegclassFunc(FuncExpr *func) {
 	if (regclass_const->consttype != REGCLASSOID)
 		return;
 
-	/* Confirm function belongs to the ducklake schema */
 	Oid ducklake_nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, true);
 	if (!OidIsValid(ducklake_nsp))
 		return;
@@ -288,7 +255,6 @@ TryRewriteRegclassFunc(FuncExpr *func) {
 
 	Oid relid = DatumGetObjectId(regclass_const->constvalue);
 
-	/* Validate that the target is a ducklake table */
 	Oid ducklake_am_oid = get_am_oid("ducklake", false);
 	Relation rel = relation_open(relid, AccessShareLock);
 	Oid rel_am = rel->rd_rel->relam;
@@ -298,11 +264,9 @@ TryRewriteRegclassFunc(FuncExpr *func) {
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
 		                errmsg("table \"%s\" is not a DuckLake table", get_rel_name(relid))));
 
-	/* Resolve OID to schema + table names */
 	char *schema_name = get_namespace_name(get_rel_namespace(relid));
 	char *table_name = get_rel_name(relid);
 
-	/* Build new args: (schema_text, table_text, remaining...) */
 	Const *schema_const = makeConst(TEXTOID, -1, InvalidOid, -1, CStringGetTextDatum(schema_name), false, false);
 	Const *table_const = makeConst(TEXTOID, -1, InvalidOid, -1, CStringGetTextDatum(table_name), false, false);
 
@@ -348,11 +312,8 @@ RewriteRegclassFunctions(Query *parse) {
 	return parse;
 }
 
-/*
- * Returns true if any RangeTblEntry in the query references a relation
- * whose table-AM is registered in libpgddb's per-process registry (i.e. a
- * ducklake-AM table for this consumer). Walks subqueries and expressions.
- */
+/* True if any RTE's relation has a table-AM registered in libpgddb's
+ * per-process registry (i.e. a ducklake-AM table for this consumer). */
 static bool
 QueryReferencesRegisteredTableAm(Node *node, void *context) {
 	if (node == NULL)
@@ -380,12 +341,6 @@ QueryReferencesRegisteredTableAm(Node *node, void *context) {
 #endif
 }
 
-/*
- * Returns true if the query references any ducklake-only function (either
- * directly via FuncExpr or as an aggregate via Aggref). Walks subqueries
- * and expressions; used as the second routing trigger alongside
- * QueryReferencesRegisteredTableAm.
- */
 static bool
 QueryReferencesDucklakeOnlyFunc(Node *node, void *context) {
 	if (node == NULL)
@@ -435,13 +390,8 @@ DucklakePlannerHook(Query *parse, const char *query_string, int cursor_options, 
 		pgducklake::RegisterForeignTablesInQuery(parse);
 	}
 
-	/*
-	 * If the query touches any ducklake-AM table, or references any
-	 * ducklake-only function (prosrc='duckdb_only_function'), route the
-	 * whole query to DuckDB via libpgddb's CustomScan. Otherwise fall
-	 * through to PG's standard planner (or whatever prev_planner_hook
-	 * points at).
-	 */
+	/* Any ducklake-AM table or ducklake-only function routes the whole
+	 * query to DuckDB via libpgddb's CustomScan. */
 	if (QueryReferencesRegisteredTableAm((Node *)parse, NULL) || QueryReferencesDucklakeOnlyFunc((Node *)parse, NULL) ||
 	    pgducklake::QueryReferencesDucklakeForeignTable(parse)) {
 		return pgddb::PlanNode(parse, cursor_options, /*throw_error=*/true);
@@ -464,15 +414,11 @@ ForceDuckDBCommitOnExplicitCommit() {
 	try {
 		pgducklake::DuckDBQueryOrThrow("COMMIT");
 	} catch (const std::exception &e) {
-		// Explicit PG COMMIT should always be mirrored to DuckDB COMMIT here.
 		ereport(ERROR, (errmsg("pg_ducklake commit hook failed to commit DuckDB: %s",
 		                       pgducklake::DuckDBErrorMessage(e).c_str())));
 	}
 }
 
-/*
- * Check whether the statement is DROP EXTENSION pg_ducklake.
- */
 bool
 IsDropDucklakeExtensionStmt(PlannedStmt *pstmt) {
 	if (!pstmt || !pstmt->utilityStmt || !IsA(pstmt->utilityStmt, DropStmt))
@@ -491,10 +437,6 @@ IsDropDucklakeExtensionStmt(PlannedStmt *pstmt) {
 	return false;
 }
 
-/*
- * Check whether a procedure OID belongs to the ducklake schema and was
- * registered via the ducklake_only_procedure C stub.
- */
 bool
 IsDucklakeOnlyProcedure(Oid funcid) {
 	Oid ducklake_nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, true);
@@ -516,25 +458,9 @@ IsDucklakeOnlyProcedure(Oid funcid) {
 	return strcmp(prosrc_str, "ducklake_only_procedure") == 0;
 }
 
-/*
- * CREATE VIEW pre-handler. When the view body references any duckdb-only
- * function returning a ducklake.duckdb_row (snapshots, table_info,
- * time_travel, ...), the standard PG view definition stores a single
- * duckdb_row column in pg_attribute, which loses the underlying schema
- * for introspection (\d, format_type, joins).
- *
- * Mirror pg_duckdb's EntrenchColumnsFromCall trick: plan the body via
- * pgddb::PlanNode to discover DuckDB's column names + types, deparse the
- * inner query into DuckDB SQL, and rewrite the view body to
- *   SELECT r['col1']::type1 AS col1, ... FROM ducklake.duckdb_query('<sql>') r
- * so PG sees explicit typed columns at CREATE VIEW time. The planner
- * routes SELECT-on-view back through the duckdb_query() stub, and
- * pgddb's strip_first_subscript hook (installed in ducklake_types.cpp)
- * renders r['col'] as r.col for DuckDB.
- *
- * As a side benefit, planning at CREATE VIEW time means an invalid
- * snapshot version errors immediately instead of at first SELECT.
- */
+/* CREATE VIEW over a duckdb_row-returning function would store a single
+ * duckdb_row column, losing the schema. Plan the body via DuckDB to learn
+ * the real columns and rewrite it to typed subscripts over duckdb_query(). */
 static void
 RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_string) {
 	if (!stmt || !stmt->query)
@@ -544,7 +470,6 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	if (!OidIsValid(duckdb_row_oid))
 		return;
 
-	// parse_analyze the view body so we can plan it.
 	RawStmt *rawstmt = makeNode(RawStmt);
 	rawstmt->stmt = stmt->query;
 	rawstmt->stmt_location = pstmt->stmt_location;
@@ -554,17 +479,14 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	if (!IsA(viewParse, Query) || viewParse->commandType != CMD_SELECT)
 		return;
 
-	// Cheap early-exit: only trigger when the target list is a single
-	// duckdb_row column. That's the case for `SELECT * FROM <duckdb-only-fn>`,
-	// which is what views over ducklake.snapshots / time_travel / table_info
-	// typically look like. Anything else falls through.
+	// Only trigger for a single duckdb_row target column, i.e.
+	// `SELECT * FROM <duckdb-only-fn>`.
 	if (list_length(viewParse->targetList) != 1)
 		return;
 	TargetEntry *tle = linitial_node(TargetEntry, viewParse->targetList);
 	if (exprType((Node *)tle->expr) != duckdb_row_oid)
 		return;
 
-	// Plan via DuckDB to learn the real column names + types.
 	Plan *plan = nullptr;
 	PG_TRY();
 	{
@@ -573,8 +495,7 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	}
 	PG_CATCH();
 	{
-		// Re-throw: this surfaces "No snapshot found at version N" etc. as
-		// CREATE VIEW errors (matching the test expectation for tt_v_bad).
+		// Surface plan errors (e.g. bad snapshot version) as CREATE VIEW errors.
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -586,12 +507,8 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	if (list_length(custom_scan->custom_scan_tlist) == 0)
 		return;
 
-	// Deparse the original view body to DuckDB SQL so duckdb_query() can
-	// execute it. pgddb_get_querydef handles the heavy lifting (function
-	// call rewrites, fake-type suppression, row expansion via the hooks).
 	char *duckdb_query_string = pgddb_get_querydef((Query *)copyObjectImpl(viewParse));
 
-	// Build wrapping SELECT with one typed subscript per DuckDB column.
 	StringInfo buf = makeStringInfo();
 	appendStringInfoString(buf, "SELECT ");
 	bool first = true;
@@ -634,9 +551,8 @@ DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only
 	if (IsA(parsetree, CallStmt)) {
 		CallStmt *call = castNode(CallStmt, parsetree);
 		if (call->funcexpr && IsDucklakeOnlyProcedure(call->funcexpr->funcid)) {
-			// Deparse the CALL to DuckDB SQL and run it. DuckDBQueryOrThrow expects a
-			// snapshot (set in the planner/executor); the utility hook fires before
-			// any planner pass, so push one for the duration of the call.
+			// DuckDBQueryOrThrow needs an active snapshot; the utility hook
+			// fires before any planner pass, so push one for the call.
 			std::string query = pgducklake::Ruleutils::get_calldef(call);
 			elog(DEBUG2, "[PGDuckLake] Executing CALL: %s", query.c_str());
 			PushActiveSnapshot(GetTransactionSnapshot());
@@ -673,7 +589,6 @@ DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only
 		}
 	}
 
-	/* CREATE INDEX ... USING ducklake_sorted */
 	if (IsA(parsetree, IndexStmt)) {
 		IndexStmt *idx = castNode(IndexStmt, parsetree);
 		if (idx->accessMethod && strcmp(idx->accessMethod, PGDUCKLAKE_SORTED_AM) == 0) {

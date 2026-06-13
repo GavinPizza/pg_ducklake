@@ -1,12 +1,3 @@
-/*
- * guc.cpp -- DuckLake GUC definitions and registration.
- *
- * @scope backend: register GUCs
- *
- * Defines extension-level configuration variables and registers them in
- * _PG_init().
- */
-
 #include "pgducklake/guc.hpp"
 #include "pgducklake/maintenance_worker.hpp"
 

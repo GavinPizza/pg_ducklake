@@ -1,20 +1,5 @@
 #pragma once
 
-/*
- * direct_insert.hpp
- *
- * Direct insert optimization for INSERT patterns into inlined DuckLake tables.
- *
- * Supported patterns:
- *   1. INSERT INTO <table> SELECT UNNEST($1), UNNEST($2), ...
- *      -- parameterized array bulk insert via SPI
- *   2. INSERT INTO <table> VALUES (const, ...), ...
- *      -- constant-value insert via table_multi_insert (heap AM)
- *
- * Both patterns bypass DuckDB execution and write directly to the inlined
- * data table when ducklake.enable_direct_insert = true.
- */
-
 #include "pgddb/pg/declarations.hpp"
 
 namespace pgducklake {
@@ -35,29 +20,15 @@ struct DirectInsertContext {
 	List *target_col_types; // List of Oid
 };
 
-// DirectInsertScanState is defined in the implementation file to avoid
-// requiring full CustomScanState definition
-
 PlannedStmt *TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params);
 
 /* Clear session-level caches.  Must be called on DuckDB instance recycle
  * (recycle_ddb) since table_id/schema_version may change. */
 void ResetDirectInsertCaches();
 
-/*
- * Shared-memory outcome counters for the direct-insert planner/exec path.
- *
- * Two axes:
- *   pattern = { matched_unnest, matched_values, unmatched }
- *   reason  = { ok, invalid_rte, no_inlined_table, schema_version_mismatch,
- *               col_types_unsupported, greater_than_limit,
- *               unsupported_insert_shape, retry }
- *
- * Matched rows always pair with reason=ok. Unmatched rows carry a specific
- * reason. Gating (non-INSERT / in tx block / GUC off / non-ducklake target)
- * does NOT bump counters -- those queries are filtered before direct-insert
- * even considers them.
- */
+/* Shared-memory outcome counters (pattern x reason).  Matched patterns always
+ * pair with reason=ok.  Gated queries (non-INSERT / tx block / GUC off /
+ * non-ducklake target) are filtered earlier and never bump counters. */
 enum DirectInsertPattern {
 	DI_PAT_MATCHED_UNNEST = 0,
 	DI_PAT_MATCHED_VALUES,
@@ -80,17 +51,14 @@ enum DirectInsertReason {
 /* Bump counter; safe to call from any backend after ShmemStartup ran. */
 void DirectInsertStatsBump(DirectInsertPattern pattern, DirectInsertReason reason);
 
-/* Zero all counters. */
 void DirectInsertStatsReset();
 
-/* Read a single cell; used by tests and the SRF. */
 uint64_t DirectInsertStatsRead(DirectInsertPattern pattern, DirectInsertReason reason);
 
 /* Snapshot the whole matrix under one spinlock acquisition.  The
  * destination must be at least DI_PAT_NUM * DI_R_NUM uint64_t's. */
 void DirectInsertStatsReadAll(uint64_t out[DI_PAT_NUM][DI_R_NUM]);
 
-/* Human-readable enum labels (lowercase, snake_case). */
 const char *DirectInsertPatternName(DirectInsertPattern pattern);
 const char *DirectInsertReasonName(DirectInsertReason reason);
 

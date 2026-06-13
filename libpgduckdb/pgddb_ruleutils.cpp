@@ -45,11 +45,9 @@ extern "C" {
 bool outermost_query = true;
 
 /*
- * Registered deparser hooks. Each extension point keeps a list; consumers append
- * to it in _PG_init via the Register_pgddb_* functions. The wrappers below apply
- * any generic kernel rule, then iterate the list until one hook handles the node.
- * The Register_* / wrapper symbols get C linkage + default visibility from their
- * declarations in pgddb_ruleutils.h (so a shared kernel can export them).
+ * Registered deparser hooks: extensions append in _PG_init; the wrappers below
+ * apply any generic kernel rule, then try hooks in registration order. C
+ * linkage + default visibility come from pgddb_ruleutils.h.
  */
 static std::vector<pgddb_function_name_hook_t> g_function_name_hooks;
 static std::vector<pgddb_relation_name_hook_t> g_relation_name_hooks;
@@ -62,8 +60,6 @@ static std::vector<pgddb_show_type_hook_t> g_show_type_hooks;
 static std::vector<pgddb_reconstruct_star_step_hook_t> g_reconstruct_star_step_hooks;
 static std::vector<pgddb_strip_first_subscript_hook_t> g_strip_first_subscript_hooks;
 static std::vector<pgddb_subscript_has_custom_alias_hook_t> g_subscript_has_custom_alias_hooks;
-// db_and_schema: object-scoped resolvers. Relations none claims fall back to the
-// kernel's "pgduckdb" storage catalog (see pgddb_db_and_schema_string).
 static std::vector<pgddb_db_and_schema_hook_t> g_db_and_schema_hooks;
 
 void
@@ -115,7 +111,7 @@ Register_pgddb_db_and_schema(pgddb_db_and_schema_hook_t fn) {
 	g_db_and_schema_hooks.push_back(fn);
 }
 
-/* --- dispatch wrappers called by the vendored deparser --- */
+/* Dispatch wrappers called by the vendored deparser. */
 
 char *
 pgddb_function_name(Oid funcid, bool *use_variadic_p) {
@@ -181,10 +177,9 @@ pgddb_replace_subquery_with_view(Query *query, StringInfo buf) {
 
 int
 pgddb_show_type(Const *constval, int original_showtype) {
-	// Generic kernel rule: suppress a bare ::numeric (no typmod) cast. DuckDB
-	// defaults plain ::numeric to DECIMAL(18,3), which overflows wide literals;
-	// without the cast DuckDB parses the literal as VARCHAR and coerces it to the
-	// target column type. Applies to every consumer, so it lives here, not a hook.
+	// Suppress bare ::numeric (no typmod) casts: DuckDB defaults plain ::numeric
+	// to DECIMAL(18,3), which overflows wide literals; without the cast the
+	// literal parses as VARCHAR and coerces to the target column type.
 	if (constval && constval->consttype == NUMERICOID && constval->consttypmod == -1) {
 		return -1;
 	}
@@ -202,11 +197,9 @@ pgddb_deparse_const_literal(Const *constval, StringInfo buf) {
 	if (constval->consttype != BYTEAOID) {
 		return false;
 	}
-	/* PG renders bytea as one whole-string hex literal ('\x68656c6c6f'),
-	 * but DuckDB's VARCHAR->BLOB cast decodes \xHH escapes per byte,
-	 * silently corrupting the value. Emit the per-byte form instead; the
-	 * ::bytea label appended by get_const_expr stays valid (bytea is a
-	 * BLOB alias in DuckDB). */
+	/* PG renders bytea as one whole-string hex literal ('\x68656c6c6f'), but
+	 * DuckDB's VARCHAR->BLOB cast decodes \xHH escapes per byte, so emit the
+	 * per-byte form; the appended ::bytea label stays valid (BLOB alias). */
 	bytea *vlena = DatumGetByteaPP(constval->constvalue);
 	const unsigned char *vdata = (const unsigned char *)VARDATA_ANY(vlena);
 	int vlen = VARSIZE_ANY_EXHDR(vlena);
@@ -250,10 +243,8 @@ pgddb_subscript_has_custom_alias(Plan *plan, List *rtable, Var *subscript_var, c
 	return false;
 }
 
-// Row reference expansion is generic (was identical in every consumer): emit
-// `<ref>.*` at the top level so DuckDB returns the underlying columns, else the
-// bare alias. Called by the deparser once a var_is_row / func_returns_row hook
-// has matched.
+// Emit `<ref>.*` at the top level so DuckDB returns the underlying columns,
+// else the bare alias. Called once a var_is_row / func_returns_row hook matched.
 char *
 pgddb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
 	appendStringInfoString(buf, quote_identifier(refname));
@@ -264,11 +255,6 @@ pgddb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
 	return refname;
 }
 
-/*
- * Generic table-AM name lookup: relam Oid -> pg_am.amname. Used by
- * pgddb_relation_name to feed pgddb_db_and_schema_hook so the consumer
- * can route by table-AM name. Returns NULL for relam == InvalidOid.
- */
 static const char *
 get_relation_table_am_name(Oid relam) {
 	if (relam == InvalidOid) {
@@ -285,18 +271,13 @@ get_relation_table_am_name(Oid relam) {
 }
 
 /*
- * pgddb_db_and_schema_string returns "db.schema" for the given PG schema and the
- * relation's table-AM name. Tries each object-scoped resolver in registration
- * order (each claims only its own table AM); relations that none claim fall
- * through to the optional catch-all resolver (typically a storage extension that
- * reads plain PG heap relations).
+ * "db.schema" for the given PG schema and table-AM name. Object-scoped
+ * resolvers are tried in registration order (each claims only its own table
+ * AM); unclaimed relations fall back to the kernel's always-attached
+ * "pgduckdb" storage catalog, a name internal to DuckDB and never user-visible.
  */
 const char *
 pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_am_name) {
-	// Try each object-scoped resolver (each claims only its own table AM). Any
-	// relation none claims is read through the kernel's "pgduckdb" storage
-	// catalog, which DuckDBManager::Initialize always registers + attaches. The
-	// "pgduckdb" name is internal to DuckDB and never user-visible.
 	const char *db_name = "pgduckdb";
 	const char *schema_name = postgres_schema_name;
 	for (auto fn : g_db_and_schema_hooks) {
@@ -400,13 +381,9 @@ pgddb_add_tablesample_percent(const char *tsm_name, StringInfo buf, int num_args
 }
 
 /*
- * DuckDB doesn't use an escape character in LIKE expressions by default.
- * https://github.com/duckdb/duckdb/blob/12183c444dd729daad5cb463e59f3112a806a88b/src/function/scalar/string/like.cpp#L152
- *
- * When converting a PG Query to DuckDB SQL we force the escape character
- * (`\`) via the xxx_escape function args. The vendored deparser uses these
- * three helpers for prefix/middle/suffix of every operator-expr so it can
- * wrap LIKE-ish expressions in an ESCAPE clause.
+ * DuckDB LIKE has no default escape character, so we force `\` via an ESCAPE
+ * clause: the vendored deparser calls these prefix/middle/suffix helpers for
+ * every operator-expr so LIKE-ish expressions can be wrapped.
  */
 
 struct PGDuckDBGetOperExprContext {
@@ -485,9 +462,8 @@ pg_duckdb_get_oper_expr_suffix(StringInfo buf, void *vctx) {
 }
 
 /*
- * cookConstraint is vendored in from src/backend/catalog/heap.c -- PG does
- * not expose it via headers. Takes a raw CHECK constraint expression and
- * converts it to cooked form ready for storage.
+ * Vendored from PG's heap.c (not exposed via headers): cooks a raw CHECK
+ * constraint expression for storage.
  */
 static Node *
 cookConstraint(ParseState *pstate, Node *raw_constraint, char *relname) {
@@ -505,20 +481,9 @@ cookConstraint(ParseState *pstate, Node *raw_constraint, char *relname) {
 namespace pgddb {
 
 /*
- * DuckdbRuleutils::get_tabledef returns the DuckDB CREATE TABLE statement for the
- * given relation. The schema, default values, NOT NULL and CHECK
- * constraints are included; UNIQUE/PRIMARY KEY constraints (which would
- * trigger PG index creation) are not.
- *
- * Consumer-specific persistence/ownership policy is delegated to the virtual
- * validate_create_table() override. The catalog name in the resulting CREATE
- * TABLE is whatever the relation's table AM was registered as in pgddb's
- * table-AM registry (pg_duckdb registers "duckdb", pg_ducklake "ducklake", ...).
- *
- * Originally pgduckdb_get_tabledef in pg_duckdb; inspired by
- * pg_get_tableschemadef_string from the patch Jelte submitted to
- * Postgres in 2023:
- * https://www.postgresql.org/message-id/CAGECzQSqdDHO_s8=CPTb2+4eCLGUscdh=KjYGTunhvrwcC7ZSQ@mail.gmail.com
+ * DuckDB CREATE TABLE statement for the relation: schema, defaults, NOT NULL
+ * and CHECK constraints; UNIQUE/PRIMARY KEY are excluded (they would trigger
+ * PG index creation). Catalog name comes from the pgddb table-AM registry.
  */
 std::string
 DuckdbRuleutils::get_tabledef(Oid relation_oid) {
@@ -611,7 +576,7 @@ DuckdbRuleutils::get_tabledef(Oid relation_oid) {
 			} else if (column->attgenerated == ATTRIBUTE_GENERATED_STORED) {
 				elog(ERROR, "DuckDB does not support STORED generated columns");
 			} else {
-				elog(ERROR, "Unkown generated column type");
+				elog(ERROR, "Unknown generated column type");
 			}
 		}
 
@@ -646,7 +611,6 @@ DuckdbRuleutils::get_tabledef(Oid relation_oid) {
 	appendStringInfoString(&buffer, ")");
 
 	if (pgddb::TableAmGetName(relation->rd_tableam) == nullptr) {
-		/* Defensive: only registered duckdb-y AM tables should reach here. */
 		elog(ERROR, "Relation %u uses a table AM not registered with pgddb", relation_oid);
 	}
 
@@ -659,11 +623,6 @@ DuckdbRuleutils::get_tabledef(Oid relation_oid) {
 	return std::string(buffer.data);
 }
 
-/*
- * DuckdbRuleutils::get_rename_relationdef returns the DuckDB ALTER TABLE ...
- * RENAME (or RENAME COLUMN) statement for the given relation. Catalog prefix
- * comes from the relation's registered table-AM name.
- */
 std::string
 DuckdbRuleutils::get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stmt) {
 	if (rename_stmt->renameType != OBJECT_TABLE && rename_stmt->renameType != OBJECT_VIEW &&
@@ -701,9 +660,8 @@ DuckdbRuleutils::get_rename_relationdef(Oid relation_oid, RenameStmt *rename_stm
 }
 
 /*
- * DuckdbRuleutils::get_alter_tabledef returns the DuckDB ALTER TABLE command(s)
- * for the given table. DuckDB does not support multiple ALTER subcommands in a
- * single statement, so each subcommand is emitted as its own ALTER TABLE.
+ * DuckDB does not support multiple ALTER subcommands in one statement, so each
+ * subcommand is emitted as its own ALTER TABLE.
  */
 std::string
 DuckdbRuleutils::get_alter_tabledef(Oid relation_oid, AlterTableStmt *alter_stmt) {

@@ -1,24 +1,19 @@
 /*
- * functions.cpp -- DuckLake function exposing.
+ * Expose DuckLake's global ducklake_<name>(catalog, ...) functions under clean
+ * PG names in the `ducklake` schema, keyed off the routing of
+ * system.main.<name>(...). Two bridges: DuckDB macros for overload-free
+ * mappings and variant extraction, and TableFunctionSets for overloaded
+ * signatures macros can't express.
  *
- * Exposes DuckLake functions as PostgreSQL functions in the
- * `ducklake` schema.
- *
- * DuckLake extension registers its functions globally as ducklake_<name>
- * with a catalog arg. Two bridging mechanisms are used:
- *
- * 1. Wrapper table macros -- for simple mappings:
- *   PG function: ducklake.snapshots()
- *     -> DuckDB-only routing: system.main.snapshots()
- *     -> Wrapper macro: FROM ducklake_snapshots('pgducklake')
- *
- * 2. Table function sets -- for overloaded signatures:
- *   PG function: ducklake.cleanup_old_files() / cleanup_old_files(interval)
- *     -> DuckDB-only routing: system.main.cleanup_old_files(...)
- *     -> TableFunctionSet bind replaces with ducklake_cleanup_old_files()
+ * The PG-side SQL stubs never run; the hooks route to DuckDB first. Each stub's
+ * prosrc marker is either ducklake_only_function (route as-is: functions via
+ * the planner hook, CALL procedures via the utility hook) or
+ * ducklake_function_mapping (a regclass overload the planner first rewrites to
+ * its (schema_name, table_name) form, then routes).
  */
 
 #include "pgducklake/constants.hpp"
+#include "pgducklake/ducklake_types.hpp"
 #include "pgducklake/functions.hpp"
 #include "pgducklake/time_travel.hpp"
 
@@ -37,6 +32,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "fmgr.h"
@@ -49,15 +45,21 @@ namespace pgducklake {
 
 using namespace duckdb;
 
+// True for ducklake-schema objects with prosrc='ducklake_only_function'. The
+// cached schema OID is checked first so the prosrc read is skipped for the many
+// non-ducklake functions in a query.
 bool
 IsDucklakeOnlyFunction(Oid funcid) {
-	// Match by prosrc only: pg_ducklake declares all of its DuckDB-routed
-	// SQL stubs with prosrc='duckdb_only_function', whether they live in
-	// the ducklake schema (snapshots, table_info, ...) or in @extschema@
-	// (read_csv, read_parquet -- unqualified for parity with pg_duckdb).
+	Oid ducklake_nsp = DucklakeNamespaceOid();
+	if (!OidIsValid(ducklake_nsp))
+		return false;
 	HeapTuple tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
 	if (!HeapTupleIsValid(tp))
 		return false;
+	if (((Form_pg_proc)GETSTRUCT(tp))->pronamespace != ducklake_nsp) {
+		ReleaseSysCache(tp);
+		return false;
+	}
 	bool isnull;
 	Datum prosrc_datum = SysCacheGetAttr(PROCOID, tp, Anum_pg_proc_prosrc, &isnull);
 	if (isnull) {
@@ -66,39 +68,25 @@ IsDucklakeOnlyFunction(Oid funcid) {
 	}
 	char *prosrc_str = TextDatumGetCString(prosrc_datum);
 	ReleaseSysCache(tp);
-	return std::strcmp(prosrc_str, "duckdb_only_function") == 0;
+	return std::strcmp(prosrc_str, "ducklake_only_function") == 0;
 }
 
 } // namespace pgducklake
 
-// duckdb_only_function: marker stub for ducklake.* functions declared with
-// `AS 'MODULE_PATHNAME', 'duckdb_only_function'`. The planner hook routes
-// these calls to DuckDB before fmgr would call the body; if the body
-// fires it errors loudly.
+// Marker stub: routing to DuckDB happens before fmgr reaches this body, so if
+// it ever runs, routing was missed.
 #include "pgddb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 
-DECLARE_PG_FUNCTION(duckdb_only_function) {
-	char *function_name = DatumGetCString(DirectFunctionCall1(regprocout, fcinfo->flinfo->fn_oid));
-	elog(ERROR, "Function '%s' only works with DuckDB execution", function_name);
+DECLARE_PG_FUNCTION(ducklake_only_function) {
+	char *name = DatumGetCString(DirectFunctionCall1(regprocout, ObjectIdGetDatum(fcinfo->flinfo->fn_oid)));
+	elog(ERROR, "'%s' only works with DuckDB execution", name);
 }
 
-// ducklake_only_procedure: the procedure twin of duckdb_only_function. The CALL
-// is caught by the utility hook (IsDucklakeOnlyProcedure) and routed to DuckDB;
-// if this body runs the routing was missed, so error loudly.
-DECLARE_PG_FUNCTION(ducklake_only_procedure) {
-	char *proc_name = DatumGetCString(DirectFunctionCall1(regprocout, ObjectIdGetDatum(fcinfo->flinfo->fn_oid)));
-	elog(ERROR, "Procedure '%s' only works with DuckDB execution", proc_name);
-}
-
-// ducklake_function_mapping: marker stub for the regclass overloads of
-// table-scoped functions (e.g. ducklake.flush_inlined_data(scope regclass)),
-// declared with `AS 'MODULE_PATHNAME', 'ducklake_function_mapping'`. The
-// planner hook (RewriteRegclassFunctions) rewrites those calls into their
-// (schema_name text, table_name text) counterparts before pg_duckdb routes
-// them to DuckDB; if this body fires the rewrite was missed, so error with a
-// corrective hint.
+// Marker stub for regclass overloads: the planner rewrites these to their
+// (schema_name, table_name) form before routing, so firing means the rewrite
+// was missed.
 DECLARE_PG_FUNCTION(ducklake_function_mapping) {
 	ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("regclass function was not rewritten by planner hook"),
 	                errhint("Use the (schema_name text, table_name text) form "
@@ -109,18 +97,10 @@ DECLARE_PG_FUNCTION(ducklake_function_mapping) {
 
 namespace pgducklake {
 
-/*
- * Register wrapper table macros in DuckDB's system.main catalog.
- *
- * pg_duckdb's DuckDB-only routing rewrites PG function calls to
- * system.main.<func_name>(args...). DuckLake registers its functions
- * globally as ducklake_<name>(catalog, ...). These macros bridge the
- * gap: a PG function with a clean name (e.g., "snapshots") routes to
- * system.main.snapshots(), which this macro expands to
- * ducklake_snapshots('pgducklake').
- */
+// Wrapper table macros: system.main.<name>(...) expands to
+// ducklake_<name>(catalog, ...).
 // clang-format off
-static const DefaultTableMacro pg_ducklake_wrapper_macros[] = {
+static const DefaultTableMacro pgducklake_wrapper_macros[] = {
   // catalog-level functions (no table arg)
   {DEFAULT_SCHEMA, "snapshots", {nullptr}, {{nullptr, nullptr}},
    "FROM ducklake_snapshots('" PGDUCKLAKE_DUCKDB_CATALOG "')"},
@@ -156,20 +136,11 @@ static const DefaultTableMacro pg_ducklake_wrapper_macros[] = {
 };
 // clang-format on
 
-/*
- * Register scalar macros for variant field extraction.
- *
- * PG inserts store variant data as VARCHAR (JSON strings). DuckDB's
- * variant_extract only works on OBJECT variants (struct inserts).
- * These macros bridge the gap by extracting from the VARCHAR/JSON
- * representation, which handles both PG-inserted and DuckDB-inserted data.
- *
- * pg_duckdb's DuckDB-only routing rewrites PG function calls to
- * system.main.<func_name>(args...). These macros expand that to the
- * underlying json_extract_string / json_extract calls.
- */
+// Scalar macros. Variant extraction goes through the VARCHAR/JSON
+// representation because DuckDB's variant_extract only works on OBJECT variants
+// (struct inserts), while PG inserts store variant data as VARCHAR JSON.
 // clang-format off
-static const DefaultMacro pg_ducklake_scalar_macros[] = {
+static const DefaultMacro pgducklake_scalar_macros[] = {
   // Virtual column accessors -- expand to bare column references
   {DEFAULT_SCHEMA, "rowid", {nullptr}, {{nullptr, nullptr}}, "rowid"},
   {DEFAULT_SCHEMA, "snapshot_id", {nullptr}, {{nullptr, nullptr}}, "snapshot_id"},
@@ -189,15 +160,9 @@ static const DefaultMacro pg_ducklake_scalar_macros[] = {
 };
 // clang-format on
 
-/*
- * Shared helpers for table function wrappers.
- *
- * DuckDB macros don't support overloading (same name, different params),
- * so functions like cleanup_old_files and merge_adjacent_files use
- * TableFunctionSets instead. Each overload's bind function looks up the
- * underlying ducklake_<name>, injects the catalog constant, sets the
- * right named parameters, and replaces input.table_function.
- */
+// Overloaded wrappers use TableFunctionSets since DuckDB macros can't
+// overload. Each bind looks up the upstream ducklake_<name>, injects the
+// catalog constant, sets named parameters, and replaces input.table_function.
 
 /* Look up an upstream ducklake_<name> table function by name and arity. */
 static TableFunction
@@ -209,8 +174,7 @@ LookupUpstreamFunction(ClientContext &context, const string &ducklake_name,
 	return entry.functions.GetFunctionByArguments(context, arg_types);
 }
 
-/* Stub init/execute for bind-pattern table functions -- bind replaces
- * the function pointer before these are reached. */
+/* Stub init/execute -- bind replaces the function pointer before these run. */
 static unique_ptr<GlobalTableFunctionState>
 UnreachableInit(ClientContext &, TableFunctionInitInput &) {
 	throw InternalException("UnreachableInit should never be called");
@@ -221,7 +185,6 @@ UnreachableExecute(ClientContext &, TableFunctionInput &, DataChunk &) {
 	throw InternalException("UnreachableExecute should never be called");
 }
 
-/* Register a TableFunctionSet in the DuckDB system catalog. */
 static void
 RegisterTableFunctionSet(DatabaseInstance &db, TableFunctionSet &set) {
 	CreateTableFunctionInfo info(set);
@@ -231,8 +194,7 @@ RegisterTableFunctionSet(DatabaseInstance &db, TableFunctionSet &set) {
 }
 
 /* Reset bind input to just the catalog constant (the first positional arg of
- * every ducklake_<name>) with no named parameters. Overload-specific inputs
- * are added by the caller afterwards. */
+ * every ducklake_<name>); the caller then adds overload-specific inputs. */
 static void
 ResetToCatalogOnly(TableFunctionBindInput &input) {
 	input.inputs.clear();
@@ -240,11 +202,7 @@ ResetToCatalogOnly(TableFunctionBindInput &input) {
 	input.named_parameters.clear();
 }
 
-/*
- * cleanup_old_files() / cleanup_orphaned_files(): bind-pattern (.bind)
- * functions. The no-args overload of both passes cleanup_all=true to its
- * upstream; cleanup_old_files additionally has an interval overload.
- */
+/* No-args cleanup_old_files/cleanup_orphaned_files pass cleanup_all=true. */
 static unique_ptr<FunctionData>
 CleanupAllBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                vector<string> &names, const string &ducklake_name) {
@@ -277,8 +235,7 @@ CleanupIntervalBind(ClientContext &context, TableFunctionBindInput &input, vecto
 	return func.bind(context, input, return_types, names);
 }
 
-/* cleanup_orphaned_files(): no-args only; same cleanup_all=true prologue, but
- * delegates to the differently-named upstream ducklake_delete_orphaned_files. */
+/* Upstream name differs: cleanup_orphaned_files -> ducklake_delete_orphaned_files. */
 static unique_ptr<FunctionData>
 OrphanedNoArgsBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                    vector<string> &names) {
@@ -286,17 +243,11 @@ OrphanedNoArgsBind(ClientContext &context, TableFunctionBindInput &input, vector
 }
 
 /*
- * bind_operator-pattern functions: flush_inlined_data, merge_adjacent_files,
- * rewrite_data_files. Upstream uses bind_operator (replaces the whole logical
- * plan, rather than just producing FunctionData like .bind) and accepts
- * (catalog) or (catalog, ...table args...) overloads. PG exposes a no-args
- * form (whole catalog) and a (text, text) form (specific table). The regclass
- * overload is handled by ducklake_function_mapping in SQL, which the planner
- * rewrites to (schema_name text, table_name text).
- *
- * The no-args overload is identical across all three. The table-args overload
- * differs in how (schema, table) reach upstream, which also changes the
- * positional arity used to resolve the upstream overload:
+ * flush_inlined_data, merge_adjacent_files, rewrite_data_files use upstream
+ * bind_operator (replaces the whole logical plan). The no-args overload is
+ * identical across all three; the (text, text) overload differs in how
+ * (schema, table) reach upstream, which also sets the positional arity used to
+ * resolve the upstream overload:
  *   - merge/rewrite: (catalog, table_name) positional + schema => named
  *                    -> looked up by {VARCHAR, VARCHAR}
  *   - flush:         (catalog) positional + schema_name => / table_name => named
@@ -339,15 +290,15 @@ BindOpNamedTable(ClientContext &context, TableFunctionBindInput &input, idx_t bi
 	input.named_parameters["schema_name"] = duckdb::Value(schema_name);
 	input.named_parameters["table_name"] = duckdb::Value(table_name);
 
-	// schema_name/table_name are named params, so the upstream overload is
-	// resolved by its single positional VARCHAR (catalog) -- the default arity.
+	// Named params, so the upstream overload resolves on the single positional
+	// VARCHAR (catalog) -- the default arity.
 	auto func = LookupUpstreamFunction(context, ducklake_name);
 	input.table_function = func;
 	return func.bind_operator(context, input, bind_index, return_names);
 }
 
-/* bind_operator requires plain function pointers; stamp a no-args/table-args
- * pair per pg function, closing over the upstream name and table-arg style. */
+/* bind_operator needs plain function pointers, so stamp a no-args/table-args
+ * pair per pg function closing over the upstream name and table-arg style. */
 #define DEFINE_BIND_OP_SET(prefix, ducklake_name, table_args_helper)                                                   \
 	static unique_ptr<LogicalOperator> prefix##NoArgsBind(ClientContext &ctx, TableFunctionBindInput &input,           \
 	                                                      idx_t bind_index, vector<string> &return_names) {            \
@@ -364,7 +315,6 @@ DEFINE_BIND_OP_SET(Flush, "ducklake_flush_inlined_data", BindOpNamedTable)
 
 #undef DEFINE_BIND_OP_SET
 
-/* Register a two-overload bind_operator set: no-args + (text, text). */
 static void
 RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name, table_function_bind_operator_t no_args_bind,
                         table_function_bind_operator_t table_args_bind) {
@@ -381,31 +331,24 @@ RegisterBindOperatorSet(DatabaseInstance &db, const string &pg_name, table_funct
 	RegisterTableFunctionSet(db, set);
 }
 
-/*
- * Register all of pg_ducklake's DuckLake-function bridges on a fresh DuckDB
- * instance (called from DuckDBManager::OnPostInit): the wrapper table macros
- * and scalar macros (system.main.<name> -> ducklake_<name>(catalog, ...)),
- * plus the overloaded TableFunctionSets that DuckDB macros can't express.
- */
+/* Register all DuckLake-function bridges on a fresh DuckDB instance (called
+ * from DuckDBManager::OnPostInit). */
 void
 RegisterDucklakeFunctions(DatabaseInstance &db) {
 	auto &catalog = Catalog::GetSystemCatalog(db);
 	auto transaction = CatalogTransaction::GetSystemTransaction(db);
 
-	// Wrapper table macros: system.main.<name>(...) -> ducklake_<name>(catalog, ...).
-	for (const auto &macro : pg_ducklake_wrapper_macros) {
+	for (const auto &macro : pgducklake_wrapper_macros) {
 		auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(macro);
 		catalog.CreateFunction(transaction, *info);
 	}
 
-	// Scalar macros: virtual-column accessors + variant field extraction.
-	for (const auto &macro : pg_ducklake_scalar_macros) {
+	for (const auto &macro : pgducklake_scalar_macros) {
 		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(macro);
 		catalog.CreateFunction(transaction, *info);
 	}
 
-	// time_travel(...): query a DuckLake table at a historical snapshot
-	// (built in time_travel.cpp).
+	// time_travel(...): built in time_travel.cpp.
 	auto time_travel = GetTimeTravelFunctions();
 	RegisterTableFunctionSet(db, time_travel);
 

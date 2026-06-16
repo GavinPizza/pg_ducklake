@@ -1,7 +1,3 @@
-/*
- * hooks.cpp -- Planner and utility hooks.
- */
-
 #include "pgducklake/constants.hpp"
 #include "pgducklake/copy_from.hpp"
 #include "pgducklake/create_options.hpp"
@@ -153,7 +149,6 @@ RewriteVariantOpMutator(Node *node, void *ctx_ptr) {
 
 		EnsureVariantFuncOids(ctx->variant_type_oid);
 
-		/* Index into variant_funcoids[]: {is_arrow, is_int_arg} */
 		int idx = (is_arrow ? 0 : 2) | (arg2_type == INT4OID ? 1 : 0);
 		Oid target_funcid = variant_funcoids[idx];
 		Oid result_type = is_arrow ? ctx->variant_type_oid : TEXTOID;
@@ -225,7 +220,7 @@ TryRewriteRegclassFunc(FuncExpr *func) {
 	if (regclass_const->consttype != REGCLASSOID)
 		return;
 
-	Oid ducklake_nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, true);
+	Oid ducklake_nsp = pgducklake::DucklakeNamespaceOid();
 	if (!OidIsValid(ducklake_nsp))
 		return;
 	if (get_func_namespace(func->funcid) != ducklake_nsp)
@@ -236,7 +231,7 @@ TryRewriteRegclassFunc(FuncExpr *func) {
 	List *func_name_list = list_make2(makeString(pstrdup(PGDUCKLAKE_PG_SCHEMA)), makeString(func_name));
 
 	int old_nargs = list_length(func->args);
-	int new_nargs = old_nargs + 1; /* regclass -> (text, text) */
+	int new_nargs = old_nargs + 1;
 	Oid *new_argtypes = (Oid *)palloc(sizeof(Oid) * new_nargs);
 	new_argtypes[0] = TEXTOID;
 	new_argtypes[1] = TEXTOID;
@@ -382,7 +377,7 @@ DucklakePlannerHook(Query *parse, const char *query_string, int cursor_options, 
 			return direct_insert_plan;
 	}
 
-	/* Pure PG catalog rewrites -- no DuckDB needed, must run before init (#149) */
+	/* Pure PG catalog rewrites -- no DuckDB needed, must run before init */
 	parse = RewriteVariantOperators(parse);
 	parse = RewriteRegclassFunctions(parse);
 
@@ -438,27 +433,6 @@ IsDropDucklakeExtensionStmt(PlannedStmt *pstmt) {
 	return false;
 }
 
-bool
-IsDucklakeOnlyProcedure(Oid funcid) {
-	Oid ducklake_nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, true);
-	if (!OidIsValid(ducklake_nsp))
-		return false;
-	if (get_func_namespace(funcid) != ducklake_nsp)
-		return false;
-	HeapTuple tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
-	if (!HeapTupleIsValid(tp))
-		return false;
-	bool isnull;
-	Datum prosrc_datum = SysCacheGetAttr(PROCOID, tp, Anum_pg_proc_prosrc, &isnull);
-	if (isnull) {
-		ReleaseSysCache(tp);
-		return false;
-	}
-	char *prosrc_str = TextDatumGetCString(prosrc_datum);
-	ReleaseSysCache(tp);
-	return strcmp(prosrc_str, "ducklake_only_procedure") == 0;
-}
-
 /* CREATE VIEW over a duckdb_row-returning function would store a single
  * duckdb_row column, losing the schema. Plan the body via DuckDB to learn
  * the real columns and rewrite it to typed subscripts over duckdb_query(). */
@@ -475,13 +449,16 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	rawstmt->stmt = stmt->query;
 	rawstmt->stmt_location = pstmt->stmt_location;
 	rawstmt->stmt_len = pstmt->stmt_len;
+#if PG_VERSION_NUM >= 150000
 	Query *viewParse = parse_analyze_fixedparams(rawstmt, query_string, NULL, 0, NULL);
+#else
+	Query *viewParse = parse_analyze(rawstmt, query_string, NULL, 0, NULL);
+#endif
 
 	if (!IsA(viewParse, Query) || viewParse->commandType != CMD_SELECT)
 		return;
 
-	// Only trigger for a single duckdb_row target column, i.e.
-	// `SELECT * FROM <duckdb-only-fn>`.
+	// Only a single duckdb_row target column, i.e. `SELECT * FROM <duckdb-only-fn>`.
 	if (list_length(viewParse->targetList) != 1)
 		return;
 	TargetEntry *tle = linitial_node(TargetEntry, viewParse->targetList);
@@ -522,7 +499,7 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 		appendStringInfo(buf, "r[%s]::%s AS %s", quote_literal_cstr(plan_tle->resname),
 		                 format_type_with_typemod(coltype, coltypmod), quote_identifier(plan_tle->resname));
 	}
-	appendStringInfo(buf, " FROM ducklake.duckdb_query(%s) r", quote_literal_cstr(duckdb_query_string));
+	appendStringInfo(buf, " FROM ducklake.query(%s) r", quote_literal_cstr(duckdb_query_string));
 
 	List *parsetree_list = pg_parse_query(buf->data);
 	if (list_length(parsetree_list) != 1)
@@ -551,7 +528,7 @@ DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only
 
 	if (IsA(parsetree, CallStmt)) {
 		CallStmt *call = castNode(CallStmt, parsetree);
-		if (call->funcexpr && IsDucklakeOnlyProcedure(call->funcexpr->funcid)) {
+		if (call->funcexpr && pgducklake::IsDucklakeOnlyFunction(call->funcexpr->funcid)) {
 			// DuckDBQueryOrThrow needs an active snapshot; the utility hook
 			// fires before any planner pass, so push one for the call.
 			std::string query = pgducklake::Ruleutils::get_calldef(call);
@@ -593,8 +570,7 @@ DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only
 	if (IsA(parsetree, IndexStmt)) {
 		IndexStmt *idx = castNode(IndexStmt, parsetree);
 		if (idx->accessMethod && strcmp(idx->accessMethod, PGDUCKLAKE_SORTED_AM) == 0) {
-			// Validate + deparse before PG creates the index (rejects a bad spec up
-			// front), let PG create the catalog index, then apply the sort to DuckDB.
+			// Validate + deparse before PG creates the catalog index, then apply the sort to DuckDB.
 			std::string query = pgducklake::Ruleutils::get_create_sorted_index_def(idx);
 			prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 			pgducklake::ApplyCreateSortedIndex(query);
@@ -660,8 +636,7 @@ DucklakeUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only
 
 	pgducklake::HandleDropSortedIndex(sorted_drops);
 
-	// After DROP EXTENSION completes, detach the DuckLake catalog from DuckDB
-	// so that a subsequent CREATE EXTENSION can attach a fresh one.
+	// Detach the catalog so a subsequent CREATE EXTENSION can attach a fresh one.
 	if (dropping_extension) {
 		ducklake_detach_catalog();
 		InvalidateVariantCaches();

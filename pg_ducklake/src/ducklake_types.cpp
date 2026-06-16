@@ -29,14 +29,23 @@ extern "C" {
 
 namespace pgducklake {
 
-// Resolve a ducklake.<name> type's OID. Cached in a static after first
-// resolution -- pg_type rows don't move during a backend's lifetime.
-// Returns InvalidOid before CREATE EXTENSION pg_ducklake.
+// OID of the `ducklake` schema, cached after first resolution; InvalidOid before CREATE EXTENSION.
+Oid
+DucklakeNamespaceOid() {
+	static Oid cached = InvalidOid;
+	if (OidIsValid(cached))
+		return cached;
+	Oid nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, /*missing_ok=*/true);
+	if (OidIsValid(nsp))
+		cached = nsp;
+	return nsp;
+}
+
 static Oid
 LookupDucklakeType(const char *type_name, Oid *cache) {
 	if (OidIsValid(*cache))
 		return *cache;
-	Oid nsp = get_namespace_oid(PGDUCKLAKE_PG_SCHEMA, /*missing_ok=*/true);
+	Oid nsp = DucklakeNamespaceOid();
 	if (!OidIsValid(nsp))
 		return InvalidOid;
 	Oid type_oid = GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid, PointerGetDatum(type_name), ObjectIdGetDatum(nsp));
@@ -48,13 +57,19 @@ LookupDucklakeType(const char *type_name, Oid *cache) {
 Oid
 DuckdbRowOid() {
 	static Oid cached = InvalidOid;
-	return LookupDucklakeType("duckdb_row", &cached);
+	return LookupDucklakeType("row", &cached);
+}
+
+Oid
+UnresolvedTypeOid() {
+	static Oid cached = InvalidOid;
+	return LookupDucklakeType("unresolved_type", &cached);
 }
 
 Oid
 DuckdbStructOid() {
 	static Oid cached = InvalidOid;
-	return LookupDucklakeType("duckdb_struct", &cached);
+	return LookupDucklakeType("struct", &cached);
 }
 
 Oid
@@ -63,12 +78,7 @@ VariantOid() {
 	return LookupDucklakeType("variant", &cached);
 }
 
-// --------------------------------------------------------------------------
-// libpgddb type hooks: PG OID -> DuckDB base type, DuckDB type -> PG OID,
-// DuckDB value -> PG Datum for ducklake.variant / ducklake.duckdb_struct.
-// Each hook handles pg_ducklake's custom types and returns false to decline
-// (the kernel then tries the next hook or its built-in fallback).
-// --------------------------------------------------------------------------
+// libpgddb type hooks: each returns false to decline so the kernel falls through to the next hook.
 
 // ducklake.variant is a varlena text on the PG side. Mapping it to DuckDB's
 // VARIANT logical type makes DuckLake store it as variant in its catalog;
@@ -119,22 +129,16 @@ ConvertDuckToPostgresValueHook(Oid pg_oid, duckdb::Value &value, TupleTableSlot 
 	return false;
 }
 
-// --------------------------------------------------------------------------
-// pgddb_ruleutils.h hooks: duckdb_row / variant deparse. Each declines (false /
-// unchanged input / NULL) for nodes that aren't pg_ducklake's, so the kernel
-// falls through to the next registered hook or its built-in default.
-// --------------------------------------------------------------------------
+// pgddb_ruleutils.h deparse hooks: each declines for non-pg_ducklake nodes so the kernel falls through.
 
 static bool
 IsFakeTypeHook(Oid type_oid) {
-	return OidIsValid(type_oid) &&
-	       (type_oid == DuckdbRowOid() || type_oid == DuckdbStructOid() || type_oid == VariantOid());
+	return OidIsValid(type_oid) && (type_oid == DuckdbRowOid() || type_oid == UnresolvedTypeOid() ||
+	                                type_oid == DuckdbStructOid() || type_oid == VariantOid());
 }
 
-// get_const_expr otherwise tacks "::ducklake.variant" onto every literal whose
-// target column is variant, and DuckDB can't resolve that type. Returning -1
-// suppresses the cast. (The generic bare-::numeric suppression now lives in the
-// kernel's pgddb_show_type, so it is not repeated here.)
+// Returning -1 suppresses the "::ducklake.variant" cast get_const_expr would
+// otherwise emit on variant literals, which DuckDB can't resolve.
 static int
 ShowTypeHook(Const *constval, int original_showtype) {
 	if (constval && IsFakeTypeHook(constval->consttype))
@@ -157,12 +161,9 @@ FuncReturnsRowHook(RangeTblFunction *rtfunc) {
 	return false;
 }
 
-// Deparse `r['col']` on a duckdb_row Var as `r.col` for DuckDB. r is a
-// function alias in the FROM clause whose underlying table function
-// expands to real columns, so dot-access is the natural DuckDB syntax.
-// Returns the SubscriptingRef with the first index stripped (so any
-// trailing nested subscripts still print as `[...]`), or the input sbsref
-// unchanged to decline.
+// Deparse `r['col']` on a duckdb_row Var as `r.col` for DuckDB, where r is a
+// FROM-clause function alias expanding to real columns. Strips the first index
+// (trailing nested subscripts still print as `[...]`); returns sbsref unchanged to decline.
 static SubscriptingRef *
 StripFirstSubscriptHook(SubscriptingRef *sbsref, StringInfo buf) {
 	if (!sbsref || !IsA(sbsref->refexpr, Var)) {
@@ -190,13 +191,9 @@ StripFirstSubscriptHook(SubscriptingRef *sbsref, StringInfo buf) {
 	return shorter;
 }
 
-// Map ducklake.variant to "VARIANT" in the kernel's CREATE TABLE deparser so
-// DuckDB sees the native DuckDB type and stores the column as
-// LogicalTypeId::VARIANT instead of silently falling back to VARCHAR.
-// This is what lets the round-trip through GetPostgresDuckDBTypeHook above
-// see a VARIANT LogicalType for variant columns. It is a DuckdbRuleutils
-// virtual override (not a registration hook) because the CREATE TABLE deparser
-// is invoked directly by pg_ducklake's DDL path via pgducklake::Ruleutils.
+// Map ducklake.variant to "VARIANT" in the CREATE TABLE deparser so DuckDB stores
+// LogicalTypeId::VARIANT instead of falling back to VARCHAR. A DuckdbRuleutils virtual
+// override (not a registration hook) since the deparser is invoked directly via pgducklake::Ruleutils.
 char *
 Ruleutils::column_type_name(Oid type_oid, int32_t /*typemod*/) {
 	if (OidIsValid(type_oid) && type_oid == VariantOid()) {
@@ -297,8 +294,6 @@ Ruleutils::get_calldef(CallStmt *call) {
 
 void
 InitTypeHooks() {
-	// Register pg_ducklake's type hooks (DuckDB STRUCT -> ducklake.duckdb_struct,
-	// ducklake.variant <-> DuckDB VARIANT) on top of libpgddb's built-in types.
 	pgddb::Register_ConvertPostgresToBaseDuckColumnType(ConvertPostgresToBaseDuckColumnTypeHook);
 	pgddb::Register_GetPostgresDuckDBType(GetPostgresDuckDBTypeHook);
 	pgddb::Register_ConvertDuckToPostgresValue(ConvertDuckToPostgresValueHook);
@@ -307,42 +302,56 @@ InitTypeHooks() {
 	// aggregates in the count(*) row-count optimization) that must map to DOUBLE.
 	pgddb::convert_unsupported_numeric_to_double = true;
 
-	// Register pg_ducklake's deparser (ruleutils) hooks. Row-refname `.*` expansion
-	// and the bare-::numeric cast suppression are now generic in the kernel.
 	Register_pgddb_is_fake_type(IsFakeTypeHook);
 	Register_pgddb_show_type(ShowTypeHook);
 	Register_pgddb_var_is_duckdb_row(VarIsRowHook);
 	Register_pgddb_func_returns_duckdb_row(FuncReturnsRowHook);
 	Register_pgddb_strip_first_subscript(StripFirstSubscriptHook);
-	// The variant->VARIANT CREATE TABLE mapping is a DuckdbRuleutils virtual
-	// override (pgducklake::Ruleutils::column_type_name), not a registration hook.
+
+	// Subscripting any ducklake container (row['col'], struct['f']) resolves to
+	// ducklake.unresolved_type, which carries the casts so r['col']::int parses.
+	pgddb::pg::subscript_refrestype_hook = [](Oid) {
+		return UnresolvedTypeOid();
+	};
 }
 
 } // namespace pgducklake
 
 extern "C" {
 
-DECLARE_PG_FUNCTION(duckdb_row_in) {
-	elog(ERROR, "Creating the ducklake.duckdb_row type is not supported");
+DECLARE_PG_FUNCTION(ducklake_row_in) {
+	elog(ERROR, "Creating the ducklake.row type is not supported");
 }
 
-DECLARE_PG_FUNCTION(duckdb_row_out) {
-	elog(ERROR, "Converting a ducklake.duckdb_row to a string is not supported");
+DECLARE_PG_FUNCTION(ducklake_row_out) {
+	elog(ERROR, "Converting a ducklake.row to a string is not supported");
 }
 
-DECLARE_PG_FUNCTION(duckdb_row_subscript) {
+DECLARE_PG_FUNCTION(ducklake_row_subscript) {
 	PG_RETURN_POINTER(&pgddb::pg::duckdb_row_subscript_routines);
 }
 
-DECLARE_PG_FUNCTION(duckdb_struct_in) {
-	elog(ERROR, "Creating the ducklake.duckdb_struct type is not supported");
+DECLARE_PG_FUNCTION(ducklake_unresolved_type_in) {
+	return textin(fcinfo);
 }
 
-DECLARE_PG_FUNCTION(duckdb_struct_out) {
+DECLARE_PG_FUNCTION(ducklake_unresolved_type_out) {
 	return textout(fcinfo);
 }
 
-DECLARE_PG_FUNCTION(duckdb_struct_subscript) {
+DECLARE_PG_FUNCTION(ducklake_unresolved_type_subscript) {
+	PG_RETURN_POINTER(&pgddb::pg::duckdb_unresolved_type_subscript_routines);
+}
+
+DECLARE_PG_FUNCTION(ducklake_struct_in) {
+	elog(ERROR, "Creating the ducklake.struct type is not supported");
+}
+
+DECLARE_PG_FUNCTION(ducklake_struct_out) {
+	return textout(fcinfo);
+}
+
+DECLARE_PG_FUNCTION(ducklake_struct_subscript) {
 	PG_RETURN_POINTER(&pgddb::pg::duckdb_struct_subscript_routines);
 }
 

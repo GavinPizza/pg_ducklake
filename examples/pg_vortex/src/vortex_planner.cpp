@@ -1,6 +1,5 @@
-// pg_vortex's planner, adapted from libpgduckdb/pgddb_planner.cpp; wrapped
-// in namespace pg_vortex to avoid symbol clashes when loaded alongside
-// pg_duckdb.
+// Wrapped in namespace pg_vortex to avoid symbol clashes when loaded
+// alongside pg_duckdb.
 
 #include "pg_vortex/vortex_planner.hpp"
 
@@ -63,8 +62,7 @@ CreatePlan(Query *query, bool throw_error) {
 	duckdb::unique_ptr<duckdb::PreparedStatement> prepared_query = Prepare(query);
 
 	if (prepared_query->HasError()) {
-		elog(elevel, "(pg_vortex/CreatePlan) Prepared query returned an error: %s",
-		     prepared_query->GetError().c_str());
+		elog(elevel, "(pg_vortex/CreatePlan) Prepared query returned an error: %s", prepared_query->GetError().c_str());
 		return nullptr;
 	}
 

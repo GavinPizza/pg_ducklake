@@ -28,46 +28,11 @@ __CPPFunctionGuard__(const char *func_name, const char *file_name, int line, Fun
 		}
 	}
 
-	// This can happen if `func` or one of the function it calls uses `PG_TRY`
-	// If we are here, it means we got out of the PG_TRY block through a C++ exception
-	// without running the corresponding `PG_CATCH` block.
-	//
-	// In that case, the `PG_exception_stack` points to an invalid stack and calling
-	// `elog(ERROR, ...)` below would lead to a crash when we finally hit `PG_CATCH`
-	//
-	// As a best effort, we reset the `PG_exception_stack` to the value we had
-	// entering the wrapper, but this might leak other resources that were supposed
-	// to be closed in the missed `PG_CATCH`
-	//
-	// For developers trying to fix this:
-	// you need to make sure that `func` can never throw a C++ excepction
-	// from within a `PG_TRY` block.
-
-	// Example of problematic code:
-	// void my_func() {
-	//   PG_TRY(); {
-	//     throw duckdb::Exception("foo");
-	//   } PG_CATCH(); {
-	//    // This PG_CATCH block will never be executed
-	//   } PG_END_TRY();
-	// }
-
-	// In this case the `PG_CATCH` block that will handle the error thrown below
-	// would try to reset the stack to the beginning of `my_func` and crash
-	//
-	// So instead this should also be wrapped in a `InvokeCPPFunc` like:
-	//
-	// void my_throwing_func() {
-	//  throw duckdb::Exception("foo");
-	// }
-	//
-	// void my_func() {
-	//   PG_TRY(); {
-	//     InvokeCPPFunc(my_throwing_func);
-	//   } PG_CATCH(); {
-	//    // This PG_CATCH block will now be executed
-	//   } PG_END_TRY();
-	// }
+	// A C++ exception escaping a PG_TRY without its PG_CATCH leaves PG_exception_stack
+	// pointing at an unwound frame; elog(ERROR) below would then crash. Reset it as a
+	// best effort (may leak resources the missed PG_CATCH should have freed). Fix the
+	// cause by never throwing from inside a PG_TRY block -- wrap the throwing call in
+	// InvokeCPPFunc so its own PG_CATCH runs.
 	if (pg_es_start != PG_exception_stack) {
 		elog(WARNING, "WARNING: Unexpected exception stack pointer. This is not expected, please report this.");
 		PG_exception_stack = pg_es_start;
@@ -85,8 +50,6 @@ __CPPFunctionGuard__(const char *func_name, const char *file_name, int line, Fun
 
 #define InvokeCPPFunc(FUNC, ...)                                                                                       \
 	pgddb::__CPPFunctionGuard__<decltype(&FUNC), &FUNC>(#FUNC, __FILE__, __LINE__, ##__VA_ARGS__)
-
-// Wrappers
 
 #define DECLARE_PG_FUNCTION(func_name)                                                                                 \
 	PG_FUNCTION_INFO_V1(func_name);                                                                                    \

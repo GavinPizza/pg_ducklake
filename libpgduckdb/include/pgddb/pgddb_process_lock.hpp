@@ -4,11 +4,7 @@
 
 namespace pgddb {
 
-/*
- * GlobalProcessLock is used to synchronize calls to PG functions that modify global variables. Examples
- * for this synchronization are functions that read buffers/etc. This lock is shared between all threads and all
- * replacement scans.
- */
+// Serializes PG calls that touch global state (e.g. buffer reads); shared across all threads and replacement scans.
 struct GlobalProcessLock {
 public:
 	static std::recursive_mutex &

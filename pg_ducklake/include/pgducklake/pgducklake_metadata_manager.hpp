@@ -41,9 +41,9 @@ public:
 	                           const duckdb::vector<duckdb::string> &columns_to_read) override;
 
 	static bool IsInitialized();
-	// Override the attach + existence-probe seams: the base AttachMetadata runs ATTACH on the DuckDB
-	// connection (null here) and MetadataExists probes "SELECT NULL FROM ducklake_metadata" (which would
-	// abort the PG transaction if absent). The in-process SPI backend has no DuckDB metadata connection.
+	// In-process SPI backend has no DuckDB metadata connection: the base AttachMetadata
+	// ATTACHes on it (null here) and MetadataExists probes ducklake_metadata in a way that
+	// would abort the PG transaction if absent. Override both seams.
 	duckdb::unique_ptr<duckdb::QueryResult> AttachMetadata(const duckdb::string &attach_query) override;
 	bool MetadataExists() override;
 	void InitializeDuckLake(bool has_explicit_schema, duckdb::DuckLakeEncryption encryption) override;
@@ -56,16 +56,14 @@ protected:
 	                                      const duckdb::DuckLakeTableInfo &table, duckdb::string &inlined_tables,
 	                                      duckdb::string &inlined_table_queries) override;
 
-	// The file-column-stats CTE runs in-process via SPI (real PostgreSQL), so use the base class's
-	// plain-SQL form rather than PostgresMetadataManager's postgres_query()-wrapped variant (which
-	// targets the DuckDB postgres_scanner backend and is not a real PG function).
+	// Runs in-process via SPI, so use the base class's plain-SQL form rather than
+	// PostgresMetadataManager's postgres_query()-wrapped variant (DuckDB postgres_scanner).
 	duckdb::string GenerateFileColumnStatsCTEBody(const duckdb::CTERequirement &req,
 	                                              duckdb::TableIndex table_id) override;
 };
 
-/* Direct-insert planner-time state.  GetTableInliningInfo() returns true only
- * for TI_OK and discards the reason; callers that need it (the stats counters)
- * use GetTableInliningState() directly. */
+/* Direct-insert planner-time state. GetTableInliningInfo() returns true only for
+ * TI_OK; callers needing the reason use GetTableInliningState() directly. */
 enum TableInliningState {
 	TI_OK = 0,
 	TI_NO_TABLE,                /* table not found in ducklake metadata */

@@ -45,9 +45,8 @@ extern "C" {
 bool outermost_query = true;
 
 /*
- * Registered deparser hooks: extensions append in _PG_init; the wrappers below
- * apply any generic kernel rule, then try hooks in registration order. C
- * linkage + default visibility come from pgddb_ruleutils.h.
+ * Deparser hooks: extensions append in _PG_init; wrappers apply the generic
+ * kernel rule then try hooks in registration order.
  */
 static std::vector<pgddb_function_name_hook_t> g_function_name_hooks;
 static std::vector<pgddb_relation_name_hook_t> g_relation_name_hooks;
@@ -110,8 +109,6 @@ void
 Register_pgddb_db_and_schema(pgddb_db_and_schema_hook_t fn) {
 	g_db_and_schema_hooks.push_back(fn);
 }
-
-/* Dispatch wrappers called by the vendored deparser. */
 
 char *
 pgddb_function_name(Oid funcid, bool *use_variadic_p) {
@@ -226,7 +223,6 @@ pgddb_strip_first_subscript(SubscriptingRef *sbsref, StringInfo buf) {
 	for (auto fn : g_strip_first_subscript_hooks) {
 		SubscriptingRef *result = fn(sbsref, buf);
 		if (result != sbsref) {
-			// A hook acted (stripped and wrote into buf).
 			return result;
 		}
 	}
@@ -243,8 +239,8 @@ pgddb_subscript_has_custom_alias(Plan *plan, List *rtable, Var *subscript_var, c
 	return false;
 }
 
-// Emit `<ref>.*` at the top level so DuckDB returns the underlying columns,
-// else the bare alias. Called once a var_is_row / func_returns_row hook matched.
+// Emit `<ref>.*` at top level so DuckDB returns the underlying columns, else the
+// bare alias.
 char *
 pgddb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
 	appendStringInfoString(buf, quote_identifier(refname));
@@ -271,10 +267,10 @@ get_relation_table_am_name(Oid relam) {
 }
 
 /*
- * "db.schema" for the given PG schema and table-AM name. Object-scoped
- * resolvers are tried in registration order (each claims only its own table
- * AM); unclaimed relations fall back to the kernel's always-attached
- * "pgduckdb" storage catalog, a name internal to DuckDB and never user-visible.
+ * "db.schema" for a PG schema and table-AM name. Resolvers are tried in
+ * registration order (each claims only its own table AM); unclaimed relations
+ * fall back to the always-attached "pgduckdb" catalog (DuckDB-internal, never
+ * user-visible).
  */
 const char *
 pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_am_name) {
@@ -291,9 +287,7 @@ pgddb_db_and_schema_string(const char *postgres_schema_name, const char *table_a
 	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
 }
 
-/*
- * Fully qualified DuckDB-side name "db.schema.table" for the PG relation.
- */
+/* Fully qualified DuckDB-side name "db.schema.table" for the PG relation. */
 char *
 pgddb_relation_name(Oid relation_oid) {
 	for (auto fn : g_relation_name_hooks) {
@@ -320,9 +314,8 @@ pgddb_relation_name(Oid relation_oid) {
 }
 
 /*
- * Wraps pgddb_pg_get_querydef_internal to force ISO date format (the
- * only one DuckDB understands) and to flag outermost_query for the
- * deparser's target-list logic.
+ * Forces ISO date format (the only one DuckDB understands) and flags
+ * outermost_query for the deparser's target-list logic.
  */
 char *
 pgddb_get_querydef(Query *query) {
@@ -335,9 +328,8 @@ pgddb_get_querydef(Query *query) {
 }
 
 /*
- * Filter for DEFAULT clause expressions: returns true for things that
- * should be printed (Var, non-default Const, or non-trivial walks),
- * false for the synthetic "default" markers Postgres uses internally.
+ * True for expressions that should be printed; false for the synthetic
+ * "default" markers Postgres uses internally.
  */
 bool
 pgddb_is_not_default_expr(Node *node, void *context) {
@@ -381,9 +373,9 @@ pgddb_add_tablesample_percent(const char *tsm_name, StringInfo buf, int num_args
 }
 
 /*
- * DuckDB LIKE has no default escape character, so we force `\` via an ESCAPE
- * clause: the vendored deparser calls these prefix/middle/suffix helpers for
- * every operator-expr so LIKE-ish expressions can be wrapped.
+ * DuckDB LIKE has no default escape character, so force `\` via an ESCAPE
+ * clause. The deparser calls these prefix/middle/suffix helpers per operator-
+ * expr to wrap LIKE-ish expressions.
  */
 
 struct PGDuckDBGetOperExprContext {
@@ -461,10 +453,7 @@ pg_duckdb_get_oper_expr_suffix(StringInfo buf, void *vctx) {
 	}
 }
 
-/*
- * Vendored from PG's heap.c (not exposed via headers): cooks a raw CHECK
- * constraint expression for storage.
- */
+/* Vendored from PG's heap.c (not header-exposed): cooks a raw CHECK expr. */
 static Node *
 cookConstraint(ParseState *pstate, Node *raw_constraint, char *relname) {
 	Node *expr = transformExpr(pstate, raw_constraint, EXPR_KIND_CHECK_CONSTRAINT);
@@ -481,9 +470,9 @@ cookConstraint(ParseState *pstate, Node *raw_constraint, char *relname) {
 namespace pgddb {
 
 /*
- * DuckDB CREATE TABLE statement for the relation: schema, defaults, NOT NULL
- * and CHECK constraints; UNIQUE/PRIMARY KEY are excluded (they would trigger
- * PG index creation). Catalog name comes from the pgddb table-AM registry.
+ * DuckDB CREATE TABLE for the relation. UNIQUE/PRIMARY KEY are excluded because
+ * they would trigger PG index creation; catalog name comes from the pgddb
+ * table-AM registry.
  */
 std::string
 DuckdbRuleutils::get_tabledef(Oid relation_oid) {

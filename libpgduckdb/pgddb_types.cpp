@@ -40,8 +40,7 @@ extern "C" {
 
 namespace pgddb {
 
-// Registered type-extension hooks. Each kernel conversion handles built-in Postgres
-// types first, then iterates its hook list in registration order until one returns true.
+// Type-extension hooks: each conversion handles built-in PG types first, then tries these in registration order.
 static std::vector<ConvertPostgresToBaseDuckColumnType_hook_t> g_pg_to_base_duck_hooks;
 static std::vector<GetPostgresDuckDBType_hook_t> g_duck_to_pg_hooks;
 static std::vector<GetPostgresArrayDuckDBType_hook_t> g_duck_to_pg_array_hooks;
@@ -74,7 +73,7 @@ Register_GetPostgresToDuckValueFn(GetPostgresToDuckValueFn_hook_t fn) {
 NumericVar FromNumeric(Numeric num);
 
 struct NumericAsDouble : public duckdb::ExtraTypeInfo {
-	// Dummy struct to indicate at conversion that the source is a Numeric
+	// Marker that the DOUBLE originated from a PG Numeric.
 public:
 	NumericAsDouble() : ExtraTypeInfo(duckdb::ExtraTypeInfoType::INVALID_TYPE_INFO) {
 	}
@@ -202,14 +201,12 @@ struct DecimalConversionDouble {
 	}
 };
 
-// Util function to convert duckdb `BIT` value to postgres bitstring type.
-// There're two possible corresponding types `BITOID` and `VARBITOID`, here we convert to `VARBITOID` for generality.
+// duckdb BIT maps to both BITOID and VARBITOID; convert to VARBITOID for generality.
 static Datum
 ConvertVarbitDatum(const duckdb::Value &value) {
 	const std::string value_str = value.ToString();
 
-	// Here we rely on postgres conversion function, instead of manual parsing, because BIT string type involves padding
-	// and duckdb/postgres handle it differently, it's non-trivial to memcpy the bits.
+	// Rely on PG conversion: BIT padding differs between duckdb and PG, so memcpy-ing the bits is non-trivial.
 	return pgddb::pg::StringToVarbit(value_str.c_str());
 }
 
@@ -222,12 +219,7 @@ ValidDate(duckdb::date_t dt) {
 
 static inline bool
 ValidTimestampOrTimestampTz(int64_t timestamp) {
-	// PG TIMESTAMP RANGE = 4714-11-24 00:00:00 (BC) <-> 294276-12-31 23:59:59
-	// DUCK TIMESTAMP RANGE = 290308-12-22 00:00:00 (BC) <-> 294247-01-10 04:00:54
-	// Taking Intersection of the ranges
-	// MIN TIMESTAMP = 4714-11-24 00:00:00 (BC)
-	// MAX TIMESTAMP = 294246-12-31 23:59:59 , To keep it capped to a specific year.. also coincidently this is EXACTLY
-	// 30 years less than PG max value.
+	// Intersection of PG and DuckDB timestamp ranges, capped at a whole year (294246-12-31).
 	return timestamp >= PGDUCKDB_MIN_TIMESTAMP_VALUE && timestamp < PGDUCKDB_MAX_TIMESTAMP_VALUE;
 }
 
@@ -296,8 +288,7 @@ ConvertDateDatum(const duckdb::Value &value) {
 		                                  duckdb::Date::ToString(PGDUCKDB_PG_MIN_DATE_VALUE),
 		                                  duckdb::Date::ToString(PGDUCKDB_PG_MAX_DATE_VALUE));
 
-	// Special Handling for +/-infinity date values
-	// -infinity value is different for PG date
+	// +/-infinity use distinct sentinels in PG vs duckdb
 	if (date == duckdb::date_t::ninfinity())
 		return DateADTGetDatum(DATEVAL_NOBEGIN);
 	else if (date == duckdb::date_t::infinity())
@@ -331,39 +322,32 @@ ConvertTimeTzDatum(const duckdb::Value &value) {
 
 	TimeTzADT *result = static_cast<TimeTzADT *>(palloc(sizeof(TimeTzADT)));
 	result->time = micros;
-	// pg and duckdb stores timezone with different signs, for example, for TIMETZ 01:02:03+05, duckdb stores offset =
-	// 18000, while pg stores zone = -18000.
+	// PG and duckdb store tz offsets with opposite signs (e.g. +05: duckdb 18000, PG -18000).
 	result->zone = -tz_offset;
 	return TimeTzADTPGetDatum(result);
 }
 
 inline Datum
 ConvertTimestampDatum(const duckdb::Value &value) {
-	// Extract raw int64_t value of timestamp
 	int64_t rawValue = value.GetValue<int64_t>();
 
-	// Early Return for +/-Inf
 	if (rawValue == static_cast<int64_t>(duckdb::timestamp_t::ninfinity()))
 		return TimestampGetDatum(DT_NOBEGIN);
 	else if (rawValue == static_cast<int64_t>(duckdb::timestamp_t::infinity()))
 		return TimestampGetDatum(DT_NOEND);
 
-	// Handle specific Timestamp unit(sec, ms, ns) types
+	// Normalize to microseconds based on the timestamp unit.
 	switch (value.type().id()) {
 	case duckdb::LogicalType::TIMESTAMP_MS:
-		// 1 ms = 10^3 micro-sec
 		rawValue *= 1000;
 		break;
 	case duckdb::LogicalType::TIMESTAMP_NS:
-		// 1 ns = 10^-3 micro-sec
 		rawValue /= 1000;
 		break;
 	case duckdb::LogicalType::TIMESTAMP_S:
-		// 1 s = 10^6 micro-sec
 		rawValue *= 1000000;
 		break;
 	default:
-		// Since we don't want to handle anything here
 		break;
 	}
 
@@ -381,7 +365,6 @@ ConvertTimestampTzDatum(const duckdb::Value &value) {
 	duckdb::timestamp_tz_t timestamp = value.GetValue<duckdb::timestamp_tz_t>();
 	int64_t rawValue = timestamp.value;
 
-	// Early Return for +/-Inf
 	if (rawValue == static_cast<int64_t>(duckdb::timestamp_t::ninfinity()))
 		return TimestampTzGetDatum(DT_NOBEGIN);
 	else if (rawValue == static_cast<int64_t>(duckdb::timestamp_t::infinity()))
@@ -419,7 +402,7 @@ ConvertNumeric(const duckdb::Value &ddb_value, idx_t scale, NumericVar &result) 
 		result.sign = NUMERIC_POS;
 	}
 
-	// divide the decimal into the integer part (before the decimal point) and fractional part (after the point)
+	// Split into integer and fractional parts around the decimal point.
 	T integer_part;
 	T fractional_part;
 	if (scale == 0) {
@@ -435,7 +418,7 @@ ConvertNumeric(const duckdb::Value &ddb_value, idx_t scale, NumericVar &result) 
 	uint16_t fractional_digits[MAX_DIGITS];
 	int32_t integral_ndigits;
 
-	// split the integral part into parts of up to NBASE (4 digits => 0..9999)
+	// Split the integral part into NBASE digits (0..9999 each).
 	integral_ndigits = 0;
 	while (integer_part > 0) {
 		integral_digits[integral_ndigits++] = uint16_t(integer_part % T(NBASE));
@@ -443,15 +426,10 @@ ConvertNumeric(const duckdb::Value &ddb_value, idx_t scale, NumericVar &result) 
 	}
 
 	result.weight = integral_ndigits - 1;
-	// split the fractional part into parts of up to NBASE (4 digits => 0..9999)
-	// count the amount of digits required for the fractional part
-	// note that while it is technically possible to leave out zeros here this adds even more complications
-	// so we just always write digits for the full "scale", even if not strictly required
+	// Always emit NBASE digits for the full scale (trailing zeros included).
 	idx_t fractional_ndigits = (scale + DEC_DIGITS - 1) / DEC_DIGITS;
-	// fractional digits are LEFT aligned (for some unknown reason)
-	// that means if we write ".12" with a scale of 2 we actually need to write "1200", instead of "12"
-	// this means we need to "correct" the number 12 by multiplying by 100 in this case
-	// this correction factor is the "number of digits to the next full number"
+	// PG stores fractional NBASE digits LEFT-aligned: ".12" at scale 2 is "1200", so scale 12 by the gap to the next
+	// full digit.
 	int32_t correction = fractional_ndigits * DEC_DIGITS - scale;
 	fractional_part *= T(OP::GetPowerOfTen(correction));
 	for (idx_t i = 0; i < fractional_ndigits; i++) {
@@ -478,16 +456,13 @@ static Datum
 ConvertNumericDatum(const duckdb::Value &value) {
 	auto value_type_id = value.type().id();
 
-	// Special handle duckdb BIGNUM type.
 	if (value.type().id() == duckdb::LogicalTypeId::BIGNUM) {
-		// The performant way to handle the translation is to parse BIGNUM out, here we leverage string conversion and
-		// parsing mainly for code simplicity.
+		// Round-trip via string for simplicity rather than parsing BIGNUM directly.
 		const std::string value_str = value.ToString();
 		Datum pg_numeric = pgddb::pg::StringToNumeric(value_str.c_str());
 		return pg_numeric;
 	}
 
-	// Special handle duckdb DOUBLE TYPE.
 	if (value_type_id == duckdb::LogicalTypeId::DOUBLE) {
 		return ConvertDoubleDatum(value);
 	}
@@ -534,7 +509,6 @@ ConvertUUIDDatum(const duckdb::Value &value) {
 	pg_uuid_t *postgres_uuid = (pg_uuid_t *)palloc(sizeof(pg_uuid_t));
 
 	duckdb_uuid.upper ^= (uint64_t(1) << 63);
-	// Convert duckdb_uuid to bytes and store in postgres_uuid.data
 	uint8_t *uuid_bytes = (uint8_t *)&duckdb_uuid;
 
 	for (int i = 0; i < UUID_LEN; ++i) {
@@ -570,12 +544,8 @@ DatumGet<duckdb::interval_t>(Datum value) {
 
 static std::string
 DatumGetBitString(Datum value) {
-	// Here we rely on postgres conversion function, instead of manual parsing,
-	// because BIT string type involves padding and duckdb/postgres handle it
-	// differently, it's non-trivial to memcpy the bits.
-	//
-	// NOTE: We use VarbitToString here, because BIT and VARBIT are both stored
-	// internally as a VARBIT in postgres.
+	// Rely on PG conversion: BIT padding differs between duckdb and PG. VarbitToString works for both BIT and VARBIT
+	// since PG stores BIT internally as VARBIT.
 	return std::string(pgddb::pg::VarbitToString(value));
 }
 
@@ -591,8 +561,7 @@ template <>
 inline duckdb::dtime_tz_t
 DatumGet<duckdb::dtime_tz_t>(Datum value) {
 	TimeTzADT *tzt = static_cast<TimeTzADT *>(DatumGetTimeTzADTP(value));
-	// pg and duckdb stores timezone with different signs, for example, for TIMETZ 01:02:03+05, duckdb stores offset =
-	// 18000, while pg stores zone = -18000.
+	// PG and duckdb store tz offsets with opposite signs (e.g. +05: duckdb 18000, PG -18000).
 	const uint64_t bits = duckdb::dtime_tz_t::encode_micros(static_cast<int64_t>(tzt->time)) |
 	                      duckdb::dtime_tz_t::encode_offset(-tzt->zone);
 	const duckdb::dtime_tz_t duck_time_tz {bits};
@@ -632,8 +601,6 @@ DatumGetUUID(Datum value) {
 template <int32_t OID>
 struct PostgresTypeTraits;
 
-// Specializations for each type
-// BOOL type
 template <>
 struct PostgresTypeTraits<BOOLOID> {
 	static constexpr int16_t typlen = 1;
@@ -646,7 +613,6 @@ struct PostgresTypeTraits<BOOLOID> {
 	}
 };
 
-// CHAR type
 template <>
 struct PostgresTypeTraits<CHAROID> {
 	static constexpr int16_t typlen = 1;
@@ -659,7 +625,6 @@ struct PostgresTypeTraits<CHAROID> {
 	}
 };
 
-// INT2 type (smallint)
 template <>
 struct PostgresTypeTraits<INT2OID> {
 	static constexpr int16_t typlen = 2;
@@ -672,7 +637,6 @@ struct PostgresTypeTraits<INT2OID> {
 	}
 };
 
-// INT4 type (integer)
 template <>
 struct PostgresTypeTraits<INT4OID> {
 	static constexpr int16_t typlen = 4;
@@ -685,7 +649,6 @@ struct PostgresTypeTraits<INT4OID> {
 	}
 };
 
-// INT8 type (bigint)
 template <>
 struct PostgresTypeTraits<INT8OID> {
 	static constexpr int16_t typlen = 8;
@@ -698,7 +661,6 @@ struct PostgresTypeTraits<INT8OID> {
 	}
 };
 
-// FLOAT4 type (real)
 template <>
 struct PostgresTypeTraits<FLOAT4OID> {
 	static constexpr int16_t typlen = 4;
@@ -711,7 +673,6 @@ struct PostgresTypeTraits<FLOAT4OID> {
 	}
 };
 
-// FLOAT8 type (double precision)
 template <>
 struct PostgresTypeTraits<FLOAT8OID> {
 	static constexpr int16_t typlen = 8;
@@ -724,7 +685,6 @@ struct PostgresTypeTraits<FLOAT8OID> {
 	}
 };
 
-// TIMESTAMP type
 template <>
 struct PostgresTypeTraits<TIMESTAMPOID> {
 	static constexpr int16_t typlen = 8;
@@ -749,7 +709,6 @@ struct PostgresTypeTraits<TIMESTAMPTZOID> {
 	}
 };
 
-// INTERVAL type
 template <>
 struct PostgresTypeTraits<INTERVALOID> {
 	static constexpr int16_t typlen = 16;
@@ -762,7 +721,6 @@ struct PostgresTypeTraits<INTERVALOID> {
 	}
 };
 
-// BIT type
 template <>
 struct PostgresTypeTraits<VARBITOID> {
 	static constexpr int16_t typlen = -1;
@@ -775,7 +733,6 @@ struct PostgresTypeTraits<VARBITOID> {
 	}
 };
 
-// TIME type
 template <>
 struct PostgresTypeTraits<TIMEOID> {
 	static constexpr int16_t typlen = 8;
@@ -788,7 +745,6 @@ struct PostgresTypeTraits<TIMEOID> {
 	}
 };
 
-// TIMETZ type
 template <>
 struct PostgresTypeTraits<TIMETZOID> {
 	static constexpr int16_t typlen = 12;
@@ -801,7 +757,6 @@ struct PostgresTypeTraits<TIMETZOID> {
 	}
 };
 
-// DATE type
 template <>
 struct PostgresTypeTraits<DATEOID> {
 	static constexpr int16_t typlen = 4;
@@ -814,7 +769,6 @@ struct PostgresTypeTraits<DATEOID> {
 	}
 };
 
-// UUID type
 template <>
 struct PostgresTypeTraits<UUIDOID> {
 	static constexpr int16_t typlen = 16;
@@ -827,7 +781,6 @@ struct PostgresTypeTraits<UUIDOID> {
 	}
 };
 
-// NUMERIC type
 template <>
 struct PostgresTypeTraits<NUMERICOID> {
 	static constexpr int16_t typlen = -1; // variable-length
@@ -840,7 +793,6 @@ struct PostgresTypeTraits<NUMERICOID> {
 	}
 };
 
-// TEXT type
 template <>
 struct PostgresTypeTraits<TEXTOID> {
 	static constexpr int16_t typlen = -1; // variable-length
@@ -853,7 +805,6 @@ struct PostgresTypeTraits<TEXTOID> {
 	}
 };
 
-// BLOB type
 template <>
 struct PostgresTypeTraits<BYTEAOID> {
 	static constexpr int16_t typlen = -1; // variable-length
@@ -1189,19 +1140,14 @@ ConvertPostgresToBaseDuckColumnType(Form_pg_attribute &attribute) {
 		auto precision = numeric_typmod_precision(type_modifier);
 		auto scale = numeric_typmod_scale(type_modifier);
 
-		/*
-		 * DuckDB decimals only support up to 38 digits. So we cannot convert
-		 * NUMERICs of higher precision losslessly. We do allow conversion to
-		 * doubles.
-		 * https://duckdb.org/docs/stable/sql/data_types/numeric.html#fixed-point-decimals
-		 */
+		// DuckDB decimals support at most 38 digits; higher precision is lossy, so only DOUBLE conversion is offered.
+		// https://duckdb.org/docs/stable/sql/data_types/numeric.html#fixed-point-decimals
 		if (type_modifier == -1 || precision < 1 || precision > 38 || scale < 0 || scale > 38 || scale > precision) {
 			if (convert_unsupported_numeric_to_double) {
 				auto extra_type_info = duckdb::make_shared_ptr<NumericAsDouble>();
 				return duckdb::LogicalType(duckdb::LogicalTypeId::DOUBLE, std::move(extra_type_info));
 			}
 
-			/* We don't allow conversion then! */
 			if (type_modifier == -1) {
 				return CreateUnsupportedPostgresType(
 				    "DuckDB requires the precision of a NUMERIC to be set. You can choose to convert these NUMERICs to "
@@ -1265,24 +1211,8 @@ ConvertPostgresToDuckColumnType(Form_pg_attribute &attribute) {
 
 	auto dimensions = attribute->attndims;
 
-	/*
-	 * Multi-dimensional arrays in Postgres and nested lists in DuckDB are
-	 * quite different in behaviour. We try to map them to eachother anyway,
-	 * because in a lot of cases that works fine. But there's also quite a few
-	 * where users will get errors.
-	 *
-	 * To support multi-dimensional arrays that are stored in Postgres tables,
-	 * we assume that the attndims value is correct. If people have specified
-	 * the matching number of [] when creating the table, that is the case.
-	 * It's even possible to store arrays of different dimensions in a single
-	 * column. DuckDB does not support that.
-	 *
-	 * In certain cases (such as tables created by a CTAS) attndims can even be
-	 * 0 for array types. It's impossible for us to find out what the actual
-	 * dimensions are without reading the first row. Given that it's most
-	 * to use single-dimensional arrays, we assume that such a column stores
-	 * those.
-	 */
+	// PG multi-dim arrays and DuckDB nested lists differ; we map via attndims, which we trust as correct.
+	// CTAS can leave attndims at 0 for array types; with no row to inspect we assume single-dimensional.
 	if (dimensions == 0) {
 		dimensions = 1;
 	}
@@ -1362,19 +1292,16 @@ GetPostgresArrayDuckDBType(const duckdb::LogicalType &type, bool throw_error) {
 	}
 }
 
-// Check if this expression has UnsupportedPostgresType
 void
 CheckForUnsupportedPostgresType(duckdb::LogicalType type) {
 	if (type.id() == duckdb::LogicalTypeId::INVALID && type.GetAlias() == "UnsupportedPostgresType") {
-		// Extract and include any modifier information from the type
 		auto info = type.GetExtensionInfo();
 		if (info && info->modifiers.size() > 0) {
-			// Use the first modifier as the error message
+			// The first modifier carries the error message.
 			auto modifier_value = info->modifiers[0];
 			throw duckdb::NotImplementedException("Unsupported PostgreSQL type found in query: %s",
 			                                      modifier_value.ToString());
 		} else {
-			// Fallback to the alias if no modifiers are available
 			throw duckdb::NotImplementedException("Unsupported PostgreSQL type found in query");
 		}
 	}
@@ -1579,7 +1506,6 @@ AppendTimestamp(duckdb::Vector &result, Datum value, idx_t offset) {
 		return;
 	}
 
-	// Bounds Check
 	if (!ValidTimestampOrTimestampTz(timestamp + PGDUCKDB_DUCK_TIMESTAMP_OFFSET))
 		throw duckdb::OutOfRangeException(
 		    "The Timestamp value should be between min and max value (%s <-> %s)",
@@ -1604,7 +1530,6 @@ AppendTimestampTz(duckdb::Vector &result, Datum value, idx_t offset) {
 		return;
 	}
 
-	// Bounds Check
 	if (!ValidTimestampOrTimestampTz(timestamp + PGDUCKDB_DUCK_TIMESTAMP_OFFSET))
 		throw duckdb::OutOfRangeException(
 		    "The TimestampTz value should be between min and max value (%s <-> %s)",
@@ -1636,12 +1561,8 @@ ConvertDecimal(const NumericVar &numeric) {
 		integral_part *= scale_POWER;
 	}
 
-	// we need to find out how large the fractional part is in terms of powers
-	// of ten this depends on how many times we multiplied with NBASE
-	// if that is different from scale, we need to divide the extra part away
-	// again
-	// similarly, if trailing zeroes have been suppressed, we have not been multiplying t
-	// the fractional part with NBASE often enough. If so, add additional powers
+	// Reconcile the fractional part's power-of-ten against scale: NBASE multiplications rarely land exactly on
+	// scale (and suppressed trailing zeros undershoot), so correct by the difference.
 	if (numeric.ndigits > numeric.weight + 1) {
 		auto fractional_power = (numeric.ndigits - numeric.weight - 1) * DEC_DIGITS;
 		auto fractional_power_correction = fractional_power - numeric.dscale;
@@ -1671,7 +1592,6 @@ ConvertDecimal(const NumericVar &numeric) {
 		}
 	}
 
-	// finally
 	auto base_res = OP::Finalize(numeric, integral_part + fractional_part);
 	return numeric.sign == NUMERIC_NEG ? -base_res : base_res;
 }
@@ -1714,13 +1634,11 @@ AppendList(duckdb::Vector &result, Datum value, idx_t offset) {
 	int nelems;
 	Datum *elems;
 	bool *nulls;
-	// Deconstruct the array into Datum elements
 	PostgresFunctionGuard(deconstruct_array, array, elem_type, typlen, typbyval, typalign, &elems, &nulls, &nelems);
 
 	if (ndims == -1) {
 		throw duckdb::InternalException("Array type has an ndims of -1, so it's actually not an array??");
 	}
-	// Set the list_entry_t metadata
 	duckdb::Vector *vec = &result;
 	int write_offset = offset;
 	for (int dim = 0; dim < ndims; dim++) {
@@ -1734,10 +1652,8 @@ AppendList(duckdb::Vector &result, Datum value, idx_t offset) {
 		auto child_offset = duckdb::ListVector::GetListSize(*vec);
 		auto list_data = duckdb::FlatVector::GetData<duckdb::list_entry_t>(*vec);
 		for (int entry = 0; entry < previous_dimension; entry++) {
-			list_data[write_offset + entry] = duckdb::list_entry_t(
-			    // All lists in a postgres row are enforced to have the same dimension
-			    // [[1,2],[2,3,4]] is not allowed, second list has 3 elements instead of 2
-			    child_offset + (dimension * entry), dimension);
+			// All lists in a PG row share one dimension (e.g. [[1,2],[2,3,4]] is rejected).
+			list_data[write_offset + entry] = duckdb::list_entry_t(child_offset + (dimension * entry), dimension);
 		}
 		auto new_child_size = child_offset + (dimension * previous_dimension);
 		duckdb::ListVector::Reserve(*vec, new_child_size);
@@ -1772,12 +1688,7 @@ AppendList(duckdb::Vector &result, Datum value, idx_t offset) {
 	}
 }
 
-/*
- * Convert a Postgres Datum to a DuckDB Value. This is meant to be used to
- * covert query parameters in a prepared statement to its DuckDB equivalent.
- * Passing it a Datum that is stored on disk results in undefined behavior,
- * because this fuction makes no effert to detoast the Datum.
- */
+// Converts a prepared-statement parameter Datum to a DuckDB Value. Does not detoast, so an on-disk Datum is UB.
 duckdb::Value
 ConvertPostgresParameterToDuckValue(Datum value, Oid postgres_type) {
 	switch (postgres_type) {
@@ -1793,9 +1704,7 @@ ConvertPostgresParameterToDuckValue(Datum value, Oid postgres_type) {
 	case TEXTOID:
 	case JSONOID:
 	case VARCHAROID: {
-		// FIXME: TextDatumGetCstring allocates so it needs a
-		// guard, but it's a macro not a function, so our current gaurd
-		// template does not handle it.
+		// FIXME: TextDatumGetCString allocates and needs a guard, but it's a macro the guard template can't wrap.
 		return duckdb::Value(TextDatumGetCString(value));
 	}
 	case DATEOID:
@@ -1916,10 +1825,7 @@ ConvertPostgresToDuckValue(Oid attr_type, Datum value, duckdb::Vector &result, i
 	fn(result, value, offset);
 }
 
-/*
- * Returns true if the given type can be converted from a Postgres datum to a DuckDB value
- * without requiring any Postgres-specific functions or memory allocations (such as palloc).
- */
+// True if PG->DuckDB conversion needs no PG-specific functions or allocations (e.g. palloc), hence no lock.
 static bool
 IsThreadSafeTypeForPostgresToDuckDB(Oid attr_type, duckdb::LogicalTypeId duckdb_type) {
 	if (duckdb_type == duckdb::LogicalTypeId::VARCHAR) {
@@ -1932,12 +1838,8 @@ IsThreadSafeTypeForPostgresToDuckDB(Oid attr_type, duckdb::LogicalTypeId duckdb_
 	return true;
 }
 
-/*
- * Insert batch of tuples into chunk.
- *
- * The slots only need to hold a (minimal) tuple; this function deforms them. Global lock & PG memory
- * context are handled for unsafe types, e.g., JSONB/LIST/VARBIT.
- */
+// Inserts a batch of tuples into a chunk; deforms minimal slots in place. Unsafe types (JSONB/LIST/VARBIT) are
+// converted under the global lock and a dedicated PG memory context.
 void
 InsertTuplesIntoChunk(duckdb::DataChunk &output, pgddb::PostgresScanLocalState &scan_local_state,
                       TupleTableSlot **slots, int num_slots) {
@@ -1945,8 +1847,7 @@ InsertTuplesIntoChunk(duckdb::DataChunk &output, pgddb::PostgresScanLocalState &
 		return;
 	}
 
-	// Deform every slot up front so the column-major loop below can read tts_values/tts_isnull. slot_getallattrs
-	// is idempotent and allocation-free for minimal slots, so it is safe to call without the global lock.
+	// Deform all slots up front for the column-major loop; slot_getallattrs is allocation-free here, so no lock needed.
 	for (int row = 0; row < num_slots; row++) {
 		slot_getallattrs(slots[row]);
 	}
@@ -1981,7 +1882,6 @@ InsertTuplesIntoChunk(duckdb::DataChunk &output, pgddb::PostgresScanLocalState &
 		if (!is_safe_type) {
 			pgddb::pg::MemoryContextSwitchTo(old_ctx);
 			pgddb::pg::MemoryContextReset(scan_global_state->duckdb_scan_memory_ctx);
-			// Lock will be automatically unlocked when lock_guard goes out of scope
 		}
 	}
 

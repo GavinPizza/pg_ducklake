@@ -32,8 +32,7 @@ bool skip_snapshot_sync = false;
 
 namespace {
 
-/* Sync handlers called by ducklake_snapshot_trigger in order.
- * Add new handlers here. */
+/* Sync handlers called by ducklake_snapshot_trigger, in order. */
 pgducklake::SyncHandler sync_handlers[] = {
     pgducklake::SyncNewTables,
     pgducklake::SyncDroppedTables,
@@ -44,20 +43,17 @@ pgducklake::SyncHandler sync_handlers[] = {
 
 extern "C" {
 
-/*
- * AFTER INSERT trigger on ducklake.ducklake_snapshot: reverse-syncs DDL made
- * by external DuckDB clients (which write the metadata tables directly) into
- * the PG catalog via sync_handlers.
- */
+/* AFTER INSERT on ducklake.ducklake_snapshot: reverse-syncs DDL made by external
+ * DuckDB clients into the PG catalog via sync_handlers. */
 DECLARE_PG_FUNCTION(ducklake_snapshot_trigger) {
 	if (!CALLED_AS_TRIGGER(fcinfo))
 		elog(ERROR, "not fired by trigger manager");
 
 	TriggerData *trigdata = (TriggerData *)fcinfo->context;
 
-	/* skip_snapshot_sync paths have no DDL to reverse-sync (and may run on a
-	 * DuckDB worker thread, where PG's InterruptHoldoffCount is not thread-safe);
-	 * enable_metadata_sync=off opts out of the per-commit sync overhead. */
+	/* skip_snapshot_sync paths have no DDL to reverse-sync and may run on a DuckDB
+	 * worker thread (PG's InterruptHoldoffCount is not thread-safe); enable_metadata_sync
+	 * off opts out of the per-commit sync overhead. */
 	if (pgducklake::skip_snapshot_sync || !pgducklake::enable_metadata_sync) {
 		return PointerGetDatum(trigdata->tg_trigtuple);
 	}

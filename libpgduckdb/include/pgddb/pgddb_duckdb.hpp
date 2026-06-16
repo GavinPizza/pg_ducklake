@@ -61,43 +61,29 @@ protected:
 	RequireExecution() {
 	}
 
-	// Whether GetConnection should open a DuckDB transaction. Default uses
-	// PG's IsInTransactionBlock at the top-level (no function-context
-	// tracking). pg_duckdb overrides this to consult its own
-	// top_level_statement flag so DuckDB joins the outer PG transaction
-	// when invoked from inside a plpgsql function.
+	// Whether GetConnection should open a DuckDB transaction. Default uses PG's
+	// IsInTransactionBlock at top-level; pg_duckdb overrides it so DuckDB joins
+	// the outer PG transaction when called from inside a plpgsql function.
 	virtual bool ShouldBeginTransaction();
 
 	/*
-	 * FIXME: Use a unique_ptr instead of a raw pointer. For now this is not
-	 * possible though, as the MotherDuck extension causes an ABORT when the
-	 * DuckDB database its destructor is run at the exit of the process.  This
-	 * then in turn crashes Postgres, which we obviously dont't want. Not
-	 * running the destructor also doesn't really have any downsides, as the
-	 * process is going to die anyway. It's probably even a tiny bit more
-	 * efficient not to run the destructor at all. But we should still fix
-	 * this, because running the destructor is a good way to find bugs (such
-	 * as the one reported in #279).
+	 * FIXME: raw pointer, not unique_ptr: the MotherDuck extension ABORTs when
+	 * the DuckDB database destructor runs at process exit, crashing Postgres.
 	 */
 	duckdb::DuckDB *database;
 	duckdb::unique_ptr<duckdb::Connection> connection;
 	std::string default_dbname;
 
-	// Set the directory to which DuckDB writes temp files
 	char *duckdb_temp_directory;
-	// Set the directory to where DuckDB stores extensions in
 	char *duckdb_extension_directory;
-	// The maximum amount of data stored inside DuckDB's 'temp_directory' (when
-	// set) (e.g., 1GB)
+	// Max data in DuckDB's temp_directory when set (e.g., 1GB)
 	char *duckdb_max_temp_directory_size;
-	// The maximum memory DuckDB can use in MB (e.g., 4096 for 4GB)
+	// Max memory DuckDB can use in MB (e.g., 4096 for 4GB)
 	int duckdb_maximum_memory;
-	// Maximum number of DuckDB threads per Postgres backend. Defaults to 1
-	// so all DuckDB work runs on the backend's main thread: PG routines
-	// reached from DuckDB execution (e.g. PostgresTableReader scans) are not
-	// thread-safe off the main thread. Consumers that accept that risk can
-	// raise it (pg_duckdb overrides this from its duckdb.max_threads GUC in
-	// ApplyGucConfig; -1 means leave DuckDB's default, i.e. all cores).
+	// Max DuckDB threads per backend. Defaults to 1 so all DuckDB work runs on
+	// the backend's main thread: PG routines reached from DuckDB execution
+	// (e.g. PostgresTableReader scans) are not thread-safe off it. -1 leaves
+	// DuckDB's default (all cores).
 	int duckdb_threads;
 
 public:

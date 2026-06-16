@@ -67,7 +67,7 @@ DetachFrozenDB() {
 	try {
 		DuckDBQueryOrThrow(detach);
 	} catch (const std::exception &) {
-		// Best-effort cleanup; ignore errors (the DB may not be attached).
+		// Best-effort: the DB may not be attached.
 	}
 }
 
@@ -88,10 +88,8 @@ DECLARE_PG_FUNCTION(ducklake_freeze) {
 
 	char *output_path = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
-	// If data inlining is enabled, the caller must flush inlined data before
-	// freezing (SELECT * FROM ducklake.flush_inlined_data()). The flush must be
-	// a separate top-level PG statement so pg_duckdb's catalog cache refreshes
-	// before the copy reads from pgduckdb.ducklake.*.
+	// Caller must flush inlined data (ducklake.flush_inlined_data()) in a separate
+	// top-level statement first, so pg_duckdb's catalog cache refreshes before this copy.
 	std::string batch;
 	batch += duckdb::StringUtil::Format("ATTACH %s AS %s;\n", duckdb::KeywordHelper::WriteQuoted(output_path).c_str(),
 	                                    pgducklake::FROZEN_DB);
@@ -110,7 +108,6 @@ DECLARE_PG_FUNCTION(ducklake_freeze) {
 		pgducklake::FreezeFail("copy metadata", pgducklake::DuckDBErrorMessage(e).c_str());
 	}
 
-	// 3. DETACH
 	pgducklake::DetachFrozenDB();
 
 	PG_RETURN_VOID();

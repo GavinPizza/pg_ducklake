@@ -3,11 +3,7 @@
 #include "postgres.h"
 #include "fmgr.h"
 
-/*
- * This file contains the renaming of the functions exposed by
- * vendor/pg_ruleutils.h functions to avoid conflicts with the PostgreSQL
- * functions.
- */
+/* Rename vendor/pg_ruleutils.h functions to pgddb_* to avoid conflicts with PostgreSQL's. */
 #define pg_get_indexdef_string           pgddb_pg_get_indexdef_string
 #define pg_get_indexdef_columns          pgddb_pg_get_indexdef_columns
 #define pg_get_indexdef_columns_extended pgddb_pg_get_indexdef_columns_extended
@@ -26,10 +22,7 @@
 #define pg_get_statisticsobjdef_string   pgddb_pg_get_statisticsobjdef_string
 #define get_list_partvalue_string        pgddb_get_list_partvalue_string
 
-/*
- * The following replaces all usages of generate_qualified_relation_name and
- * generate_relation_name with calls to the pgddb_relation_name function
- */
+/* Route generate_qualified_relation_name / generate_relation_name to pgddb_relation_name. */
 #define generate_qualified_relation_name          pgddb_relation_name
 #define generate_relation_name(relid, namespaces) pgddb_relation_name(relid)
 

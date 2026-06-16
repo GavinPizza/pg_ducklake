@@ -22,13 +22,10 @@ struct DirectInsertContext {
 
 PlannedStmt *TryCreateDirectInsertPlan(Query *parse, ParamListInfo bound_params);
 
-/* Clear session-level caches.  Must be called on DuckDB instance recycle
- * (recycle_ddb) since table_id/schema_version may change. */
+// Must be called on DuckDB recycle: table_id/schema_version may change.
 void ResetDirectInsertCaches();
 
-/* Shared-memory outcome counters (pattern x reason).  Matched patterns always
- * pair with reason=ok.  Gated queries (non-INSERT / tx block / GUC off /
- * non-ducklake target) are filtered earlier and never bump counters. */
+// Outcome counters (pattern x reason); gated queries are filtered earlier and never counted.
 enum DirectInsertPattern {
 	DI_PAT_MATCHED_UNNEST = 0,
 	DI_PAT_MATCHED_VALUES,
@@ -48,15 +45,14 @@ enum DirectInsertReason {
 	DI_R_NUM,
 };
 
-/* Bump counter; safe to call from any backend after ShmemStartup ran. */
+// Safe to call from any backend after ShmemStartup ran.
 void DirectInsertStatsBump(DirectInsertPattern pattern, DirectInsertReason reason);
 
 void DirectInsertStatsReset();
 
 uint64_t DirectInsertStatsRead(DirectInsertPattern pattern, DirectInsertReason reason);
 
-/* Snapshot the whole matrix under one spinlock acquisition.  The
- * destination must be at least DI_PAT_NUM * DI_R_NUM uint64_t's. */
+// Snapshots the whole matrix under one spinlock acquisition.
 void DirectInsertStatsReadAll(uint64_t out[DI_PAT_NUM][DI_R_NUM]);
 
 const char *DirectInsertPatternName(DirectInsertPattern pattern);

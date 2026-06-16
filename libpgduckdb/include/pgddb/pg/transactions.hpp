@@ -7,10 +7,7 @@ extern bool IsSubTransaction(void);
 
 #define FirstCommandId ((CommandId)0)
 
-/*
- * These enum definitions are vendored in so we can implement a postgres
- * XactCallback in C++. It's not expected that these will ever change.
- */
+// Vendored from PG so we can implement an XactCallback in C++.
 typedef enum {
 	XACT_EVENT_COMMIT,
 	XACT_EVENT_PARALLEL_COMMIT,

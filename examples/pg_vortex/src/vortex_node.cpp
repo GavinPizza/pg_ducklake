@@ -1,6 +1,5 @@
-// pg_vortex's CustomScan node, adapted from libpgduckdb/pgddb_node.cpp.
-// The "VortexScan" method names must stay globally unique so pg_duckdb and
-// pg_vortex can load in the same backend.
+// pg_vortex's CustomScan node. The "VortexScan" method names must stay globally
+// unique so pg_duckdb and pg_vortex can load in the same backend.
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -158,12 +157,10 @@ Vortex_BeginCustomScan_Cpp(CustomScanState *cscanstate, EState *estate, int /*ef
 		}
 		for (size_t i = 0; i < prepared_result_types.size(); i++) {
 			Oid postgres_column_oid = pgddb::GetPostgresDuckDBType(prepared_result_types[i], true);
-			TargetEntry *target_entry =
-			    list_nth_node(TargetEntry, state->custom_scan->custom_scan_tlist, i);
+			TargetEntry *target_entry = list_nth_node(TargetEntry, state->custom_scan->custom_scan_tlist, i);
 			Var *var = castNode(Var, target_entry->expr);
 			if (var->vartype != postgres_column_oid) {
-				elog(ERROR,
-				     "Types returned by duckdb query changed between planning and execution, expected %d got %d",
+				elog(ERROR, "Types returned by duckdb query changed between planning and execution, expected %d got %d",
 				     var->vartype, postgres_column_oid);
 			}
 		}

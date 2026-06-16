@@ -1,5 +1,3 @@
-// pg_vortex's DuckDBManager singleton + connection-hook install.
-
 #include "pg_vortex/pgvortex_duckdb.hpp"
 
 namespace pg_vortex {

@@ -11,7 +11,6 @@ class PostgresSchema : public duckdb::SchemaCatalogEntry {
 public:
 	PostgresSchema(duckdb::Catalog &catalog, duckdb::CreateSchemaInfo &info, Snapshot snapshot);
 
-	// -- Schema API --
 	void Scan(duckdb::ClientContext &context, duckdb::CatalogType type,
 	          const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(duckdb::CatalogType type, const std::function<void(duckdb::CatalogEntry &)> &callback) override;

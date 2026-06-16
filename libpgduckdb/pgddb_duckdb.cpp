@@ -57,8 +57,8 @@ ToString(char *value) {
 
 } // anonymous namespace
 
-// DuckDB v1.5 removed direct field access on DBConfigOptions for most settings;
-// route everything through SetOptionByName. See duckdb/pg_duckdb#1025.
+// Most DBConfigOptions settings lack direct field access; route through
+// SetOptionByName. See duckdb/pg_duckdb#1025.
 #define SET_DUCKDB_OPTION(ddb_option_name)                                                                             \
 	config.SetOptionByName(#ddb_option_name, duckdb::Value(duckdb_##ddb_option_name));                                 \
 	elog(DEBUG2, "[pgddb] Set DuckDB option: '" #ddb_option_name "'=%s", ToString(duckdb_##ddb_option_name).c_str());
@@ -80,9 +80,8 @@ DuckDBManager::Initialize() {
 	}
 
 	if (duckdb_maximum_memory > 0) {
-		// Convert the memory limit from MB (as set by Postgres GUC_UNIT_MB, which is actually MiB; see
-		// memory_unit_conversion_table in guc.c) to a string with the "MiB" suffix, as required by DuckDB's memory
-		// parser. This ensures the value is interpreted correctly by DuckDB.
+		// PG GUC_UNIT_MB is actually MiB (memory_unit_conversion_table in guc.c);
+		// suffix "MiB" so DuckDB's memory parser interprets it correctly.
 		std::string memory_limit = std::to_string(duckdb_maximum_memory) + "MiB";
 		config.options.maximum_memory = duckdb::DBConfig::ParseMemoryLimit(memory_limit);
 		elog(DEBUG2, "[pgddb] Set DuckDB option: 'maximum_memory'=%dMB", duckdb_maximum_memory);
@@ -116,11 +115,10 @@ DuckDBManager::Initialize() {
 	default_dbname = db_manager.GetDefaultDatabase(context);
 	QueryOrThrow(context, "SET TimeZone =" + duckdb::KeywordHelper::WriteQuoted(pg_time_zone));
 
-	// Register the Postgres storage extension and attach it as the "pgduckdb"
-	// catalog so DuckDB can read PG heap relations. The name is internal to
-	// DuckDB (never user-visible), so it is fixed here rather than per-consumer.
-	// The deparser's db_and_schema fallback (pgddb_ruleutils.cpp) routes every
-	// relation no consumer resolver claims to this catalog.
+	// Attach the PG storage extension as the "pgduckdb" catalog so DuckDB can
+	// read PG heap relations. The name is DuckDB-internal (never user-visible),
+	// so fixed here; the deparser's db_and_schema fallback (pgddb_ruleutils.cpp)
+	// routes every unclaimed relation to this catalog.
 	{
 		auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
 		duckdb::StorageExtension::Register(dbconfig, "pgduckdb", duckdb::make_shared_ptr<PostgresStorageExtension>());
@@ -128,19 +126,14 @@ DuckDBManager::Initialize() {
 	QueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
 
 	/*
-	 * Force the SecretManager to perform its lazy initialization while
-	 * LocalFileSystem is still permitted. DuckDB 1.5.3 routes the persistent
-	 * (LocalFileSecretStorage) bootstrap through LocalDatabaseFileSystem,
-	 * which now honors disabled_filesystems. If the first query that touches
-	 * secrets happens after a consumer's RefreshConnectionState has disabled
-	 * LocalFileSystem for a non-superuser, the secret-storage bootstrap raises
-	 * a PermissionException ("File system LocalFileSystem has been disabled by
-	 * configuration") and every subsequent DropSecrets/LoadSecrets attempt
-	 * then fails with "Secret Storage with name 'memory' already registered"
-	 * because the temporary storage was loaded before the persistent one
-	 * threw. Eagerly initializing here keeps the bootstrap on the
-	 * instance-initialization connection, which no consumer has restricted
-	 * yet.
+	 * Force lazy SecretManager init while LocalFileSystem is still permitted.
+	 * DuckDB 1.5.3 routes the persistent secret-storage bootstrap through
+	 * LocalDatabaseFileSystem, which honors disabled_filesystems. If first
+	 * touched after a consumer disabled LocalFileSystem for a non-superuser, it
+	 * throws PermissionException after loading temporary storage, and every
+	 * later DropSecrets/LoadSecrets fails with "Secret Storage with name
+	 * 'memory' already registered". This keeps the bootstrap on the
+	 * instance-init connection, which no consumer has restricted yet.
 	 */
 	QueryOrThrow(context, "SELECT count(*) FROM duckdb_secrets();");
 
@@ -172,13 +165,9 @@ DuckDBManager::GetConnection(bool force_transaction) {
 
 		if (force_transaction || ShouldBeginTransaction()) {
 			/*
-			 * We only want to open a new DuckDB transaction if we're already
-			 * in a Postgres transaction block. Always opening a transaction
-			 * incurs a significant performance penalty for single statement
-			 * queries on MotherDuck. This is because a second round-trip is
-			 * needed to send the COMMIT to MotherDuck when Postgres its
-			 * transaction finishes. So we only want to do this when actually
-			 * necessary.
+			 * Only open a DuckDB transaction when already in a PG transaction
+			 * block: always opening one costs a second MotherDuck round-trip
+			 * (the COMMIT) for single-statement queries.
 			 */
 			connection->BeginTransaction();
 		}

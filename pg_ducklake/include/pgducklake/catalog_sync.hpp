@@ -4,17 +4,14 @@
 
 namespace pgducklake {
 
-/* Guard to prevent circular triggers during metadata->PG catalog sync.
- * Also checked by the utility hook to skip DuckDB execution when creating
- * ducklake_sorted indexes during sync. */
+/* Prevents circular triggers during metadata->PG sync; also tells the utility hook to
+ * skip DuckDB execution when creating ducklake_sorted indexes during sync. */
 extern bool syncing_from_metadata;
 
-/* When true the snapshot trigger skips all sync handlers.  Managed
- * exclusively via SkipSnapshotSyncGuard -- do not set directly. */
+/* Snapshot trigger skips all sync handlers. Set only via SkipSnapshotSyncGuard. */
 extern bool skip_snapshot_sync;
 
-/* Use around inserts into ducklake_snapshot that have no DDL changes to
- * reverse-sync (direct insert, ExecuteCommit). */
+/* Use around inserts into ducklake_snapshot that have no DDL changes to reverse-sync. */
 struct SkipSnapshotSyncGuard {
 	SkipSnapshotSyncGuard() {
 		skip_snapshot_sync = true;

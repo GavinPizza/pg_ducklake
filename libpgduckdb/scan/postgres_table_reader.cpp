@@ -136,13 +136,8 @@ PostgresTableReader::InitRunWithParallelScan(PlannedStmt *planned_stmt, bool cou
 }
 
 /*
- * Initializes a tuple slot for the current query.
- *
- * The returned TupleTableSlot is allocated in the context of `table_scan_query_desc->estate`
- * and will be automatically cleaned up when `table_scan_query_desc` is destroyed.
- *
- * Returns NULL if the table reader has already been cleaned up, e.g., if concurrent threads
- * have finished the scan and triggered cleanup).
+ * The returned slot is allocated in `table_scan_query_desc->estate` and is freed when
+ * that query desc is destroyed.
  */
 TupleTableSlot *
 PostgresTableReader::InitTupleSlot() {
@@ -199,20 +194,15 @@ PostgresTableReader::CleanupUnsafe() {
 }
 
 /*
- * Logic is straightforward, if `duckdb_max_workers_per_postgres_scan` is set to 0 we don't want any
- * parallelization. For cardinality less equal than 2^16 we only try to run one parallel process. When cardinality
- * is bigger than we should spawn numer of parallel processes set by `duckdb_max_workers_per_postgres_scan` but
- * not bigger than `max_parallel_workers`.
+ * 0 disables parallelism; cardinality <= 2^16 uses one worker; above that, up to
+ * `duckdb_max_workers_per_postgres_scan` capped by `max_parallel_workers`.
  */
-
 int
 PostgresTableReader::ParallelWorkerNumber(Cardinality cardinality) {
 	static const int cardinality_threshold = 1 << 16;
-	/* No parallel worker scan wanted */
 	if (!duckdb_max_workers_per_postgres_scan) {
 		return 0;
 	}
-	/* Use only one worker when scan is done on low cardinality */
 	if (cardinality <= cardinality_threshold) {
 		return 1;
 	}
@@ -277,9 +267,7 @@ PostgresTableReader::MarkPlanParallelAware(Plan *plan) {
 	}
 }
 
-/*
- * GlobalProcessLock should be held before calling this.
- */
+/* GlobalProcessLock must be held before calling this. */
 TupleTableSlot *
 PostgresTableReader::GetNextTuple() {
 	return PostgresMemberGuard(PostgresTableReader::GetNextTupleUnsafe);
@@ -309,20 +297,14 @@ PostgresTableReader::ExecNextTupleUnsafe() {
 
 static inline void
 CopyMinimalTuple(MinimalTuple src_minimal_tuple, std::vector<uint8_t> &dst_buffer) {
-	// Deep-copy the minimal tuple's bytes into the destination buffer.
 	Size tuple_size = src_minimal_tuple->t_len + MINIMAL_TUPLE_DATA_OFFSET;
 	dst_buffer.resize(tuple_size);
 	memcpy(dst_buffer.data(), src_minimal_tuple, tuple_size);
 }
 
 /*
- * Reads the next minimal tuple from a Postgres parallel worker and copies it into the provided buffer.
- * This function should only be called when the table scan is running with parallel workers.
- *
- * @param minimal_tuple_buffer Buffer to store the copied minimal tuple.
- * @return true if a tuple was read and copied; false if the scan is complete and no more tuples are available.
- *
- * Note: The caller must hold the GlobalProcessLock before invoking this function.
+ * Only valid when the scan runs with parallel workers; caller must hold GlobalProcessLock.
+ * Returns false when the scan is complete.
  */
 bool
 PostgresTableReader::GetNextMinimalWorkerTuple(std::vector<uint8_t> &minimal_tuple_buffer) {
@@ -343,16 +325,14 @@ PostgresTableReader::GetNextInProcessTuples(TupleTableSlot **slots, int max) {
 
 int
 PostgresTableReader::GetNextInProcessTuplesUnsafe(TupleTableSlot **slots, int max) {
-	// One guard (set up by GetNextInProcessTuples) covers the whole batch instead of one per tuple.
+	/* One guard (from GetNextInProcessTuples) covers the whole batch, not one per tuple. */
 	int count = 0;
 	for (; count < max; count++) {
 		TupleTableSlot *thread_scan_slot = ExecNextTupleUnsafe();
 		if (TupIsNull(thread_scan_slot)) {
 			break;
 		}
-		// Each slot is a minimal-tuple slot; ExecCopySlot makes it take ownership of the copy (freed on its
-		// next store), so there is no per-tuple allocation for the caller to free. The copy is required
-		// because the scan node reuses `thread_scan_slot` on the next ExecProcNode call.
+		/* Copy is required: the scan node reuses `thread_scan_slot` on the next ExecProcNode call. */
 		ExecCopySlot(slots[count], thread_scan_slot);
 	}
 	return count;
@@ -375,8 +355,7 @@ PostgresTableReader::GetNextWorkerTuple() {
 	TupleQueueReader *reader = NULL;
 	MinimalTuple minimal_tuple = NULL;
 	bool readerdone = false;
-	// The loop's stop condition acts as a safeguard in multithreaded scans, ensuring that if one thread calls this
-	// function after another thread has already completed the scan, we do not access invalid readers.
+	/* Stop condition guards against another thread having already finished the scan and freed readers. */
 	for (; next_parallel_reader < nreaders;) {
 		reader = (TupleQueueReader *)parallel_worker_readers[next_parallel_reader];
 
@@ -407,12 +386,9 @@ PostgresTableReader::GetNextWorkerTuple() {
 
 		nvisited++;
 		if (nvisited >= nreaders) {
-			/*
-			 * It should be safe to make this call because function calling GetNextTuple() and transitively
-			 * GetNextWorkerTuple() should held GlobalProcesLock.
-			 */
+			/* Safe because callers of GetNextTuple()/GetNextWorkerTuple() hold GlobalProcessLock. */
 			WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0, PG_WAIT_EXTENSION);
-			/* No need to use PostgresFunctionGuard here, because ResetLatch is a trivial function */
+			/* No PostgresFunctionGuard: ResetLatch is trivial. */
 			ResetLatch(MyLatch);
 			nvisited = 0;
 		}

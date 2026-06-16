@@ -1,9 +1,7 @@
 /*
- * maintenance_worker.cpp -- Background maintenance worker for DuckLake.
- *
- * Autovacuum-style launcher/worker: the launcher scans pg_database and
- * spawns a short-lived worker per database, which runs in-process
- * maintenance (flush, expire) then compaction (rewrite, merge, cleanup).
+ * Autovacuum-style launcher/worker: the launcher scans pg_database and spawns a
+ * short-lived worker per database, which runs in-process maintenance (flush,
+ * expire) then compaction (rewrite, merge, cleanup).
  */
 
 #include "pgducklake/constants.hpp"
@@ -36,10 +34,6 @@ extern "C" {
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 }
-
-/* ----------------------------------------------------------------
- * Shared memory
- * ---------------------------------------------------------------- */
 
 namespace {
 
@@ -86,9 +80,7 @@ ShmemStartup() {
 	LWLockRelease(AddinShmemInitLock);
 }
 
-/* ----------------------------------------------------------------
- * Slot helpers (caller must hold MaintShmem->lock)
- * ---------------------------------------------------------------- */
+/* Slot helpers: caller must hold MaintShmem->lock. */
 
 bool
 HasWorkerForDatabase(Oid db_oid) {
@@ -109,7 +101,7 @@ CountActiveWorkers() {
 	return count;
 }
 
-/* Claim a free slot. Returns slot index or -1 if full. */
+/* Returns slot index or -1 if full. */
 int
 ClaimSlot(Oid db_oid, pid_t pid) {
 	for (int i = 0; i < DUCKLAKE_MAX_MAINTENANCE_WORKERS; i++) {
@@ -133,18 +125,12 @@ ReleaseSlot(Oid db_oid) {
 	}
 }
 
-/* ----------------------------------------------------------------
- * Quoting helper
- * ---------------------------------------------------------------- */
-
 std::string
 Q(const std::string &s) {
 	return duckdb::KeywordHelper::WriteQuoted(s, '\'');
 }
 
-/* ----------------------------------------------------------------
- * Phase 1: in-process maintenance (needs PG backend)
- * ---------------------------------------------------------------- */
+/* Phase 1: in-process maintenance (needs PG backend). */
 
 /* Flush inlined data from PG metadata tables to parquet files. */
 void
@@ -176,11 +162,11 @@ MaintainCatalogInProcess() {
 	}
 }
 
-/* ----------------------------------------------------------------
+/*
  * Phase 2: compaction (manipulates immutable parquet files).
- * TODO: offload to an external DuckDB process -- these only need the
- * catalog connection string and file access, not a PG backend.
- * ---------------------------------------------------------------- */
+ * TODO: offload to an external DuckDB process -- these only need the catalog
+ * connection string and file access, not a PG backend.
+ */
 
 /* Rewrite data files (remove deleted rows) + merge small files. */
 void
@@ -229,10 +215,6 @@ CompactCatalog() {
 }
 
 } // anonymous namespace
-
-/* ----------------------------------------------------------------
- * Worker entry point
- * ---------------------------------------------------------------- */
 
 extern "C" {
 
@@ -346,7 +328,6 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 		CommitTransactionCommand();
 	}
 
-	/* expire_snapshots: catalog-level, in-process */
 	{
 		CHECK_FOR_INTERRUPTS();
 		StartTransactionCommand();
@@ -407,7 +388,6 @@ ducklake_maintenance_worker_main(Datum main_arg) {
 		CommitTransactionCommand();
 	}
 
-	/* cleanup_old_files: catalog-level compaction */
 	{
 		CHECK_FOR_INTERRUPTS();
 		StartTransactionCommand();
@@ -453,17 +433,12 @@ cleanup:
 	SpinLockRelease(&MaintShmem->lock);
 }
 
-/* ----------------------------------------------------------------
- * Launcher entry point
- * ---------------------------------------------------------------- */
-
 PGDLLEXPORT void
 ducklake_maintenance_launcher_main(Datum main_arg) {
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
-	/* Connect to postgres database for pg_database queries */
 	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
 	elog(LOG, "ducklake maintenance launcher started");
@@ -495,8 +470,7 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 				Datum d = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
 				Oid db_oid = DatumGetObjectId(d);
 
-				/* Pre-claim a shmem slot so it reads as in-use before the
-				 * worker process actually starts. */
+				/* Pre-claim the slot so it reads as in-use before the worker process starts. */
 				SpinLockAcquire(&MaintShmem->lock);
 				bool already_running = HasWorkerForDatabase(db_oid);
 				int active = CountActiveWorkers();
@@ -540,10 +514,6 @@ ducklake_maintenance_launcher_main(Datum main_arg) {
 
 } // extern "C"
 
-/* ----------------------------------------------------------------
- * Public API called from _PG_init()
- * ---------------------------------------------------------------- */
-
 namespace pgducklake {
 
 void
@@ -566,7 +536,7 @@ InitMaintenanceWorker() {
 	snprintf(worker.bgw_function_name, BGW_MAXLEN, "ducklake_maintenance_launcher_main");
 	snprintf(worker.bgw_name, BGW_MAXLEN, "ducklake maintenance launcher");
 	snprintf(worker.bgw_type, BGW_MAXLEN, "ducklake maintenance launcher");
-	worker.bgw_restart_time = 60; /* restart after 60s on crash */
+	worker.bgw_restart_time = 60;
 	worker.bgw_main_arg = (Datum)0;
 	worker.bgw_notify_pid = 0;
 	RegisterBackgroundWorker(&worker);

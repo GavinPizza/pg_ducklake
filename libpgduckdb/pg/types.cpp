@@ -14,7 +14,6 @@ namespace pgddb::pg {
 
 bool
 IsArrayType(Oid type_oid) {
-	// inlined type_is_array
 	return PostgresFunctionGuard(get_element_type, type_oid) != InvalidOid;
 }
 
@@ -38,12 +37,10 @@ static Oid
 GetBaseTypeAndTypmod_C(Oid attribute_type_oid, int32 *type_modifier) {
 	Oid typoid = attribute_type_oid;
 	if (get_typtype(attribute_type_oid) == TYPTYPE_DOMAIN) {
-		/* It is a domain type that needs to be reduced to its base type */
 		typoid = getBaseTypeAndTypmod(attribute_type_oid, type_modifier);
 	} else if (type_is_array(attribute_type_oid)) {
 		Oid eltoid = get_base_element_type(attribute_type_oid);
 		if (OidIsValid(eltoid) && get_typtype(eltoid) == TYPTYPE_DOMAIN) {
-			/* When the member type of an array is domain, you need to build a base array type */
 			typoid = get_array_type(getBaseType(eltoid));
 		}
 	}

@@ -1,10 +1,6 @@
 /*
- * ducklake_table.cpp -- Ducklake table in Postgres interface
- *
- * - Dummy table AM handler
- * - DDL handlers that deparse commands to DuckDB execution
- * - Snapshot sync routines that capture changes of ducklake metadata
- * tabke and notify DuckDB
+ * ducklake_table.cpp -- DuckLake table AM, DDL-to-DuckDB triggers, and
+ * snapshot sync between ducklake metadata and pg_class.
  */
 
 #include "pgducklake/catalog_sync.hpp"
@@ -52,10 +48,6 @@ extern "C" {
 
 #include "pgddb/pgddb_ruleutils.h"
 }
-
-/* ================================================================
- * Table Access Method callbacks
- * ================================================================ */
 
 extern "C" {
 
@@ -105,9 +97,8 @@ duckdb_scan_rescan(TableScanDesc /*sscan*/, ScanKey /*key*/, bool /*set_params*/
 
 static bool
 duckdb_scan_getnextslot(TableScanDesc /*sscan*/, ScanDirection /*direction*/, TupleTableSlot *slot) {
-	// User SELECTs are intercepted by the planner hook; only PG-internal
-	// scans (ALTER TABLE rewrite, ANALYZE, ...) reach here, and they can
-	// treat the table as empty: row data lives in DuckLake, not PG heap.
+	// Only PG-internal scans reach here (user SELECTs go through the planner hook);
+	// treat the table as empty since row data lives in DuckLake, not the PG heap.
 	ExecClearTuple(slot);
 	return false;
 }
@@ -161,9 +152,7 @@ duckdb_index_delete_tuples(Relation /*rel*/, TM_IndexDeleteOp * /*delstate*/) {
 static void
 duckdb_tuple_insert(Relation /*relation*/, TupleTableSlot * /*slot*/, CommandId /*cid*/, int /*options*/,
                     BulkInsertState /*bistate*/) {
-	/* No-op: CTAS data population is handled by the DDL event trigger via DuckDB.
-	 * Normal INSERTs are routed through pg_duckdb's execution path, not the table
-	 * AM. */
+	/* No-op: CTAS data goes through the DDL trigger, INSERTs through pg_duckdb's path. */
 }
 
 static void
@@ -227,8 +216,7 @@ duckdb_finish_bulk_insert(Relation /*relation*/, int /*options*/) {
 static void
 duckdb_relation_set_new_filelocator(Relation /*rel*/, const RelFileLocator * /*newrnode*/, char /*persistence*/,
                                     TransactionId * /*freezeXid*/, MultiXactId * /*minmulti*/) {
-	/* nothing to do, the table will be created in DuckDB later by the
-	 * duckdb_create_table_trigger event trigger */
+	/* No-op: the table is created in DuckDB later by duckdb_create_table_trigger. */
 }
 
 #else
@@ -236,8 +224,7 @@ duckdb_relation_set_new_filelocator(Relation /*rel*/, const RelFileLocator * /*n
 static void
 duckdb_relation_set_new_filenode(Relation /*rel*/, const RelFileNode * /*newrnode*/, char /*persistence*/,
                                  TransactionId * /*freezeXid*/, MultiXactId * /*minmulti*/) {
-	/* nothing to do, the table will be created in DuckDB later by the
-	 * duckdb_create_table_trigger event trigger */
+	/* No-op: the table is created in DuckDB later by duckdb_create_table_trigger. */
 }
 
 #endif
@@ -302,8 +289,7 @@ duckdb_index_build_range_scan(Relation /*tableRelation*/, Relation /*indexRelati
                               bool /*allow_sync*/, bool /*anyvisible*/, bool /*progress*/,
                               BlockNumber /*start_blockno*/, BlockNumber /*numblocks*/, IndexBuildCallback /*callback*/,
                               void * /*callback_state*/, TableScanDesc /*scan*/) {
-	// As in duckdb_scan_getnextslot, PG-internal index builds treat the
-	// table as empty; index metadata is synced via the DDL trigger.
+	// PG-internal index builds treat the table as empty; metadata syncs via the DDL trigger.
 	return 0;
 }
 
@@ -441,10 +427,6 @@ ducklake_am_handler(FunctionCallInfo /*funcinfo*/) {
 	PG_RETURN_POINTER(&ducklake_methods);
 }
 
-/* ================================================================
- * DDL event triggers
- * ================================================================ */
-
 DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	if (pgducklake::syncing_from_metadata)
 		PG_RETURN_NULL();
@@ -529,10 +511,8 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 		                                                        "access method")));
 	}
 
-	// Drain the WITH (ducklake.*) scratchpad set by the utility hook. Empty
-	// (no WITH clause) makes the Apply/Restore calls below no-ops. The override
-	// is applied after RefreshConnectionState (which syncs the session GUC on
-	// GetConnection) so the WITH value takes precedence for this CREATE.
+	// Apply the WITH (ducklake.*) override after GetConnection syncs the session GUC,
+	// so the WITH value wins for this CREATE; empty options make Apply/Restore no-ops.
 	pgducklake::PendingCreateOptions pending = pgducklake::TakePendingCreateOptions();
 	pgducklake::ApplyTablePathBeforeCreate(pending);
 
@@ -541,8 +521,7 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 
 	pgducklake::DuckDBQueryOrThrow(create_table_ddl);
 
-	// The table now records its data path; restore the session default before
-	// the CTAS INSERT so the override does not leak to later statements.
+	// Restore the session default before the CTAS INSERT so the override does not leak.
 	pgducklake::RestoreTablePathAfterCreate(pending);
 
 	if (IsA(parsetree, CreateTableAsStmt) && !pgducklake::ctas_skip_data) {
@@ -771,20 +750,11 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 
 } // extern "C"
 
-/* ================================================================
- * Snapshot sync: table create/drop
- * ================================================================ */
-
 namespace pgducklake {
 
 namespace {
 
-/*
- * Map DuckLake type strings to PostgreSQL type strings.
- * Reuses DuckLakeTypes::FromString() to parse the type, then maps the
- * resulting LogicalTypeId to a PG type OID and formats it canonically.
- * Falls back to "text" for unrecognized or complex types.
- */
+/* Map a DuckLake type string to a PG type string, falling back to "text". */
 std::string
 DuckLakeTypeToPgType(const char *dl_type) {
 	try {
@@ -871,12 +841,8 @@ DuckLakeTypeToPgType(const char *dl_type) {
 
 } // anonymous namespace
 
-/*
- * Sync newly created tables from DuckLake metadata into pg_class.
- * Queries ducklake_table/ducklake_column for tables with begin_snapshot = sid
- * and emits CREATE TABLE ... USING ducklake for each one not already present.
- * Caller must have an active SPI connection.
- */
+/* Emit CREATE TABLE ... USING ducklake for tables with begin_snapshot = sid not
+ * already in pg_class. Caller must have an active SPI connection. */
 void
 SyncNewTables(const char *sid) {
 	std::string query = duckdb::StringUtil::Format(R"(
@@ -952,7 +918,6 @@ SyncNewTables(const char *sid) {
 				continue;
 			}
 
-			/* Create schema if it doesn't exist yet */
 			if (ci.schema_name != "public") {
 				std::string cs = "CREATE SCHEMA IF NOT EXISTS ";
 				cs += quote_identifier(ci.schema_name.c_str());
@@ -986,11 +951,8 @@ SyncNewTables(const char *sid) {
 	emit_ddl();
 }
 
-/*
- * Sync dropped tables from DuckLake metadata: drop pg_class entries for
- * tables whose end_snapshot = sid.
- * Caller must have an active SPI connection.
- */
+/* Drop pg_class entries for tables whose end_snapshot = sid.
+ * Caller must have an active SPI connection. */
 void
 SyncDroppedTables(const char *sid) {
 	std::string query = duckdb::StringUtil::Format(R"(

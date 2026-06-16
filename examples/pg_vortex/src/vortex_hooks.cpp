@@ -1,5 +1,4 @@
-// pg_vortex's planner hook (stripped-down pg_duckdb/src/pgduckdb_hooks.cpp):
-// routes queries calling pg_vortex.read_vortex to PlanNode, chains otherwise.
+// pg_vortex's planner hook: routes queries calling pg_vortex.read_vortex to PlanNode, chains otherwise.
 
 #include "duckdb.hpp"
 

@@ -42,16 +42,10 @@ extern "C" {
 namespace pgddb {
 
 /*
- * Returns true if any RangeTblEntry in the query (or its sub-queries /
- * sub-expressions) references a Postgres heap table -- i.e. a relation
- * whose table AM is NOT registered with libpgddb (not a duckdb-y AM).
- *
- * Used by the CustomScan to decide whether streaming DuckDB results
- * back to PG is safe: if the query references a regular Postgres table,
- * concurrent access to PG resources during stream-fetch could race, so
- * we materialize fully instead. See
- * https://github.com/duckdb/pg_duckdb/discussions/866 for the motivating
- * scenario.
+ * True if any RangeTblEntry references a PG heap table (AM not registered with
+ * libpgddb). The CustomScan uses this to materialize fully instead of streaming,
+ * since concurrent PG access during stream-fetch could race. See
+ * https://github.com/duckdb/pg_duckdb/discussions/866.
  */
 bool
 ContainsPostgresTable(Node *node, void *context) {
@@ -66,7 +60,7 @@ ContainsPostgresTable(Node *node, void *context) {
 			}
 			char relkind = get_rel_relkind(rte->relid);
 			if (relkind == RELKIND_VIEW) {
-				/* Any tables referenced in the view will also be in the rtable */
+				/* Tables referenced in the view are also in the rtable */
 				continue;
 			}
 			if (pgddb::TableAmGetName(rte->relid) == nullptr) {
@@ -106,10 +100,7 @@ Prepare(const Query *query, const char *explain_prefix) {
 static Plan *
 CreatePlan(Query *query, bool throw_error) {
 	int elevel = throw_error ? ERROR : WARNING;
-	/*
-	 * Prepare the query, se we can get the returned types and column names.
-	 */
-
+	/* Prepare so we can get the returned types and column names. */
 	duckdb::unique_ptr<duckdb::PreparedStatement> prepared_query = Prepare(query);
 
 	if (prepared_query->HasError()) {
@@ -140,26 +131,18 @@ CreatePlan(Query *query, bool throw_error) {
 		typtup = (Form_pg_type)GETSTRUCT(tp);
 		typtup->typtypmod = pgddb::GetPostgresDuckDBTypemod(prepared_result_types[i]);
 
-		/*
-		 * We hardcode varno 1 here, because our final plan will only have a
-		 * single RTE (this custom scan). In the past we put 0 here, and then
-		 * filled it in later. If at some point we need multiple RTEs again, we
-		 * might want to start doing that again.
-		 */
+		/* varno 1: the final plan has a single RTE (this custom scan). */
 		Var *var = makeVar(1, i + 1, postgresColumnOid, typtup->typtypmod, typtup->typcollation, 0);
 
 		TargetEntry *target_entry =
 		    makeTargetEntry((Expr *)var, i + 1, (char *)pstrdup(prepared_query->GetNames()[i].c_str()), false);
 
-		/* Our custom scan node needs the custom_scan_tlist to be set */
 		duckdb_node->custom_scan_tlist = lappend(duckdb_node->custom_scan_tlist, copyObjectImpl(target_entry));
 
-		/* For the plan its targetlist we use INDEX_VAR as the varno, which
-		 * means it references our custom_scan_tlist. */
+		/* INDEX_VAR varno makes the plan targetlist reference custom_scan_tlist. */
 		var->varno = INDEX_VAR;
 
-		/* But we also need an actual target list, because Postgres expects it
-		 * for things like materialization */
+		/* Plan needs an actual targetlist too, e.g. for materialization. */
 		duckdb_node->scan.plan.targetlist = lappend(duckdb_node->scan.plan.targetlist, target_entry);
 
 		ReleaseSysCache(tp);
@@ -171,7 +154,6 @@ CreatePlan(Query *query, bool throw_error) {
 	return (Plan *)duckdb_node;
 }
 
-/* Creates a matching RangeTblEntry for the given CustomScan node */
 static RangeTblEntry *
 DuckdbRangeTableEntry(CustomScan *custom_scan) {
 	List *column_names = NIL;
@@ -180,10 +162,7 @@ DuckdbRangeTableEntry(CustomScan *custom_scan) {
 	}
 	RangeTblEntry *rte = makeNode(RangeTblEntry);
 
-	/* We need to choose an RTE kind here. RTE_RELATION does not work due to
-	 * various asserts that fail due to us not setting some of the fields on
-	 * the entry. Instead of filling those fields in with dummy values we use
-	 * RTE_NAMEDTUPLESTORE, for which no special fields exist. */
+	/* RTE_RELATION asserts on unset fields; RTE_NAMEDTUPLESTORE needs none. */
 	rte->rtekind = RTE_NAMEDTUPLESTORE;
 	rte->eref = makeAlias("duckdb_scan", column_names);
 	rte->inFromCl = true;
@@ -238,10 +217,8 @@ check_view_perms_recursive(Query *query) {
 PlannedStmt *
 PlanNode(Query *parse, int cursor_options, bool throw_error) {
 
-	/* Properly check perms if there's a view or WITH statement */
+	/* Check perms if there's a view or WITH statement */
 	check_view_perms_recursive(parse);
-
-	/* We need to check can we DuckDB create plan */
 
 	Plan *duckdb_plan = InvokeCPPFunc(CreatePlan, parse, throw_error);
 	CustomScan *custom_scan = castNode(CustomScan, duckdb_plan);
@@ -250,10 +227,7 @@ PlanNode(Query *parse, int cursor_options, bool throw_error) {
 		return nullptr;
 	}
 
-	/*
-	 * If creating a plan for a scrollable cursor add a Material node at the
-	 * top because or CustomScan does not support backwards scanning.
-	 */
+	/* Scrollable cursors need a top Material node; CustomScan can't scan backwards. */
 	if (cursor_options & CURSOR_OPT_SCROLL) {
 		duckdb_plan = materialize_finished_plan(duckdb_plan);
 	}
@@ -283,7 +257,7 @@ PlanNode(Query *parse, int cursor_options, bool throw_error) {
 	result->invalItems = NIL;
 	result->paramExecTypes = NIL;
 
-	/* utilityStmt should be null, but we might as well copy it */
+	/* utilityStmt should be null, but copy it anyway */
 	result->utilityStmt = parse->utilityStmt;
 	result->stmt_location = parse->stmt_location;
 	result->stmt_len = parse->stmt_len;

@@ -25,12 +25,7 @@ extern "C" {
 #include "pgddb/pgddb_process_lock.hpp"
 #include "pgddb/pgddb_detoast.hpp"
 
-/*
- * Following functions are direct logic found in postgres code but for duckdb execution they are needed to be thread
- * safe. Functions as palloc/pfree are exchanged with duckdb_malloc/duckdb_free. Access to toast table is protected with
- * lock also for thread safe reasons. This is initial implementation but should be revisisted in future for better
- * performances.
- */
+/* Thread-safe ports of PG detoast logic: palloc/pfree -> duckdb_malloc/duckdb_free, toast access under lock. */
 
 namespace pgddb {
 

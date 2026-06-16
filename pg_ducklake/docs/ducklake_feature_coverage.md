@@ -1,7 +1,7 @@
 # DuckLake Feature Coverage
 
 Comparison of upstream DuckLake extension features
-(documented at <https://ducklake.select/docs/preview/duckdb/introduction>)
+(documented at <https://ducklake.select/docs/stable/duckdb/introduction>)
 against what pg_ducklake currently exposes or supports.
 
 Legend: `[x]` supported, `[ ]` not supported

@@ -71,28 +71,21 @@ TupleIsNull(TupleTableSlot *slot) {
 
 void
 SlotGetAllAttrs(TupleTableSlot *slot) {
-	// It is safe to call slot_getallattrs directly without the PostgresFunctionGuard because the function doesn't
-	// perform any memory allocations. Assertions or errors are guaranteed not to occur for minimal slots.
+	// Safe without PostgresFunctionGuard: no allocations, no errors for minimal slots.
 	slot_getallattrs(slot);
 }
 
 TupleTableSlot *
 ExecStoreMinimalTupleUnsafe(MinimalTuple minmal_tuple, TupleTableSlot *slot, bool shouldFree) {
-	// It's safe to call ExecStoreMinimalTuple without the PostgresFunctionGuard as long as the slot is not "owned" by
-	// the tuple, i.e., TTS_SHOULDFREE(slot) is false. This is because it does not allocate in memory contexts and the
-	// only error it can throw is when the slot is not a minimal slot. That error is an obvious programming error so we
-	// can ignore it here.
+	// Safe without PostgresFunctionGuard when the slot isn't tuple-owned (TTS_SHOULDFREE false): no allocations, and
+	// its only error is a programming bug (non-minimal slot).
 	return ::ExecStoreMinimalTuple(minmal_tuple, slot, shouldFree);
 }
 
 Relation
 OpenRelation(Oid relationId) {
-	/*
-	 * We always open & close the relation using the
-	 * TopTransactionResourceOwner to avoid having to close the relation
-	 * whenever Postgres switches resource owners, because opening a relation
-	 * with one resource owner and closing it with another is not allowed.
-	 */
+	// Open & close under TopTransactionResourceOwner: PG forbids opening with one resource owner and closing with
+	// another, and it may switch owners between the two calls.
 	ResourceOwner saveResourceOwner = CurrentResourceOwner;
 	CurrentResourceOwner = TopTransactionResourceOwner;
 	auto rel = PostgresFunctionGuard(relation_open, relationId, AccessShareLock);
@@ -102,12 +95,8 @@ OpenRelation(Oid relationId) {
 
 void
 CloseRelation(Relation rel) {
-	/*
-	 * We always open & close the relation using the
-	 * TopTransactionResourceOwner to avoid having to close the relation
-	 * whenever Postgres switches resource owners, because opening a relation
-	 * with one resource owner and closing it with another is not allowed.
-	 */
+	// Open & close under TopTransactionResourceOwner: PG forbids opening with one resource owner and closing with
+	// another, and it may switch owners between the two calls.
 	ResourceOwner saveResourceOwner = CurrentResourceOwner;
 	CurrentResourceOwner = TopTransactionResourceOwner;
 	PostgresFunctionGuard(relation_close, rel, NoLock);
@@ -152,12 +141,7 @@ IsValidBlockNumber(BlockNumber block_number) {
 	return block_number != InvalidBlockNumber;
 }
 
-/*
- * generate_qualified_relation_name
- *		Compute the name to display for a relation specified by OID
- *
- * As above, but unconditionally schema-qualify the name.
- */
+// Schema-qualified display name for a relation.
 static char *
 GenerateQualifiedRelationName_Unsafe(Relation rel) {
 	char *nspname = get_namespace_name_or_temp(rel->rd_rel->relnamespace);
@@ -197,7 +181,7 @@ GetAttributeByName(TupleDesc tupdesc, const char *colname) {
 			return attr;
 		}
 	}
-	return NULL; // Return NULL if the column name is not found
+	return NULL;
 }
 
 } // namespace pg

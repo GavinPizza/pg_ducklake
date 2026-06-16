@@ -1,9 +1,12 @@
 -- Table AM 'ducklake' is created once the extension is installed
-SELECT extname, extowner, extnamespace, extrelocatable, extversion, extconfig, extcondition FROM pg_extension;
+-- Filtered to our extensions so the row set is stable whether or not other
+-- DuckDB extensions (e.g. pg_duckdb in the coexistence CI run) are installed.
+SELECT extname, extowner, extnamespace, extrelocatable, extversion, extconfig, extcondition
+FROM pg_extension WHERE extname IN ('plpgsql', 'pg_ducklake') ORDER BY extname = 'pg_ducklake';
    extname   | extowner | extnamespace | extrelocatable | extversion | extconfig | extcondition 
 -------------+----------+--------------+----------------+------------+-----------+--------------
  plpgsql     |       10 |           11 | f              | 1.0        |           | 
- pg_ducklake |       10 |         2200 | f              | 0.1.0      |           | 
+ pg_ducklake |       10 |         2200 | f              | 1.0.0      |           | 
 (2 rows)
 
 SELECT amname FROM pg_am WHERE amname = 'ducklake';

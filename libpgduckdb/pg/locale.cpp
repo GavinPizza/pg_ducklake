@@ -4,12 +4,7 @@ extern "C" {
 #include "postgres.h"
 }
 
-/*
- * Needs to be done outside of 'extern "C"' block AND before including
- * pg_locale.h. Otherwise you get many compilation errors about templates being
- * used in C linkage. It also needs to be done after including postgres.h,
- * because otherwise USE_ICU does not exist.
- */
+// Must be outside extern "C" (ICU templates) and after postgres.h (defines USE_ICU), before pg_locale.h.
 #ifdef USE_ICU
 #include <unicode/ucol.h>
 #endif

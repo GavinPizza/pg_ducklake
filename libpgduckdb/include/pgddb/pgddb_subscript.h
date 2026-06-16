@@ -9,12 +9,8 @@ extern "C" {
 namespace pgddb {
 namespace pg {
 
-/*
- * Hook called by the subscript transform to compute refrestype (the type
- * of `r['col']`). Consumers that expose a polymorphic "unresolved" type
- * (e.g. pg_duckdb's duckdb.unresolved_type) set this to return it.
- * Unset (nullptr) -> lib falls back to the container OID itself.
- */
+// Computes refrestype (type of `r['col']`); consumers with a polymorphic
+// "unresolved" type return it here. nullptr -> fall back to the container OID.
 typedef Oid (*subscript_refrestype_hook_t)(Oid container_oid);
 extern subscript_refrestype_hook_t subscript_refrestype_hook;
 

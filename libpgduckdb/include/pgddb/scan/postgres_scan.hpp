@@ -11,8 +11,6 @@
 
 namespace pgddb {
 
-// Global State
-
 struct PostgresScanGlobalState : public duckdb::GlobalTableFunctionState {
 	explicit PostgresScanGlobalState(Snapshot, Relation rel, const duckdb::TableFunctionInitInput &input);
 	~PostgresScanGlobalState();
@@ -44,7 +42,6 @@ public:
 	idx_t max_threads;
 };
 
-// Local State
 #define LOCAL_STATE_SLOT_BATCH_SIZE 32
 struct PostgresScanLocalState : public duckdb::LocalTableFunctionState {
 	PostgresScanLocalState(PostgresScanGlobalState *global_state);
@@ -62,8 +59,6 @@ private:
 	PostgresScanLocalState &operator=(const PostgresScanLocalState &) = delete;
 };
 
-// PostgresScanFunctionData
-
 struct PostgresScanFunctionData : public duckdb::TableFunctionData {
 	PostgresScanFunctionData(Relation rel, uint64_t cardinality, Snapshot snapshot);
 	~PostgresScanFunctionData() override;
@@ -76,8 +71,6 @@ private:
 	PostgresScanFunctionData(const PostgresScanFunctionData &) = delete;
 	PostgresScanFunctionData &operator=(const PostgresScanFunctionData &) = delete;
 };
-
-// PostgresScanTableFunction
 
 struct PostgresScanTableFunction : public duckdb::TableFunction {
 	PostgresScanTableFunction();
@@ -97,7 +90,6 @@ struct PostgresScanTableFunction : public duckdb::TableFunction {
 	static duckdb::InsertionOrderPreservingMap<duckdb::string> ToString(duckdb::TableFunctionToStringInput &input);
 };
 
-// Maximum number of DuckDB threads used for a single Postgres scan
 extern int duckdb_threads_for_postgres_scan;
 
 } // namespace pgddb

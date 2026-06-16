@@ -80,6 +80,6 @@ in inlined data tables (the in-catalog row store controlled by
 
 ## References
 
-- [DuckLake Data Types Specification](https://ducklake.select/docs/preview/specification/data_types)
+- [DuckLake Data Types Specification](https://ducklake.select/docs/stable/specification/data_types)
 - Upstream type mapping: `PostgresMetadataManager::TypeIsNativelySupported` and
   `GetColumnTypeInternal` in `third_party/ducklake/src/metadata_manager/postgres_metadata_manager.cpp`

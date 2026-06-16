@@ -4,16 +4,17 @@ ROOT_DIR = ../../..
 
 include $(ROOT_DIR)/Makefile.pgxs
 
-# pg_duckdb is no longer loaded here (neither preload nor extension):
-# CREATE EXTENSION pg_ducklake after pg_duckdb fails on the overlapping
-# public read_csv/read_parquet stubs, and no isolation spec uses
-# pg_duckdb objects. See isolation.conf for the coexistence status.
+# WITH_PG_DUCKDB=1 also preloads + creates community pg_duckdb, exercising the
+# suite with both extensions co-installed (coexist.conf overrides the preload).
+# Since 1.0.0 moved pg_ducklake's readers into the ducklake schema, the old
+# public read_csv/read_parquet collision with pg_duckdb is gone.
 check-isolation:
 	TEST_DIR=$(CURDIR) $(pg_isolation_regress_installcheck) \
 	--encoding=UTF8 \
 	--no-locale \
 	--temp-instance=./tmp_check \
 	--temp-config isolation.conf \
+	$(if $(WITH_PG_DUCKDB),--temp-config coexist.conf --load-extension=pg_duckdb) \
 	--load-extension=pg_ducklake \
 	$(if $(TEST),$(TEST),--schedule=schedule)
 

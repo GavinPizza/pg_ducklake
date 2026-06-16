@@ -19,8 +19,6 @@ PostgresCatalog::Attach(duckdb::optional_ptr<duckdb::StorageExtensionInfo>, duck
 	return duckdb::make_uniq<PostgresCatalog>(db, info.path);
 }
 
-// ------------------ Catalog API ---------------------
-
 void
 PostgresCatalog::Initialize(bool /*load_builtin*/) {
 }

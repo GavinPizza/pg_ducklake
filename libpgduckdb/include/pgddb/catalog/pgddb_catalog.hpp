@@ -18,7 +18,6 @@ public:
 	                                                  const duckdb::string &, duckdb::AttachInfo &info,
 	                                                  duckdb::AttachOptions &options);
 
-	// -- Catalog API --
 	void Initialize(bool load_builtin) override;
 	duckdb::string GetCatalogType() override;
 	duckdb::optional_ptr<duckdb::CatalogEntry> CreateSchema(duckdb::CatalogTransaction transaction,

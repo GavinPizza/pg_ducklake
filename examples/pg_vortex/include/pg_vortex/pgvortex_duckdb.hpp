@@ -4,8 +4,7 @@
 
 namespace pg_vortex {
 
-// Hosts the per-backend singleton; override OnInit/OnPostInit for custom
-// DuckDB setup (e.g. LOAD vortex on startup).
+// Override OnInit/OnPostInit for custom DuckDB setup (e.g. LOAD vortex).
 class DuckDBManager : public pgddb::DuckDBManager {
 public:
 	static bool IsInitialized();

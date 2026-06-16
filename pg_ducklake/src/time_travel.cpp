@@ -1,18 +1,6 @@
 /*
- * time_travel.cpp -- DuckDB table function for time-travel queries
- *
- * Implements time_travel() as a DuckDB table function with three calling
- * conventions:
- *   time_travel(table_name, version/timestamp)        -- single-string name
- *   time_travel(schema_name, table_name, version/ts)  -- split schema+table
- *   time_travel(scope regclass, version/ts)            -- PG-side only (rewrite)
- *
- * The bind phase resolves the table's schema at the given snapshot and
- * replaces the function with the table's scan function.  The execute/init
- * functions are never called.
- *
- * Follows the same pattern as ducklake_table_insertions: bind swaps
- * input.table_function with the resolved scan function.
+ * time_travel() DuckDB table function. Bind resolves the table at the requested
+ * snapshot and swaps in its scan function, so execute/init are never called.
  */
 
 #include "pgducklake/constants.hpp"
@@ -59,10 +47,7 @@ TimeTravelBind(ClientContext &context, TableFunctionBindInput &input, vector<Log
 	return bind_data;
 }
 
-/*
- * Bind for the (schema_name, table_name, version/timestamp) overloads.
- * Rewrites inputs to the single-string form and delegates to TimeTravelBind.
- */
+// Rewrites the (schema, table, version/ts) inputs to single-string form, then delegates.
 static unique_ptr<FunctionData>
 TimeTravelSchemaTableBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                           vector<string> &names) {
@@ -93,7 +78,6 @@ GetTimeTravelFunctions() {
 	    TableFunction({LogicalType::VARCHAR, LogicalType::BIGINT}, TimeTravelExecute, TimeTravelBind, TimeTravelInit));
 	set.AddFunction(TableFunction({LogicalType::VARCHAR, LogicalType::TIMESTAMP_TZ}, TimeTravelExecute, TimeTravelBind,
 	                              TimeTravelInit));
-	// (schema_name, table_name, version/timestamp) overloads
 	set.AddFunction(TableFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT}, TimeTravelExecute,
 	                              TimeTravelSchemaTableBind, TimeTravelInit));
 	set.AddFunction(TableFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::TIMESTAMP_TZ},

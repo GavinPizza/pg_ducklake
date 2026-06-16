@@ -2,14 +2,7 @@
 
 #include <inttypes.h>
 
-/*
-This file contains a few Postgres declarations.
-
-This is meant to be used in files that are mostly C++, but
-need to interact with Postgres C code (eg. catalog implementation).
-
-It should not include any C++ code, only Postgres C declarations.
-*/
+// Postgres C declarations for mostly-C++ files; must contain no C++, only PG C decls.
 
 extern "C" {
 typedef int16_t AttrNumber;

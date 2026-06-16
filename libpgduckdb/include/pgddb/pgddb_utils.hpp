@@ -11,8 +11,6 @@
 #include "pgddb/utility/cpp_only_file.hpp" // Must be last include.
 
 extern "C" {
-// Note: these forward-declarations could live in a header under the `pg/` folder.
-// But since they are (hopefully) only used in this file, we keep them here.
 struct ErrorContextCallback;
 struct MemoryContextData;
 
@@ -48,21 +46,10 @@ private:
 };
 
 /*
- * PostgresScopedStackReset is a RAII class that saves the current stack base
- * and restores it on destruction. When calling certain Postgres C functions
- * from other threads than the main thread this is necessary to avoid Postgres
- * throwing an error running out of stack space. In codepaths that postgres
- * expects to be called recursively it checks if the stack size is still within
- * the limit set by max_stack_depth. It does so by comparing the current stack
- * pointer to the pointer it saved when starting the process. But since
- * different threads have different stacks, this check will fail basically
- * automatically if the thread is not the main thread. This class is a
- * workaround for this problem, by configuring a new stack base matching the
- * current location of the stack. This does mean that the stack might grow
- * higher than, but for our use case this shouldn't matter anyway because we
- * don't expect any recursive functions to be called. And even if we did expect
- * that, the default max_stack_depth is conservative enough to handle this small
- * bit of extra stack space.
+ * RAII reset of PG's saved stack base. PG's max_stack_depth check compares the
+ * current stack pointer against the base captured at process start; on a
+ * non-main thread (different stack) that check spuriously fails, so we rebase
+ * it to the current location for the duration of the call.
  */
 struct PostgresScopedStackReset {
 	PostgresScopedStackReset() : saved_current_stack(set_stack_base()) {
@@ -78,9 +65,7 @@ private:
 	PostgresScopedStackReset &operator=(const PostgresScopedStackReset &) = delete;
 };
 
-/*
- * DuckdbGlobalLock should be held before calling.
- */
+// DuckdbGlobalLock should be held before calling.
 template <typename Func, Func func, typename... FuncArgs>
 typename std::invoke_result<Func, FuncArgs...>::type
 __PostgresFunctionGuard__(const char *func_name, FuncArgs... args) {
@@ -100,7 +85,6 @@ __PostgresFunctionGuard__(const char *func_name, FuncArgs... args) {
 
 	ErrorData *edata = nullptr;
 	{ // PG_CATCH
-		// Extract the error message (edata) within a PG_TRY block.
 		PgExceptionGuard g;
 		sigjmp_buf _local_sigjmp_buf;
 		if (sigsetjmp(_local_sigjmp_buf, 0) == 0) {
@@ -109,7 +93,6 @@ __PostgresFunctionGuard__(const char *func_name, FuncArgs... args) {
 			edata = CopyErrorData();
 			FlushErrorState();
 		} else {
-			// This is a pretty bad situation - we failed to extract the error message.
 			throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, "Failed to extract Postgres error message");
 		}
 	} // PG_END_TRY
@@ -139,7 +122,6 @@ __PostgresMemberGuard__(ReturnType (T::*func)(FuncArgs... args), T *instance, co
 	ErrorData *edata = nullptr;
 
 	{ // PG_CATCH
-		// Extract the error message (edata) within a PG_TRY block.
 		PgExceptionGuard g;
 		sigjmp_buf _local_sigjmp_buf;
 		if (sigsetjmp(_local_sigjmp_buf, 0) == 0) {
@@ -148,7 +130,6 @@ __PostgresMemberGuard__(ReturnType (T::*func)(FuncArgs... args), T *instance, co
 			edata = CopyErrorData();
 			FlushErrorState();
 		} else {
-			// This is a pretty bad situation - we failed to extract the error message.
 			throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, "Failed to extract Postgres error message");
 		}
 	} // PG_END_TRY

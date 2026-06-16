@@ -27,10 +27,8 @@ duckdb::ExplainFormat explain_format = duckdb::ExplainFormat::DEFAULT;
 
 #define NEED_JSON_PLAN(fmt) ((fmt) == duckdb::ExplainFormat::JSON)
 
-/* global variables */
 CustomScanMethods scan_methods;
 
-/* static variables */
 static CustomExecMethods scan_exec_methods;
 
 typedef struct DuckdbScanState {
@@ -62,7 +60,6 @@ CleanupDuckdbScanState(DuckdbScanState *state) {
 	}
 }
 
-/* static callbacks */
 static Node *Duckdb_CreateCustomScanState(CustomScan *cscan);
 static void Duckdb_BeginCustomScan(CustomScanState *node, EState *estate, int eflags);
 static TupleTableSlot *Duckdb_ExecCustomScan(CustomScanState *node);
@@ -171,7 +168,7 @@ ExecuteQuery(DuckdbScanState *state) {
 		ParamExternData tmp_workspace;
 		duckdb::Value duckdb_param;
 
-		/* give hook a chance in case parameter is dynamic */
+		// paramFetch resolves dynamic params; fall back to the static array.
 		if (pg_params->paramFetch != NULL) {
 			pg_param = pg_params->paramFetch(pg_params, i + 1, false, &tmp_workspace);
 		} else {
@@ -194,10 +191,7 @@ ExecuteQuery(DuckdbScanState *state) {
 		named_values[duckdb::to_string(i + 1)] = duckdb::BoundParameterData(duckdb_param);
 	}
 
-	// Set `allow_stream_result` to false if the query contains a Postgres table to force a fully materialized DuckDB
-	// result. This is required for cases like CTAS from a Postgres table, where allowing streaming results could lead
-	// to race conditions on Postgres resources.
-	// Checkout discussion: https://github.com/duckdb/pg_duckdb/discussions/866
+	// Streaming a result that reads a Postgres table races on PG resources (e.g. CTAS); force full materialization.
 	bool allow_stream_result = !pgddb::ContainsPostgresTable((Node *)state->query, NULL);
 	auto pending = prepared.PendingQuery(named_values, allow_stream_result);
 	if (pending->HasError()) {
@@ -213,19 +207,14 @@ ExecuteQuery(DuckdbScanState *state) {
 
 		if (QueryCancelPending) {
 			auto &connection = state->duckdb_connection;
-			// Send an interrupt
 			connection->Interrupt();
 			auto &executor = duckdb::Executor::Get(*connection->context);
-			// Wait for all tasks to terminate
 			executor.CancelTasks();
 
 			try {
-				// When the "Query cancelled" exception below is thrown,
-				// various destructors are called, among which `PostgresTableReader`'s
-				// which cleanup the PG state. If an exception is thrown during
-				// the stack unwinding and call to PG function, it results in an
-				// undefined behavior which materialize as a process crash.
-				// So to avoid that, we eagerly consume the pending tasks.
+				// Eagerly drain pending tasks: the "Query cancelled" throw below runs
+				// PostgresTableReader destructors that touch PG; an exception during that
+				// unwind is UB and crashes the process.
 				do {
 					execution_result = pending->ExecuteTask();
 				} while (execution_result != duckdb::PendingExecutionResult::EXECUTION_ERROR &&
@@ -235,8 +224,6 @@ ExecuteQuery(DuckdbScanState *state) {
 				pending->Close();
 			} catch (std::exception &ex) {
 			}
-			// Delete the scan state
-			// Process the interrupt on the Postgres side
 			ProcessInterrupts();
 			throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR, "Query cancelled");
 		}
@@ -267,13 +254,9 @@ Duckdb_ExecCustomScan_Cpp(CustomScanState *node) {
 		if (!already_executed) {
 			ExecuteQuery(duckdb_scan_state);
 
-			// For non-SELECT statements, PG's ExecutePlan only updates
-			// es_processed from inside ModifyTable. Since we've replaced
-			// the whole plan with this CustomScan, PG never sees a row
-			// count. DuckDB's INSERT/UPDATE/DELETE/MERGE result has the
-			// form (Count BIGINT) -- read it, push it into es_processed,
-			// and end the scan so the empty tuple PG receives is just
-			// "no RETURNING rows".
+			// PG only sets es_processed via ModifyTable, which our CustomScan replaced.
+			// DuckDB's DML result is (Count BIGINT): read it into es_processed and end the
+			// scan, so the empty tuple means "no RETURNING rows".
 			if (duckdb_scan_state->query->commandType != CMD_SELECT) {
 				auto chunk = duckdb_scan_state->query_results->Fetch();
 				uint64_t processed = 0;
@@ -305,7 +288,6 @@ Duckdb_ExecCustomScan_Cpp(CustomScanState *node) {
 		MemoryContextReset(duckdb_scan_state->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 		ExecClearTuple(slot);
 
-		/* MemoryContext used for allocation */
 		old_context = MemoryContextSwitchTo(duckdb_scan_state->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 
 		for (idx_t col = 0; col < duckdb_scan_state->column_count; col++) {
@@ -332,16 +314,8 @@ Duckdb_ExecCustomScan_Cpp(CustomScanState *node) {
 		ExecStoreVirtualTuple(slot);
 		return slot;
 	} catch (std::exception &ex) {
-		/*
-		 * In case any error happens we need to still cleanup the scan state,
-		 * otherwise we do not clean up the prepared statement and various
-		 * other DuckDB objects.
-		 *
-		 * NOTE: We only clean this up on error, not on success. On success we
-		 * still need these objects to be around for the next call to
-		 * ExecCustomScan. If the full scan completes successfully, the cleanup
-		 * will be done in EndCustomScan.
-		 */
+		// Clean up only on error; on success the DuckDB objects must survive for
+		// the next ExecCustomScan call, and EndCustomScan does the final cleanup.
 		CleanupDuckdbScanState(duckdb_scan_state);
 		throw;
 	}
@@ -356,15 +330,9 @@ void
 Duckdb_EndCustomScan_Cpp(CustomScanState *node) {
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)node;
 	CleanupDuckdbScanState(duckdb_scan_state);
-	/*
-	 * In rare error cases EndCustomScan can run after cancel interrupts were
-	 * already resumed (e.g. an error unwound the scan, or a re-entrant DuckDB ->
-	 * PostgresTableReader read temporarily resumed/re-held them), leaving
-	 * QueryCancelHoldoffCount at 0. Resuming again would underflow the counter
-	 * -- harmless in production but a hard Assert(QueryCancelHoldoffCount > 0)
-	 * abort on cassert builds. Only resume when there is actually a hold to
-	 * release; this guard applies in assert builds too.
-	 */
+	// Resume only if a hold is actually held: EndCustomScan can run after interrupts
+	// were already resumed, and resuming at count 0 trips Assert(QueryCancelHoldoffCount > 0)
+	// on cassert builds.
 	if (QueryCancelHoldoffCount > 0) {
 		RESUME_CANCEL_INTERRUPTS();
 	}
@@ -381,16 +349,9 @@ Duckdb_ReScanCustomScan(CustomScanState * /*node*/) {
 
 void
 Duckdb_ExplainCustomScan_Cpp(CustomScanState *node, ExplainState *es) {
-	/*
-	 * XXX: The code to set explain_analyze and explain_format,
-	 * is copied from ExplainOneQueryHook. Sadly that hook is not run for
-	 * EXPLAIN EXECUTE ..., and the code here runs too late to actually impact
-	 * the query that we send to DuckDB. However, putting it here as well is a
-	 * hacky bandaid to make the code below not crash. And it has the
-	 * sideeffect that if you run EXPLAIN EXECUTE twice in a row, you will get
-	 * the intended output. Since EXPLAIN EXECUTE is pretty rare for people to
-	 * run, we consider this fine for now.
-	 */
+	// XXX: ExplainOneQueryHook does not run for EXPLAIN EXECUTE, so set these here too.
+	// It runs too late to affect the DuckDB query but keeps the code below from crashing
+	// (and a second EXPLAIN EXECUTE then shows the intended output).
 	explain_analyze = pgddb::pg::IsExplainAnalyze(es);
 	explain_format = pgddb::pg::DuckdbExplainFormat(es);
 
@@ -414,7 +375,6 @@ Duckdb_ExplainCustomScan_Cpp(CustomScanState *node, ExplainState *es) {
 	explain_output << "\n\n" << value << "\n";
 	if (NEED_JSON_PLAN(explain_format)) {
 
-		// Formatting, copied formatting in JSON mode
 		if (linitial_int(es->grouping_stack) != 0)
 			appendStringInfoChar(es->str, ',');
 		else
@@ -433,7 +393,6 @@ formatDuckDbPlanForPG(const char *duckdb_plan, ExplainState *es) {
 	while (*ptr != '\0') {
 		appendStringInfoChar(es->str, *ptr);
 		if (*ptr == '\n') {
-			// Add indentation after each newline
 			appendStringInfoSpaces(es->str, es->indent * 2);
 		}
 
@@ -448,13 +407,11 @@ Duckdb_ExplainCustomScan(CustomScanState *node, List * /*ancestors*/, ExplainSta
 
 void
 InitNode(const char *custom_scan_name) {
-	/* setup scan methods */
 	memset(&scan_methods, 0, sizeof(scan_methods));
 	scan_methods.CustomName = custom_scan_name;
 	scan_methods.CreateCustomScanState = Duckdb_CreateCustomScanState;
 	RegisterCustomScanMethods(&scan_methods);
 
-	/* setup exec methods */
 	memset(&scan_exec_methods, 0, sizeof(scan_exec_methods));
 	scan_exec_methods.CustomName = custom_scan_name;
 

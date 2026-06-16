@@ -1,11 +1,6 @@
-/*
- * copy_from.cpp -- COPY FROM STDIN into inlined DuckLake tables.
- *
- * When a COPY <ducklake_table> FROM STDIN is intercepted by the utility
- * hook, this module reads tuples via PG's COPY protocol, converts them
- * to the inlined data table's column types, and inserts via
- * table_multi_insert() for native heap performance.
- */
+// COPY FROM STDIN into inlined DuckLake tables: reads tuples via PG's COPY
+// protocol, converts to the inlined data table's column types, inserts via
+// table_multi_insert().
 
 #include "pgducklake/catalog_sync.hpp"
 #include "pgducklake/copy_from.hpp"
@@ -33,27 +28,14 @@ namespace pgducklake {
 /* Match PG's copyfrom.c MAX_BUFFERED_TUPLES (not exported in headers). */
 #define MAX_BUFFERED_TUPLES 1000
 
-/* Number of system columns prepended to the inlined data table:
- * row_id, begin_snapshot, end_snapshot. */
+/* System columns prepended to the inlined data table: row_id, begin_snapshot, end_snapshot. */
 #define INLINED_SYSTEM_COLS 3
 
-/*
- * Per-column conversion metadata for transforming user-facing Datums
- * to the inlined data table's column types.
- */
 struct ColumnConvInfo {
 	bool needs_text_conv;     /* true if user type -> VARCHAR via output func */
 	FmgrInfo typoutput_finfo; /* cached output function (avoids per-row syscache lookup) */
 };
 
-/*
- * Build per-column conversion info by comparing the user-facing relation's
- * TupleDesc with the inlined data table's TupleDesc.
- *
- * The inlined table has INLINED_SYSTEM_COLS system columns prepended
- * (row_id, begin_snapshot, end_snapshot). User column i maps to inlined
- * column i + INLINED_SYSTEM_COLS.
- */
 static ColumnConvInfo *
 BuildColumnConvInfo(TupleDesc user_tupdesc, TupleDesc inlined_tupdesc) {
 	int natts = user_tupdesc->natts;
@@ -69,16 +51,14 @@ BuildColumnConvInfo(TupleDesc user_tupdesc, TupleDesc inlined_tupdesc) {
 		if (user_type == inl_type) {
 			conv[i].needs_text_conv = false;
 		} else if (inl_type == VARCHAROID || inl_type == TEXTOID) {
-			/* Inlined stores as VARCHAR (date, timestamp, ubigint, etc.):
-			 * use PG output function to get text representation. */
+			/* Inlined stores as VARCHAR (date, timestamp, ubigint, etc.): use PG output function. */
 			Oid typoutput;
 			bool typisvarlena;
 			getTypeOutputInfo(user_type, &typoutput, &typisvarlena);
 			fmgr_info(typoutput, &conv[i].typoutput_finfo);
 			conv[i].needs_text_conv = true;
 		} else {
-			/* BYTEA for text/varchar or other varlena-compatible: pass through.
-			 * Both text and bytea are varlena with identical in-memory format. */
+			/* text and bytea are both varlena with identical in-memory format: pass through. */
 			conv[i].needs_text_conv = false;
 		}
 	}
@@ -198,8 +178,8 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 				ExecClearTuple(slots[i]);
 			}
 			nslots = 0;
-			/* Reset per-batch (not per-tuple): NextCopyFrom Datums accumulate in
-			 * the econtext until table_multi_insert materializes them. */
+			/* Reset per-batch, not per-tuple: NextCopyFrom Datums accumulate in the econtext until table_multi_insert
+			 * materializes them. */
 			ResetPerTupleExprContext(estate);
 		}
 	}

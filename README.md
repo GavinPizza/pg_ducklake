@@ -49,7 +49,7 @@ ATTACH 'ducklake:postgres:dbname=postgres host=localhost' AS my_ducklake (METADA
 SELECT * FROM my_ducklake.public.my_table;
 ```
 
-For cloud storage (AWS S3 or Azure Blob Storage), see the [DuckLake Secrets Management guide](https://ducklake.select/docs/stable/duckdb/guides/secrets).
+For cloud storage (AWS S3 or Azure Blob Storage), see the [DuckLake connection and secrets guide](https://ducklake.select/docs/stable/duckdb/usage/connecting).
 
 ## Quick Start
 
@@ -107,7 +107,7 @@ External datasets (e.g., CSV/Parquet) can be ingested with DuckDB readers and ma
 
 ```sql
 CREATE TABLE titanic USING ducklake AS
-SELECT * FROM read_csv('https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv');
+SELECT * FROM ducklake.read_csv('https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv');
 
 SELECT "Pclass", "Sex", COUNT(*), AVG("Survived") AS survival_rate
 FROM titanic

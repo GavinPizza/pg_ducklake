@@ -1,14 +1,6 @@
 /*
  * create_options.cpp -- WITH (ducklake.*) clause stripping + application for
  * CREATE TABLE ... USING ducklake.
- *
- * @scope backend: per-process g_pending scratchpad
- *
- * The utility hook calls StripDucklakeCreateOptions() before
- * standard_ProcessUtility runs to peel the ducklake.* DefElems off the options
- * list and stash them in g_pending; the create-table event trigger drains the
- * stash and pushes ducklake_default_table_path into DuckDB around the
- * generated CREATE TABLE DDL.
  */
 
 #include "pgducklake/create_options.hpp"
@@ -115,9 +107,8 @@ void
 ApplyTablePathBeforeCreate(const PendingCreateOptions &opts) {
 	if (!opts.has_table_path)
 		return;
-	// The session's ducklake.default_table_path GUC is empty in the common
-	// case, so RefreshConnectionState (run on the DDL's GetConnection) is a
-	// no-op and this override survives to the CREATE TABLE.
+	// RefreshConnectionState is a no-op when the session GUC is empty (common case),
+	// so this override survives to the CREATE TABLE.
 	DuckDBQueryOrThrow("SET ducklake_default_table_path = " + duckdb::KeywordHelper::WriteQuoted(opts.table_path));
 }
 
@@ -125,9 +116,8 @@ void
 RestoreTablePathAfterCreate(const PendingCreateOptions &opts) {
 	if (!opts.has_table_path)
 		return;
-	// RESET so the WITH value does not leak to later CREATE TABLEs in this
-	// session. RefreshConnectionState re-pushes the ducklake.default_table_path
-	// GUC (if set) on the next statement's GetConnection.
+	// RESET so the WITH value does not leak to later CREATE TABLEs; the session
+	// GUC (if set) is re-pushed by RefreshConnectionState on the next statement.
 	DuckDBQueryOrThrow("RESET ducklake_default_table_path");
 }
 

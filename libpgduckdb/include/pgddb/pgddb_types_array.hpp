@@ -13,18 +13,14 @@ extern "C" {
 
 namespace pgddb {
 
-// Template machinery for converting a duckdb LIST/ARRAY Value into a multi-dim
-// PG ArrayType, stored in a TupleTableSlot column. The OP class supplies the
-// element-level Datum conversion plus the final ArrayType construction:
+// Converts a duckdb LIST/ARRAY Value into a multi-dim PG ArrayType. The OP class
+// supplies element-level Datum conversion and final ArrayType construction:
 //
 //   struct MyOP {
 //       static Datum ConvertToPostgres(const duckdb::Value &val);
 //       static ArrayType *ConstructArray(Datum *datums, bool *nulls,
 //                                        int ndims, int *dims, int *lower_bound);
 //   };
-//
-// Built-in element types are wired up internally; consumer extensions
-// instantiate this template with their own OP classes for custom array types.
 
 template <class OP>
 struct PostgresArrayAppendState {
@@ -35,11 +31,9 @@ public:
 		dimensions = (int *)palloc(number_of_dimensions * sizeof(int));
 		lower_bounds = (int *)palloc(number_of_dimensions * sizeof(int));
 		for (duckdb::idx_t i = 0; i < number_of_dimensions; i++) {
-			// Initialize everything at -1 to indicate that it isn't set yet
-			dimensions[i] = -1;
+			dimensions[i] = -1; // -1 marks an unset dimension
 		}
 		for (duckdb::idx_t i = 0; i < number_of_dimensions; i++) {
-			// Lower bounds have no significance for us
 			lower_bounds[i] = 1;
 		}
 	}
@@ -72,7 +66,6 @@ public:
 
 		D_ASSERT(dimension < number_of_dimensions);
 		if (dimensions[dimension] == -1) {
-			// This dimension is not set yet
 			dimensions[dimension] = to_append;
 			expected_values *= to_append;
 			if (pg_mul_u64_overflow(expected_values, static_cast<uint64>(to_append), &expected_values)) {
@@ -90,8 +83,7 @@ public:
 		if (child_type.id() == duckdb::LogicalTypeId::LIST) {
 			for (auto &child_val : values) {
 				if (child_val.IsNull()) {
-					// Postgres arrays can not contains nulls at the array level
-					// i.e {{1,2}, NULL, {3,4}} is not supported
+					// PG arrays cannot hold a NULL at an intermediate dimension, e.g. {{1,2}, NULL, {3,4}}.
 					throw duckdb::InvalidInputException("Returned LIST contains a NULL at an intermediate dimension "
 					                                    "(not the value level), which is not supported in Postgres");
 				}
@@ -99,8 +91,7 @@ public:
 			}
 		} else {
 			if (!datums) {
-				// First time we get to the outer most child
-				// Because we traversed all dimensions we know how many values we have to allocate for
+				// First leaf reached; all dimensions are known so expected_values is final.
 				datums = (Datum *)palloc(expected_values * sizeof(Datum));
 				nulls = (bool *)palloc(expected_values * sizeof(bool));
 			}
@@ -149,8 +140,7 @@ ConvertDuckToPostgresArray(TupleTableSlot *slot, duckdb::Value &value, duckdb::i
 	auto dimensions = append_state.dimensions;
 	auto lower_bounds = append_state.lower_bounds;
 
-	// When we insert an empty array into multi-dimensions array,
-	// the dimensions[1] to dimension[number_of_dimensions-1] will not be set and always be -1.
+	// An empty multi-dim array leaves inner dimensions unset (-1); treat them as 0.
 	for (duckdb::idx_t i = 0; i < number_of_dimensions; i++) {
 		if (dimensions[i] == -1) {
 			dimensions[i] = 0;

@@ -2,10 +2,10 @@
 -- Verifies which PostgreSQL permission checks apply to DuckLake tables.
 --
 -- Predefined roles (ducklake_superuser, ducklake_writer, ducklake_reader) are
--- created by the extension with duckdb_group membership and ducklake metadata
--- grants. This test creates LOGIN users in those roles and verifies behavior.
+-- created by the extension with ducklake metadata grants. This test creates
+-- LOGIN users in those roles and verifies behavior.
 --
--- Current state: pg_duckdb's planner hook sets permInfos = NULL, so most
+-- Current state: the libpgddb planner hook sets permInfos = NULL, so most
 -- DML permission checks are bypassed when queries are routed through DuckDB.
 
 -- Verify predefined roles exist
@@ -23,8 +23,9 @@ CREATE USER test_lake_admin IN ROLE ducklake_superuser, pg_read_server_files, pg
 CREATE USER test_lake_writer IN ROLE ducklake_writer, pg_read_server_files, pg_write_server_files;
 CREATE USER test_lake_reader IN ROLE ducklake_reader, pg_read_server_files, pg_write_server_files;
 
--- test_no_access has duckdb_group (can run DuckDB queries) but no ducklake role
-CREATE USER test_no_access IN ROLE duckdb_group, pg_read_server_files, pg_write_server_files;
+-- test_no_access can run DuckDB queries (execution is not group-gated) but
+-- holds no ducklake role
+CREATE USER test_no_access IN ROLE pg_read_server_files, pg_write_server_files;
 -- test_no_access still needs ducklake metadata access for DuckDB SPI
 GRANT ALL ON ALL TABLES IN SCHEMA ducklake TO test_no_access;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA ducklake TO test_no_access;

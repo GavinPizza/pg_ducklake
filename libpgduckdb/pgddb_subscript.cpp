@@ -81,22 +81,11 @@ CoerceSubscriptToText(struct ParseState *pstate, A_Indices *subscript, const cha
 }
 
 /*
- * In Postgres all index operations in a row are all slices or all plain
- * index operations. If you mix them, all are converted to slices.
- * There's no difference in representation possible between
- * "col[1:2][1]" and "col[1:2][1:]". If you want this separation you
- * need to use parenthesis to separate: "(col[1:2])[1]"
- * This might seem like fairly strange behaviour, but Postgres uses
- * this to be able to slice in multi-dimensional arrays and this
- * behaviour is documented here:
- * https://www.postgresql.org/docs/current/arrays.html#ARRAYS-ACCESSING
- *
- * This is different from DuckDB, but there's not much we can do about
- * that. So we'll have this same behaviour by, which means we need to always
- * add the lower subscript to the slice. The lower subscript will be NULL in
- * that case.
- *
- * See also comments on SubscriptingRef in nodes/subscripting.h
+ * In Postgres a row of subscripts is either all slices or all plain indexes;
+ * mixing them converts all to slices ("col[1:2][1]" == "col[1:2][1:]"), so for
+ * a slice we must always append a lower subscript (NULL when absent). See
+ * https://www.postgresql.org/docs/current/arrays.html#ARRAYS-ACCESSING and the
+ * SubscriptingRef comments in nodes/subscripting.h.
  */
 static void
 AddSubscriptExpressions(SubscriptingRef *sbsref, struct ParseState *pstate, A_Indices *subscript, bool is_slice) {
@@ -118,12 +107,7 @@ AddSubscriptExpressions(SubscriptingRef *sbsref, struct ParseState *pstate, A_In
 	}
 }
 
-/*
- * DuckdbSubscriptTransform is called by the parser when a subscripting
- * operation is performed on a duckdb type that can be indexed by arbitrary
- * expressions. All this does is parse those expressions and make sure the
- * subscript returns an an duckdb.unresolved_type again.
- */
+/* Subscript transform for duckdb types indexable by arbitrary expressions. */
 static void
 DuckdbSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
                          bool is_assignment, const char *type_name) {
@@ -135,25 +119,18 @@ DuckdbSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct Pars
 		elog(ERROR, "Subscripting %s with an empty subscript is not supported", type_name);
 	}
 
-	// Transform each subscript expression
 	foreach_node(A_Indices, subscript, indirection) {
 		AddSubscriptExpressions(sbsref, pstate, subscript, is_slice);
 	}
 
-	// Set the result type of the subscripting operation
 	sbsref->refrestype = ResolveRefrestype(sbsref->refcontainertype);
 	sbsref->reftypmod = -1;
 }
 
 /*
- * DuckdbTextSubscriptTransform is called by the parser when a subscripting
- * operation is performed on type that can only be indexed by string literals.
- * It has two main puprposes:
- * 1. Ensure that the row is being indexed using a string literal
- * 2. Ensure that the return type of this index operation is
- *    duckdb.unresolved_type
- *
- * Currently this is used for duckdb.row and duckdb.struct types.
+ * Subscript transform for types indexable only by string literals (duckdb.row,
+ * duckdb.struct): enforces a string-literal index and a duckdb.unresolved_type
+ * result.
  */
 static void
 DuckdbTextSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct ParseState *pstate, bool is_slice,
@@ -168,11 +145,9 @@ DuckdbTextSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct 
 
 	bool first = true;
 
-	// Transform each subscript expression
 	foreach_node(A_Indices, subscript, indirection) {
-		/* The first subscript needs to be a TEXT constant, since it should be
-		 * a column reference. But the subscripts after that can be anything,
-		 * DuckDB should interpret those. */
+		/* First subscript is the column reference, so it must be a TEXT
+		 * constant; later subscripts are left for DuckDB to interpret. */
 		if (first) {
 			sbsref->refupperindexpr =
 			    lappend(sbsref->refupperindexpr, CoerceSubscriptToText(pstate, subscript, type_name));
@@ -186,7 +161,6 @@ DuckdbTextSubscriptTransform(SubscriptingRef *sbsref, List *indirection, struct 
 		AddSubscriptExpressions(sbsref, pstate, subscript, is_slice);
 	}
 
-	// Set the result type of the subscripting operation
 	sbsref->refrestype = ResolveRefrestype(sbsref->refcontainertype);
 	sbsref->reftypmod = -1;
 }
@@ -220,13 +194,9 @@ DuckdbSubscriptFetchOld(ExprState * /*state*/, ExprEvalStep *op, ExprContext * /
 }
 
 /*
- * DuckdbSubscriptExecSetup stores a bunch of functions in the methods
- * structure. These functions are called by the Postgres executor when a
- * subscripting is executed. We need to implement this function, because it is
- * called for materialized CTEs. Even in that case the actual functions that
- * are stored in methods are never supposed to be called, because pg_duckdb
- * shouldn't force usage of DuckDB execution when duckdb types are present in
- * the query. So these methods are just stubs that throw an error when called.
+ * Required because PG calls exec_setup for materialized CTEs, but the installed
+ * methods are never meant to run (duckdb types must not force DuckDB execution),
+ * so they are error-throwing stubs.
  */
 static void
 DuckdbSubscriptExecSetup(const SubscriptingRef *sbsref, SubscriptingRefState *sbsrefstate,

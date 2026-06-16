@@ -5,20 +5,19 @@
 
 namespace pgducklake {
 
-// Lookup OIDs for the pseudo-types declared in pg_ducklake--*.sql.
-// Returns InvalidOid before CREATE EXTENSION runs. Cached per-process.
+// Cached per-process; returns InvalidOid before CREATE EXTENSION runs.
+Oid DucklakeNamespaceOid();
 Oid DuckdbRowOid();
+Oid UnresolvedTypeOid();
 Oid DuckdbStructOid();
 Oid VariantOid();
 
 class Ruleutils : public pgddb::DuckdbRuleutils {
 public:
-	// Deparse a CALL of a ducklake-only procedure into the DuckDB statement
+	// Deparse a CALL of a ducklake-only procedure into the DuckDB statement.
 	static std::string get_calldef(CallStmt *call);
 
-	// Validate a CREATE INDEX ... USING ducklake_sorted and deparse it to the
-	// "ALTER TABLE <rel> SET SORTED BY (...)" statement. Defined in
-	// sorted_by.cpp.
+	// Deparse CREATE INDEX ... USING ducklake_sorted to "ALTER TABLE <rel> SET SORTED BY (...)".
 	static std::string get_create_sorted_index_def(IndexStmt *stmt);
 
 protected:

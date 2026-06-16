@@ -2,7 +2,7 @@
 
 DuckLake tables are exposed via PostgreSQL's table access method (AM), so
 standard PostgreSQL privilege mechanisms (`GRANT`/`REVOKE`) apply in principle.
-However, because pg_duckdb routes queries to DuckDB's execution engine, **most
+However, because pg_ducklake routes queries to DuckDB's execution engine, **most
 DML-level permission checks are currently bypassed**.
 
 This document describes what works, what doesn't, and the recommended setup
@@ -15,7 +15,6 @@ for multi-role environments. See also the upstream
 |---|---|
 | DDL ownership (ALTER/DROP TABLE) | Standard PostgreSQL ownership check |
 | VACUUM ownership | Standard PostgreSQL ownership check (VACUUM is a no-op on DuckLake tables) |
-| `duckdb_group` membership | pg_duckdb rejects DuckDB execution for non-members |
 | Local filesystem access | `pg_read_server_files` / `pg_write_server_files` required for local storage |
 
 ## Known Gaps
@@ -45,8 +44,8 @@ pg_ducklake creates three GROUP roles (NOLOGIN) at extension installation:
 Role names are configurable via `postgresql.conf` GUCs (set before
 `CREATE EXTENSION`). Set a GUC to an empty string to skip creating that role.
 
-All three roles are members of `duckdb_group` and have full access to the
-`ducklake` metadata schema (required for DuckDB's SPI-based metadata manager).
+All three roles have full access to the `ducklake` metadata schema (required
+for DuckDB's SPI-based metadata manager).
 
 ### Usage
 
@@ -68,10 +67,10 @@ GRANT pg_read_server_files, pg_write_server_files TO lake_admin, lake_writer, la
 ```
 Permission Error: File system LocalFileSystem has been disabled by configuration
 ```
-This happens because pg_duckdb disables DuckDB's `LocalFileSystem` for users
-not in both `pg_read_server_files` and `pg_write_server_files`. The restriction
-affects all local storage operations -- catalog attach, reads (SELECT), and
-writes (INSERT). See [#164](https://github.com/relytcloud/pg_ducklake/issues/164).
+This happens because the libpgddb kernel disables DuckDB's `LocalFileSystem` for
+users not in both `pg_read_server_files` and `pg_write_server_files`. The
+restriction affects all local storage operations -- catalog attach, reads
+(SELECT), and writes (INSERT). See [#164](https://github.com/relytcloud/pg_ducklake/issues/164).
 
 These grants are **not** needed for S3/GCS/R2 storage.
 
@@ -84,8 +83,8 @@ GRANT SELECT ON TABLE my_table TO ducklake_reader;
 ```
 
 > **Note:** Due to the known gaps above, DML-level grants are not yet enforced.
-> This role setup is recommended as defense-in-depth; when pg_duckdb adds proper
-> permission enforcement, these grants will take effect without changes.
+> This role setup is recommended as defense-in-depth; when the libpgddb kernel
+> adds proper permission enforcement, these grants will take effect without changes.
 
 ## Regression Test
 

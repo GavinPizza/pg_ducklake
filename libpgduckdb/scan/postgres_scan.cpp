@@ -19,16 +19,12 @@
 #include "pgddb/pgddb_process_lock.hpp"
 #include "pgddb/logger.hpp"
 
-#include <numeric> // std::accumulate
+#include <numeric>
 #include <optional>
 
 namespace pgddb {
 
 int duckdb_threads_for_postgres_scan = 2;
-
-//
-// PostgresScanGlobalState
-//
 
 namespace {
 
@@ -49,9 +45,7 @@ FilterJoin(duckdb::vector<duckdb::string> &filters, duckdb::string &&delimiter) 
 std::optional<duckdb::string>
 FuncArgToLikeString(const duckdb::string &func_name, const duckdb::Expression &expr) {
 	if (expr.type != duckdb::ExpressionType::VALUE_CONSTANT) {
-		// We only support literal VARCHARs for the needle argument, because we
-		// need to append the '%' wildcard for postgres to understand it as a
-		// LIKE pattern.
+		// Needle must be a literal VARCHAR so we can append the '%' wildcard for a PG LIKE pattern.
 		return std::nullopt;
 	}
 
@@ -59,7 +53,7 @@ FuncArgToLikeString(const duckdb::string &func_name, const duckdb::Expression &e
 	if (value.IsNull()) {
 		return "NULL";
 	} else if (value.type().id() != duckdb::LogicalTypeId::VARCHAR) {
-		return std::nullopt; // Unsupported type for needle
+		return std::nullopt;
 	}
 
 	auto str_val = duckdb::StringUtil::Replace(value.ToString(), "'", "''");
@@ -114,7 +108,6 @@ FuncToLikeString(const duckdb::string &func_name, const duckdb::BoundFunctionExp
 	oss << *needle_str;
 
 	if (func_expr.children.size() == 3) {
-		// If there's a third argument, it should be the escape character
 		auto &escape_char = *func_expr.children[2];
 		auto escape_str = ExpressionToString(escape_char, column_name);
 		if (!escape_str) {
@@ -123,7 +116,7 @@ FuncToLikeString(const duckdb::string &func_name, const duckdb::BoundFunctionExp
 			oss << " ESCAPE " << *escape_str;
 		}
 	}
-	return oss.str(); // Return the complete LIKE expression as a string
+	return oss.str();
 }
 
 std::optional<duckdb::string>
@@ -175,12 +168,7 @@ ExpressionToString(const duckdb::Expression &expr, const duckdb::string &column_
 			return UnsupportedExpression("child expression in", expr);
 		}
 
-		/*
-		 * Would be nice to use the existing on BoundBetweenExpression for
-		 * this, but those are not const. Once following PR is marged and
-		 * released, feel free to use it:
-		 * https://github.com/duckdb/duckdb/pull/17773
-		 */
+		// Can't reuse BoundBetweenExpression's helpers here: they are non-const (duckdb/duckdb#17773).
 		auto lower_comp = between_expr.lower_inclusive ? duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO
 		                                               : duckdb::ExpressionType::COMPARE_GREATERTHAN;
 		auto upper_comp = between_expr.upper_inclusive ? duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO
@@ -190,11 +178,7 @@ ExpressionToString(const duckdb::Expression &expr, const duckdb::string &column_
 		       *input_str + " " + duckdb::ExpressionTypeToOperator(upper_comp) + " " + *upper_str + "))";
 	}
 
-		// XXX: IN and NOT IN are not listed here on purpose. DuckDB transforms a 2
-		// element in IN query to a hash join. Once we find a query that actually
-		// keeps the IN expression, we can implement IN/NOT IN support here. Maybe
-		// that happens when we start adding postgres indexes to the duckdb
-		// metadata.
+		// IN/NOT IN are omitted on purpose: DuckDB rewrites IN into a hash join, so the expression never reaches here.
 
 	case duckdb::ExpressionType::CONJUNCTION_AND:
 	case duckdb::ExpressionType::CONJUNCTION_OR: {
@@ -223,8 +207,6 @@ ExpressionToString(const duckdb::Expression &expr, const duckdb::string &column_
 		}
 
 		if (func_name == "lower" || func_name == "upper") {
-			// For lower and upper functions, we can just return the column name
-			// with the function applied, as Postgres will handle it correctly.
 			auto child_str = ExpressionToString(*func_expr.children[0], column_name);
 			if (!child_str) {
 				return UnsupportedExpression("child expression in", expr);
@@ -259,10 +241,7 @@ ExpressionToString(const duckdb::Expression &expr, const duckdb::string &column_
 		} else if (value.type().id() == duckdb::LogicalTypeId::VARCHAR) {
 			return value.ToSQLString();
 		} else {
-			// For now we only support VARCHAR constants, we could probably
-			// easily support more types. Currently we only to push down LIKE
-			// expressions and lower/upper calls though. So there's no need to
-			// complicate things for now.
+			// Only VARCHAR constants are supported; that suffices for the LIKE and lower/upper pushdowns we do.
 			return UnsupportedExpression("constant expression", expr);
 		}
 	}
@@ -296,8 +275,8 @@ PostgresScanGlobalState::ExtractQueryFilters(duckdb::TableFilter *filter, const 
 			                        is_inside_optional_filter)) {
 				conjuction_child_filters.emplace_back(child_filter);
 			} else if (is_or) {
-				/* Dropping a child of an OR makes it more restrictive.
-				 * Drop the entire OR instead. See duckdb/pg_duckdb#1025. */
+				// Dropping one OR child would make the filter more restrictive; drop the whole OR
+				// (duckdb/pg_duckdb#1025).
 				pd_log(DEBUG1, "(DuckDB/ExtractQueryFilters) Dropping OR filter: %s",
 				       filter->ToString(column_name).c_str());
 				return 0;
@@ -318,10 +297,7 @@ PostgresScanGlobalState::ExtractQueryFilters(duckdb::TableFilter *filter, const 
 		query_filters += *ExpressionToString(*expression_filter.expr, column_name);
 		return 1;
 	}
-	/* DYNAMIC_FILTER is push down filter from topN execution. STRUCT_EXTRACT is
-	 * only received if struct_extract function is used. Default will catch all
-	 * filter that could be added in future in DuckDB.
-	 */
+	// DYNAMIC_FILTER (topN pushdown) and STRUCT_EXTRACT (struct_extract use) plus any future filter land here.
 	case duckdb::TableFilterType::DYNAMIC_FILTER:
 	case duckdb::TableFilterType::STRUCT_EXTRACT:
 	default: {
@@ -338,7 +314,6 @@ PostgresScanGlobalState::ExtractQueryFilters(duckdb::TableFilter *filter, const 
 
 void
 PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInitInput &input) {
-	/* SELECT COUNT(*) FROM */
 	if (input.column_ids.size() == 1 && input.column_ids[0] == UINT64_MAX) {
 		scan_query << "SELECT COUNT(*) FROM " << pgddb::GenerateQualifiedRelationName(rel);
 		count_tuples_only = true;
@@ -352,12 +327,7 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 		}
 		col_idx_to_attno.emplace_back(static_cast<AttrNumber>(i + 1));
 	}
-	/*
-	 * We need to read columns from the Postgres tuple in column order, but for
-	 * outputting them we care about the DuckDB order. A map automatically
-	 * orders them based on key, which in this case is the Postgres column
-	 * order
-	 */
+	// Read tuples in PG column order but output in DuckDB order; the map keys on attno to give us PG order.
 	duckdb::map<AttrNumber, duckdb::idx_t> pg_column_order;
 	duckdb::idx_t scan_index = 0;
 	for (const auto &col_id : input.column_ids) {
@@ -383,12 +353,7 @@ PostgresScanGlobalState::ConstructTableScanQuery(const duckdb::TableFunctionInit
 		}
 	}
 
-	/* We need to check do we consider projection_ids or column_ids list to be used
-	 * for writing to output vector. Projection ids list will be used when
-	 * columns that are used for query filtering are not used afterwards; otherwise
-	 * column ids list will be used and all read tuple columns need to passed
-	 * to upper layers of query execution.
-	 */
+	// Use projection_ids when filter-only columns can be dropped, else column_ids so all read columns flow up.
 	if (input.CanRemoveFilterColumns()) {
 		for (const auto &projection_id : input.projection_ids) {
 			output_columns.emplace_back(col_idx_to_attno[input.column_ids[projection_id]]);
@@ -441,18 +406,10 @@ PostgresScanGlobalState::PostgresScanGlobalState(Snapshot _snapshot, Relation _r
 	ConstructTableScanQuery(input);
 	table_reader_global_state = duckdb::make_shared_ptr<PostgresTableReader>();
 	table_reader_global_state->Init(scan_query.str().c_str(), count_tuples_only);
-	// Dedicated Postgres memory context for temporary allocations during type conversion in scans.
+	// Dedicated PG memory context for temporary type-conversion allocations during scans.
 	duckdb_scan_memory_ctx = pgddb::pg::MemoryContextCreate(CurrentMemoryContext, "DuckdbScanContext");
 
-	// Parallelism in scanning has two layers:
-	//   1. The Postgres table_reader may launch parallel worker processes to scan the table.
-	//   2. DuckDB can use multiple threads (controlled by max_threads) to consume results from the table_reader.
-	//
-	// We restrict DuckDB to a single thread (max_threads = 1) in the following cases:
-	//   - The scan is a count-only query (count_tuples_only), as result processing typically isn't the performance
-	//     bottleneck.
-	//   - The table_reader does not launch any parallel Postgres workers, indicating a small scan that executes in the
-	//     current process.
+	// Only let DuckDB use multiple consumer threads when PG launched parallel workers and this isn't a count-only scan.
 	if (table_reader_global_state->NumWorkersLaunched() > 0 && !count_tuples_only) {
 		max_threads = duckdb_threads_for_postgres_scan;
 	}
@@ -474,8 +431,7 @@ void
 PostgresScanGlobalState::UnregisterLocalState() {
 	std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
 	registered_local_states--;
-	// Cleanup up the table reader global state when all registered local states are gone.
-	// And set the flag to negative to indicate no more local states are allowed to be registered.
+	// Once the last local state is gone, clean up the reader and mark negative so none can register again.
 	if (registered_local_states == 0) {
 		registered_local_states = -1;
 		table_reader_global_state->Cleanup();
@@ -485,10 +441,6 @@ PostgresScanGlobalState::UnregisterLocalState() {
 PostgresScanGlobalState::~PostgresScanGlobalState() {
 }
 
-//
-// PostgresScanLocalState
-//
-
 PostgresScanLocalState::PostgresScanLocalState(PostgresScanGlobalState *_global_state)
     : global_state(_global_state), output_vector_size(0), exhausted_scan(false) {
 	std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
@@ -496,8 +448,7 @@ PostgresScanLocalState::PostgresScanLocalState(PostgresScanGlobalState *_global_
 	if (!registered) {
 		return;
 	}
-	// Both single-thread and parallel scans now stage tuples through these slots before
-	// handing them to the batched converter.
+	// Both single-thread and parallel scans stage tuples through these slots before the batched converter.
 	for (int i = 0; i < LOCAL_STATE_SLOT_BATCH_SIZE; i++) {
 		slots[i] = global_state->table_reader_global_state->InitTupleSlot();
 	}
@@ -506,20 +457,12 @@ PostgresScanLocalState::PostgresScanLocalState(PostgresScanGlobalState *_global_
 PostgresScanLocalState::~PostgresScanLocalState() {
 }
 
-//
-// PostgresSeqScanFunctionData
-//
-
 PostgresScanFunctionData::PostgresScanFunctionData(Relation _rel, uint64_t _cardinality, Snapshot _snapshot)
     : complex_filters(), rel(_rel), cardinality(_cardinality), snapshot(_snapshot) {
 }
 
 PostgresScanFunctionData::~PostgresScanFunctionData() {
 }
-
-//
-// PostgresScanFunction
-//
 
 static bool
 PostgresScanPushdownExpression(duckdb::ClientContext &, const duckdb::LogicalGet &, duckdb::Expression &expr) {
@@ -574,7 +517,6 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 	auto &local_state = data.local_state->Cast<PostgresScanLocalState>();
 	auto &global_state = *local_state.global_state;
 
-	/* We have exhausted table scan */
 	if (local_state.exhausted_scan) {
 		SetOutputCardinality(output, local_state);
 		return;
@@ -587,8 +529,7 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 	auto &table_reader = *global_state.table_reader_global_state;
 
 	if (global_state.count_tuples_only) {
-		// COUNT(*): the aggregate node hands back one partial count per call; accumulate them into the
-		// output cardinality. There are no columns to convert.
+		// COUNT(*): accumulate the partial counts into output cardinality; no columns to convert.
 		std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
 		uint64_t count = 0;
 		while (table_reader.GetNextCount(&count)) {
@@ -597,10 +538,8 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 		}
 		local_state.exhausted_scan = true;
 	} else if (table_reader.NumWorkersLaunched() > 0) {
-		// Parallel Postgres workers produce the tuples and several DuckDB threads consume them. Hold the
-		// global lock only while copying a batch of worker tuples (whose memory lives in transient shared
-		// queues) into per-slot byte buffers, then materialize and convert outside the lock so the other
-		// DuckDB threads can drain concurrently.
+		// Parallel workers feed several DuckDB consumer threads: hold the lock only to copy a batch of worker
+		// tuples (whose memory lives in transient shared queues) into per-slot buffers, then convert outside it.
 		for (size_t batch_idx = 0; batch_idx < num_batches; batch_idx++) {
 			size_t valid_slots = 0;
 			{
@@ -623,13 +562,10 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 			}
 		}
 	} else {
-		// In-process scan: exactly one DuckDB thread consumes this scan, so the global lock is uncontended.
-		// Take it once for the whole chunk and convert under it -- releasing early buys nothing without a
-		// second consumer, and one acquisition avoids re-locking per batch. Each tuple is copied straight into
-		// its slot (the slot owns the copy), so there is no staging buffer or per-tuple free. We do NOT switch
-		// memory contexts around the fetch: ExecProcNode allocates per-tuple executor state (e.g. index scans)
-		// in the caller context that must survive across calls -- see issue 796 and 802. InsertTuplesIntoChunk
-		// switches into the scratchpad on its own for the columns that need it.
+		// In-process scan: single consumer, so take the lock once for the whole chunk. Do NOT switch memory
+		// contexts around the fetch -- ExecProcNode allocates per-tuple executor state (e.g. index scans) in the
+		// caller context that must survive across calls (issues 796, 802); InsertTuplesIntoChunk switches into
+		// the scratchpad itself where needed.
 		std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
 		for (size_t batch_idx = 0; batch_idx < num_batches; batch_idx++) {
 			int valid_slots = table_reader.GetNextInProcessTuples(local_state.slots, LOCAL_STATE_SLOT_BATCH_SIZE);

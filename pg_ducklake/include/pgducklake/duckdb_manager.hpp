@@ -15,42 +15,35 @@ public:
 
 protected:
 	void OnPostInit(duckdb::ClientContext &context) override;
-	// Syncs the ducklake.default_table_path GUC to DuckDB before each statement
-	// (runs per GetConnection), so a runtime SET is picked up by the next
-	// CREATE TABLE. OnPostInit runs only once per instance and would miss it.
+	// Syncs ducklake.default_table_path to DuckDB per GetConnection so a runtime SET
+	// reaches the next CREATE TABLE; OnPostInit runs once per instance and would miss it.
 	void RefreshConnectionState(duckdb::ClientContext &context) override;
 
 private:
 	static duckdb::unique_ptr<DuckDBManager> instance_;
 };
 
-/* Throws a duckdb exception on error; the DECLARE_PG_FUNCTION/InvokeCPPFunc
- * guard turns it into a PG error at the entry point.  The (query) overload
- * runs on DuckDBManager::Get()'s cached connection. */
+/* Throws a duckdb exception on error (the DECLARE_PG_FUNCTION guard turns it into
+ * a PG error). The (query) overload runs on DuckDBManager::Get()'s cached connection. */
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(duckdb::ClientContext &context, const std::string &query);
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(duckdb::Connection &connection, const std::string &query);
 duckdb::unique_ptr<duckdb::QueryResult> DuckDBQueryOrThrow(const std::string &query);
 
-/* Unwraps the JSON-serialized duckdb ErrorData blob in e.what() to the plain
- * message, for catch sites that report via elog/ereport instead of re-throwing. */
+/* Unwraps the JSON-serialized duckdb ErrorData in e.what() to the plain message. */
 std::string DuckDBErrorMessage(const std::exception &e);
 
 } // namespace pgducklake
 
-/* Detach the "pgducklake" DuckLake catalog.  Called by the utility hook
- * after DROP EXTENSION so that a subsequent CREATE EXTENSION can
- * attach a fresh catalog. */
+/* Detach the "pgducklake" DuckLake catalog (utility hook, after DROP EXTENSION). */
 void ducklake_detach_catalog();
 
-/* Attach the "pgducklake" DuckLake catalog.  Called during initial
- * extension load (DuckDBManager::OnPostInit) and on re-create
- * (ducklake_initialize). */
+/* Attach the "pgducklake" DuckLake catalog (OnPostInit and ducklake_initialize). */
 void ducklake_attach_catalog();
 
 namespace pgducklake {
 
-/* Toggle the SUBXACT_EVENT_START_SUB guard: allow opening a PG subtransaction
- * while DuckDB has an active transaction (e.g. DuckLake FlushChanges retry loop). */
+/* Allow opening a PG subtransaction while DuckDB has an active transaction
+ * (SUBXACT_EVENT_START_SUB guard; e.g. DuckLake FlushChanges retry loop). */
 void SetAllowSubtransaction(bool allow);
 
 } // namespace pgducklake

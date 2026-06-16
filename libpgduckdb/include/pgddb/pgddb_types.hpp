@@ -30,8 +30,7 @@ const duckdb::date_t PGDUCKDB_PG_MAX_DATE_VALUE = duckdb::Date::FromDate(PG_MAXY
 constexpr int64_t PGDUCKDB_MAX_TIMESTAMP_VALUE = 9223371244800000000;
 constexpr int64_t PGDUCKDB_MIN_TIMESTAMP_VALUE = -210866803200000000;
 
-// Type conversion between Postgres and DuckDB. The kernel implements all built-in
-// Postgres types (each a compile-time Oid, e.g. int4 / numeric / timestamp).
+// Type conversion between Postgres and DuckDB; the kernel implements all built-in PG types.
 void CheckForUnsupportedPostgresType(duckdb::LogicalType type);
 duckdb::LogicalType ConvertPostgresToDuckColumnType(Form_pg_attribute &attribute);
 Oid GetPostgresDuckDBType(const duckdb::LogicalType &type, bool throw_error = false);
@@ -47,27 +46,17 @@ bool IsNestedType(duckdb::LogicalTypeId type_id);
 const duckdb::LogicalType &GetChildType(const duckdb::LogicalType &type);
 Datum ConvertToStringDatum(const duckdb::Value &value);
 
-// Per-column converter: writes one Postgres Datum into a DuckDB result Vector at offset.
-// Picked once per column (by attr Oid + result type) and called per row, so the per-value
-// type switch happens once per batch rather than once per cell.
+// Per-column converter, picked once per column (by attr Oid + result type) so the type
+// switch happens once per batch rather than per cell.
 using PostgresToDuckValueFn = void (*)(duckdb::Vector &result, Datum value, duckdb::idx_t offset);
 
 PostgresToDuckValueFn GetPostgresToDuckValueFn(Oid attr_type, duckdb::Vector &result);
 
-// Type extension hooks. Each extension point keeps a list of registered hooks. The
-// kernel handles built-in Postgres types first, then tries each registered hook in
-// registration order until one handles the type (returns true). A consumer extension
-// registers its hooks in _PG_init via the Register_* functions below.
-//
-//   static bool MyGetPostgresDuckDBType(const duckdb::LogicalType &t, Oid &out) {
-//     if (t.id() == ...) { out = MyOid(); return true; }
-//     return false;  // decline; the kernel falls through to the next hook
-//   }
-//   // in _PG_init: pgddb::Register_GetPostgresDuckDBType(MyGetPostgresDuckDBType);
-//
-// The Register_* symbols are exported (extern "C", default visibility) -- the same
-// shape as RegisterDuckdbTableAm -- so a future shared libpgddb can collect hooks
-// from independently-linked extensions instead of each bundling its own copy.
+// Type extension hooks. The kernel handles built-in PG types first, then tries each
+// registered hook in registration order until one returns true; consumers register via
+// the Register_* functions in _PG_init. Register_* are exported (extern "C", default
+// visibility) so a future shared libpgddb can collect hooks from independently-linked
+// extensions instead of each bundling its own copy.
 
 // PG Oid -> DuckDB base (non-array) type. Fill out and return true if handled.
 typedef bool (*ConvertPostgresToBaseDuckColumnType_hook_t)(Oid pg_oid, duckdb::LogicalType &out);

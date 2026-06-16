@@ -8,7 +8,7 @@ CREATE TABLE cwo_t1 (id int, val text) USING ducklake
   WITH (ducklake.table_path = '/tmp/cwo_t1/');
 INSERT INTO cwo_t1 VALUES (1, 'a'), (2, 'b');
 SELECT * FROM cwo_t1 ORDER BY id;
-SELECT * FROM ducklake.duckdb_query($$
+SELECT * FROM ducklake.query($$
   SELECT bool_and(starts_with(data_file, '/tmp/cwo_t1/')) AS path_ok
   FROM ducklake_list_files('pgducklake', 'cwo_t1', schema => 'public')
 $$);
@@ -17,7 +17,7 @@ $$);
 --    under /tmp/cwo_t1/.
 CREATE TABLE cwo_t2 (id int) USING ducklake;
 INSERT INTO cwo_t2 VALUES (1);
-SELECT * FROM ducklake.duckdb_query($$
+SELECT * FROM ducklake.query($$
   SELECT bool_and(NOT starts_with(data_file, '/tmp/cwo_t1/')) AS no_leak
   FROM ducklake_list_files('pgducklake', 'cwo_t2', schema => 'public')
 $$);
@@ -27,7 +27,7 @@ CREATE TABLE cwo_ctas USING ducklake
   WITH (ducklake.table_path = '/tmp/cwo_ctas/')
   AS SELECT i AS id, ('row_' || i) AS val FROM generate_series(1, 3) t(i);
 SELECT count(*) FROM cwo_ctas;
-SELECT * FROM ducklake.duckdb_query($$
+SELECT * FROM ducklake.query($$
   SELECT bool_and(starts_with(data_file, '/tmp/cwo_ctas/')) AS path_ok
   FROM ducklake_list_files('pgducklake', 'cwo_ctas', schema => 'public')
 $$);

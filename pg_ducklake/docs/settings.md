@@ -100,7 +100,7 @@ Clean up unreferenced data files from storage during background maintenance.
 
 ### `ducklake.vacuum_delete_threshold`
 
-Minimum fraction of deleted rows before the maintenance worker rewrites a data file. Also used when calling `ducklake.rewrite_data_files()` directly. Note: `VACUUM` on DuckLake tables is a no-op; compaction is handled by the background maintenance worker.
+Minimum fraction of deleted rows before the background maintenance worker rewrites a data file. This GUC applies only to the worker. A direct `CALL ducklake.rewrite_data_files()` does not consult this GUC; it uses the DuckLake catalog option `rewrite_delete_threshold` instead. Note: `VACUUM` on DuckLake tables is a no-op; compaction is handled by the background maintenance worker.
 
 - **Default**: `0.1`
 - **Range**: 0.0 -- 1.0

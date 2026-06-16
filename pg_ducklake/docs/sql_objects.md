@@ -27,6 +27,9 @@ Default operator classes are registered for common types (bool, int2, int4, int8
 | Type | Purpose |
 |------|---------|
 | `ducklake.variant` | DuckDB VARIANT column type for ducklake tables; PG stores text representation, DuckDB handles actual data |
+| `ducklake.row` | Row type returned by passthrough functions whose shape is only known at execution time (the `SETOF ducklake.row` return type used throughout this document). Mirrors pg_duckdb's `duckdb.row` |
+| `ducklake.unresolved_type` | Element type produced by subscripting a `row`/`struct` value (`r['col']`); carries `WITH INOUT` casts to every supported type so `r['col']::int` parses. Mirrors pg_duckdb's `duckdb.unresolved_type` |
+| `ducklake.struct` | Passthrough type for DuckDB STRUCT/UNION/MAP results that have no concrete PostgreSQL composite type. Mirrors pg_duckdb's `duckdb.struct` |
 
 ## Event Triggers
 
@@ -68,8 +71,8 @@ See [Foreign Data Wrapper](foreign_data_wrapper.md) for usage guide.
 | | [`ducklake.set_commit_message(text, text)`](#set_commit_message) | duckdb-only proc | - |
 | Metadata | [`ducklake.table_info()`](#table_info) | passthrough | - |
 | | [`ducklake.list_files(text, text)`](#list_files) | passthrough | `(regclass)` -- rewrite |
-| Time Travel | [`ducklake.time_travel(text, bigint)`](#time_travel) | passthrough | - |
-| | [`ducklake.time_travel(text, timestamptz)`](#time_travel) | passthrough | - |
+| Time Travel | [`ducklake.time_travel(text, bigint)`](#time_travel) | passthrough | `(text, text, bigint)` |
+| | [`ducklake.time_travel(text, timestamptz)`](#time_travel) | passthrough | `(text, text, timestamptz)` |
 | Change Feed | [`ducklake.table_insertions(text, text, bigint, bigint)`](#table_insertions) | passthrough | `(regclass, bigint, bigint)` -- rewrite |
 | | [`ducklake.table_insertions(text, text, timestamptz, timestamptz)`](#table_insertions) | passthrough | `(regclass, timestamptz, timestamptz)` -- rewrite |
 | | [`ducklake.table_deletions(text, text, bigint, bigint)`](#table_deletions) | passthrough | `(regclass, bigint, bigint)` -- rewrite |
@@ -92,9 +95,15 @@ See [Foreign Data Wrapper](foreign_data_wrapper.md) for usage guide.
 | Diagnostics | [`ducklake.direct_insert_stats()`](#direct_insert_stats) | native | - |
 | | [`ducklake.reset_direct_insert_stats()`](#reset_direct_insert_stats) | native | - |
 | Freeze | [`ducklake.freeze(text)`](#freeze) | native proc | - |
+| Variant | [`-> / ->> operators`](#variant_operators) | passthrough | - |
+| File Readers | [`ducklake.read_csv(text, ...)`](#read_csv) | passthrough | `(text[], ...)` |
+| | [`ducklake.read_parquet(text, ...)`](#read_parquet) | passthrough | `(text[], ...)` |
+| Admin | [`ducklake.query(text)`](#query) | passthrough | - |
+| | [`ducklake.raw_query(text)`](#raw_query) | native | - |
+| | [`ducklake.recycle_ddb()`](#recycle_ddb) | native proc | - |
 
 **Kind legend:**
-- **passthrough** -- SQL stub in pg_ducklake, pg_duckdb routes the query to DuckDB as-is
+- **passthrough** -- SQL stub in pg_ducklake; the planner hook routes the query to DuckDB as-is
 - **rewrite** -- planner rewrites `regclass` to `(schema_name, table_name)` then routes to the passthrough version
 - **duckdb-only proc** -- CALL is intercepted by utility hook and executed in DuckDB
 - **native proc** -- procedure runs in PostgreSQL (C language)
@@ -171,7 +180,7 @@ Lists all DuckLake options with their current values. This is a DuckDB-only func
 SELECT * FROM ducklake.options();
 ```
 
-#### <a name="ensure_inlined_data_table"></a>`ducklake.ensure_inlined_data_table(schema_name text, table_name text)` / `ducklake.ensure_inlined_data_table(scope regclass)` -> `SETOF duckdb.row`
+#### <a name="ensure_inlined_data_table"></a>`ducklake.ensure_inlined_data_table(schema_name text, table_name text)` / `ducklake.ensure_inlined_data_table(scope regclass)` -> `SETOF ducklake.row`
 
 Creates the inlined data table for a DuckLake table if one does not already exist. Returns the name of the inlined data table. This is required before using `COPY FROM STDIN` on a DuckLake table.
 
@@ -188,7 +197,7 @@ SELECT * FROM ducklake.ensure_inlined_data_table('public', 'my_table');
 COPY my_table FROM STDIN;
 ```
 
-#### <a name="flush_inlined_data"></a>`ducklake.flush_inlined_data()` / `ducklake.flush_inlined_data(schema_name text, table_name text)` / `ducklake.flush_inlined_data(scope regclass)` -> `SETOF duckdb.row`
+#### <a name="flush_inlined_data"></a>`ducklake.flush_inlined_data()` / `ducklake.flush_inlined_data(schema_name text, table_name text)` / `ducklake.flush_inlined_data(scope regclass)` -> `SETOF ducklake.row`
 
 Flushes inlined data rows to Parquet files. When a table is specified, only that table is flushed. Accepts either a `regclass` table reference or explicit schema/table text arguments. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -298,7 +307,7 @@ SELECT * FROM ducklake.get_sort('events'::regclass);
               0 | date_trunc('day', ts) | ASC       | NULLS_LAST
 ```
 
-#### <a name="snapshots"></a>`ducklake.snapshots()` -> `SETOF duckdb.row`
+#### <a name="snapshots"></a>`ducklake.snapshots()` -> `SETOF ducklake.row`
 
 Lists all snapshots and changesets. Returns snapshot metadata including snapshot IDs, timestamps, and changeset information. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -306,7 +315,7 @@ Lists all snapshots and changesets. Returns snapshot metadata including snapshot
 SELECT * FROM ducklake.snapshots();
 ```
 
-#### <a name="current_snapshot"></a>`ducklake.current_snapshot()` -> `SETOF duckdb.row`
+#### <a name="current_snapshot"></a>`ducklake.current_snapshot()` -> `SETOF ducklake.row`
 
 Returns the current snapshot ID. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -314,7 +323,7 @@ Returns the current snapshot ID. This is a DuckDB-only function (routed to DuckD
 SELECT * FROM ducklake.current_snapshot();
 ```
 
-#### <a name="last_committed_snapshot"></a>`ducklake.last_committed_snapshot()` -> `SETOF duckdb.row`
+#### <a name="last_committed_snapshot"></a>`ducklake.last_committed_snapshot()` -> `SETOF ducklake.row`
 
 Returns the latest committed snapshot. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -332,7 +341,7 @@ INSERT INTO sales SELECT * FROM staging_sales;
 -- Commit will record the author and message in the snapshot
 ```
 
-#### <a name="table_info"></a>`ducklake.table_info()` -> `SETOF duckdb.row`
+#### <a name="table_info"></a>`ducklake.table_info()` -> `SETOF ducklake.row`
 
 Lists metadata for all tables in the DuckLake catalog. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -340,7 +349,7 @@ Lists metadata for all tables in the DuckLake catalog. This is a DuckDB-only fun
 SELECT * FROM ducklake.table_info();
 ```
 
-#### <a name="list_files"></a>`ducklake.list_files(scope regclass)` / `ducklake.list_files(schema_name text, table_name text)` -> `SETOF duckdb.row`
+#### <a name="list_files"></a>`ducklake.list_files(scope regclass)` / `ducklake.list_files(schema_name text, table_name text)` -> `SETOF ducklake.row`
 
 Lists data and delete files for a DuckLake table. Accepts either a `regclass` table reference or explicit schema/table text arguments.
 
@@ -352,9 +361,9 @@ SELECT * FROM ducklake.list_files('my_table'::regclass);
 SELECT * FROM ducklake.list_files('public', 'my_table');
 ```
 
-#### <a name="time_travel"></a>`ducklake.time_travel(table_name text, version bigint)` / `ducklake.time_travel(table_name text, timestamp timestamptz)` -> `SETOF duckdb.row`
+#### <a name="time_travel"></a>`ducklake.time_travel(table_name text, version bigint)` / `ducklake.time_travel(table_name text, timestamp timestamptz)` -> `SETOF ducklake.row`
 
-Queries a DuckLake table at a previous version or timestamp. This is a DuckDB-only function (routed to DuckDB for execution).
+Queries a DuckLake table at a previous version or timestamp. This is a DuckDB-only function (routed to DuckDB for execution). A schema-qualified form (`time_travel(schema_name text, table_name text, version bigint)` and the `timestamptz` variant) is also available when the table name needs an explicit schema.
 
 ```sql
 -- Query by version number
@@ -362,9 +371,12 @@ SELECT * FROM ducklake.time_travel('my_table', 1);
 
 -- Query by timestamp
 SELECT * FROM ducklake.time_travel('my_table', '2024-01-01'::timestamptz);
+
+-- Schema-qualified form
+SELECT * FROM ducklake.time_travel('public', 'my_table', 1);
 ```
 
-#### <a name="table_insertions"></a>`ducklake.table_insertions(scope regclass, ...)` / `ducklake.table_insertions(schema_name text, table_name text, ...)` -> `SETOF duckdb.row`
+#### <a name="table_insertions"></a>`ducklake.table_insertions(scope regclass, ...)` / `ducklake.table_insertions(schema_name text, table_name text, ...)` -> `SETOF ducklake.row`
 
 Queries rows inserted into a table between two snapshots (by version or timestamp). Accepts either a `regclass` table reference or explicit schema/table text arguments.
 
@@ -379,7 +391,7 @@ SELECT * FROM ducklake.table_insertions('my_table'::regclass, '2024-01-01'::time
 SELECT * FROM ducklake.table_insertions('public', 'my_table', 1, 5);
 ```
 
-#### <a name="table_deletions"></a>`ducklake.table_deletions(scope regclass, ...)` / `ducklake.table_deletions(schema_name text, table_name text, ...)` -> `SETOF duckdb.row`
+#### <a name="table_deletions"></a>`ducklake.table_deletions(scope regclass, ...)` / `ducklake.table_deletions(schema_name text, table_name text, ...)` -> `SETOF ducklake.row`
 
 Queries rows deleted from a table between two snapshots (by version or timestamp). Accepts either a `regclass` table reference or explicit schema/table text arguments.
 
@@ -394,7 +406,7 @@ SELECT * FROM ducklake.table_deletions('my_table'::regclass, '2024-01-01'::times
 SELECT * FROM ducklake.table_deletions('public', 'my_table', 1, 5);
 ```
 
-#### <a name="table_changes"></a>`ducklake.table_changes(scope regclass, ...)` / `ducklake.table_changes(schema_name text, table_name text, ...)` -> `SETOF duckdb.row`
+#### <a name="table_changes"></a>`ducklake.table_changes(scope regclass, ...)` / `ducklake.table_changes(schema_name text, table_name text, ...)` -> `SETOF ducklake.row`
 
 Queries all changes (insertions and deletions) to a table between two snapshots (by version or timestamp). Each row includes a `change_type` column: `insert`, `delete`, `update_preimage`, or `update_postimage`. Accepts either a `regclass` table reference or explicit schema/table text arguments.
 
@@ -409,7 +421,7 @@ SELECT * FROM ducklake.table_changes('my_table'::regclass, '2024-01-01'::timesta
 SELECT * FROM ducklake.table_changes('public', 'my_table', 1, 5);
 ```
 
-#### <a name="cleanup_old_files"></a>`ducklake.cleanup_old_files()` / `ducklake.cleanup_old_files(older_than interval)` -> `SETOF duckdb.row`
+#### <a name="cleanup_old_files"></a>`ducklake.cleanup_old_files()` / `ducklake.cleanup_old_files(older_than interval)` -> `SETOF ducklake.row`
 
 Cleans up old data files that are no longer referenced by the current snapshot. When `older_than` is provided, only files older than the given interval are cleaned up. Without arguments, all scheduled files are cleaned. This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -421,7 +433,7 @@ SELECT * FROM ducklake.cleanup_old_files('24 hours'::interval);
 SELECT * FROM ducklake.cleanup_old_files();
 ```
 
-#### <a name="cleanup_orphaned_files"></a>`ducklake.cleanup_orphaned_files()` -> `SETOF duckdb.row`
+#### <a name="cleanup_orphaned_files"></a>`ducklake.cleanup_orphaned_files()` -> `SETOF ducklake.row`
 
 Removes files that were generated but never committed to a snapshot (e.g., from aborted transactions). This is a DuckDB-only function (routed to DuckDB for execution).
 
@@ -431,7 +443,7 @@ Removes files that were generated but never committed to a snapshot (e.g., from 
 SELECT * FROM ducklake.cleanup_orphaned_files();
 ```
 
-#### <a name="merge_adjacent_files"></a>`ducklake.merge_adjacent_files()` / `ducklake.merge_adjacent_files(scope regclass)` / `ducklake.merge_adjacent_files(schema_name text, table_name text)` -> `SETOF duckdb.row`
+#### <a name="merge_adjacent_files"></a>`ducklake.merge_adjacent_files()` / `ducklake.merge_adjacent_files(scope regclass)` / `ducklake.merge_adjacent_files(schema_name text, table_name text)` -> `SETOF ducklake.row`
 
 Merges small adjacent Parquet files into larger ones for better scan performance. Without arguments, merges files across the entire catalog. With a table argument, merges only that table's files. Returns the number of files processed and created per table. This operation is run automatically by the background maintenance worker; this function allows triggering it manually.
 
@@ -446,9 +458,9 @@ SELECT * FROM ducklake.merge_adjacent_files('my_table'::regclass);
 SELECT * FROM ducklake.merge_adjacent_files('public', 'my_table');
 ```
 
-#### <a name="rewrite_data_files"></a>`ducklake.rewrite_data_files()` / `ducklake.rewrite_data_files(scope regclass)` / `ducklake.rewrite_data_files(schema_name text, table_name text)` -> `SETOF duckdb.row`
+#### <a name="rewrite_data_files"></a>`ducklake.rewrite_data_files()` / `ducklake.rewrite_data_files(scope regclass)` / `ducklake.rewrite_data_files(schema_name text, table_name text)` -> `SETOF ducklake.row`
 
-Rewrites data files that contain deleted rows, producing new files without the deletions. Files are rewritten when the fraction of deleted rows exceeds the `rewrite_delete_threshold` option (default 0.2). This operation is run automatically by the background maintenance worker; this function allows triggering it manually.
+Rewrites data files that contain deleted rows, producing new files without the deletions. Files are rewritten when the fraction of deleted rows exceeds a threshold. When called directly, the threshold is the DuckLake catalog option `rewrite_delete_threshold` (upstream default 0.95 when unset). The background maintenance worker, which runs this operation automatically, instead passes the `ducklake.vacuum_delete_threshold` GUC (default 0.1) as the threshold.
 
 ```sql
 -- Rewrite all tables
@@ -458,7 +470,7 @@ SELECT * FROM ducklake.rewrite_data_files();
 SELECT * FROM ducklake.rewrite_data_files('my_table'::regclass);
 ```
 
-#### <a name="expire_snapshots"></a>`ducklake.expire_snapshots()` -> `SETOF duckdb.row`
+#### <a name="expire_snapshots"></a>`ducklake.expire_snapshots()` -> `SETOF ducklake.row`
 
 Expires old snapshots that are beyond the retention window. The retention period is controlled by the `expire_older_than` option. Returns metadata about the expired snapshots.
 
@@ -498,4 +510,80 @@ Exports the DuckLake catalog metadata to a standalone `.ducklake` file. If data 
 
 ```sql
 CALL ducklake.freeze('/path/to/output.ducklake');
+```
+
+#### <a name="variant_operators"></a>`->` / `->>` operators on `ducklake.variant`
+
+PostgreSQL JSON-style extraction operators for `ducklake.variant` columns,
+defined in `pg_catalog` so they are always in scope. `->` returns a
+`ducklake.variant` (chainable); `->>` returns `text`. Both accept a `text`
+field name or an `int4` index. The planner hook rewrites them to DuckDB's
+`json_extract` / `json_extract_string` on the variant value.
+
+```sql
+-- Extract a nested field as variant (chainable), then as text
+SELECT (v -> 'address' -> 'city') FROM my_table;
+SELECT (v ->> 'name') FROM my_table;
+
+-- Index into an array element
+SELECT (v -> 'tags' ->> 0) FROM my_table;
+```
+
+#### <a name="read_csv"></a>`ducklake.read_csv(path text, ...)` / `ducklake.read_csv(path text[], ...)` -> `SETOF ducklake.row`
+
+Reads one or more CSV files through DuckDB's CSV reader. Installed in the
+`ducklake` schema (so it does not collide with pg_duckdb's identically-named
+public `read_csv` when both extensions are installed), and accepts the full set
+of DuckDB `read_csv` options (e.g. `header`, `delim`, `auto_detect`,
+`hive_partitioning`). This is a DuckDB-only function (routed to DuckDB for
+execution). Commonly used to ingest external data into a DuckLake table via
+`CREATE TABLE ... USING ducklake AS SELECT`.
+
+```sql
+CREATE TABLE t USING ducklake AS
+SELECT * FROM ducklake.read_csv('/data/input.csv', header => true);
+```
+
+#### <a name="read_parquet"></a>`ducklake.read_parquet(path text, ...)` / `ducklake.read_parquet(path text[], ...)` -> `SETOF ducklake.row`
+
+Reads one or more Parquet files through DuckDB's Parquet reader. Like
+`ducklake.read_csv`, it lives in the `ducklake` schema and accepts DuckDB's
+`read_parquet` options (`binary_as_string`, `filename`, `file_row_number`,
+`hive_partitioning`, `union_by_name`). DuckDB-only function.
+
+```sql
+SELECT * FROM ducklake.read_parquet('s3://bucket/prefix/*.parquet');
+```
+
+#### <a name="query"></a>`ducklake.query(query text)` -> `SETOF ducklake.row`
+
+Executes an arbitrary query string against the embedded DuckDB instance and
+returns the result rows. Routed through the planner hook and deparsed to
+DuckDB's built-in `query()` table function. Unstable/debug API: `EXECUTE` is
+revoked from `PUBLIC` and granted only to the superuser role
+(`ducklake.superuser_role`). Prefer the typed functions above where one exists.
+
+```sql
+SELECT * FROM ducklake.query('SELECT 1 AS a, ''x'' AS b');
+```
+
+#### <a name="raw_query"></a>`ducklake.raw_query(query text)` -> `void`
+
+Runs an arbitrary statement against the embedded DuckDB instance, discarding
+any result set. Useful for DuckDB-side side effects (e.g. `SET`, `INSTALL`,
+`LOAD`). Native PostgreSQL C function. Unstable/debug API: `EXECUTE` is revoked
+from `PUBLIC` and granted only to the superuser role.
+
+```sql
+SELECT ducklake.raw_query('SET threads = 4');
+```
+
+#### <a name="recycle_ddb"></a>`ducklake.recycle_ddb()`
+
+Tears down and recreates the per-backend DuckDB instance, re-running the
+DuckLake attach / storage-extension setup from scratch. Primarily a
+test/operator escape hatch. Native PostgreSQL C procedure.
+
+```sql
+CALL ducklake.recycle_ddb();
 ```

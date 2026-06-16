@@ -25,3 +25,4 @@ Use the image like the official Postgres image:
 ```bash
 docker run -d -e POSTGRES_PASSWORD=duckdb pgducklake/pgducklake:18-main
 ```
+

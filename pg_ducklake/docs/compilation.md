@@ -19,7 +19,7 @@ And then you can follow the instructions for your operating system below
 - **Build Tools**: Standard PostgreSQL extension build tools
 - **DuckDB Dependencies**: [DuckDB build requirements](https://duckdb.org/docs/stable/dev/building/overview.html)
 
-For full dependency details, see our [GitHub Actions workflow](../.github/workflows/build_and_test.yaml).
+For full dependency details, see our [GitHub Actions workflow](../../.github/workflows/build_and_test.yaml).
 
 ## Build Options
 
@@ -61,8 +61,8 @@ sudo apt install \
 ### (Optional) Build and Install pg_duckdb
 
 ```sh
-make -j$(nproc) pg_duckdb
-sudo make install-pg_duckdb
+make -j$(nproc) pg_duckdb/all
+sudo make pg_duckdb/install
 ```
 
 ### Build and Install pg_ducklake
@@ -72,10 +72,13 @@ make -j$(nproc)
 sudo make install
 ```
 
-### Add pg_duckdb,pg_ducklake to shared_preload_libraries
+### Add pg_ducklake to shared_preload_libraries
+
+`pg_ducklake` registers a background maintenance worker in `_PG_init`, so it
+must be listed in `shared_preload_libraries`.
 
 ```sh
-echo "shared_preload_libraries = 'pg_duckdb,pg_ducklake'" | sudo tee /etc/postgresql/18/main/conf.d/pg_duckdb.conf
+echo "shared_preload_libraries = 'pg_ducklake'" | sudo tee /etc/postgresql/18/main/conf.d/pg_ducklake.conf
 ```
 
 Alternatively, you can directly edit `/etc/postgresql/18/main/postgresql.conf` if desired.
@@ -88,13 +91,13 @@ sudo service postgresql restart
 
 ### Connect and Activate
 
-You may wish to now create databases and users as desired. To use `pg_duckdb` immediately, you can use
+You may wish to now create databases and users as desired. To use `pg_ducklake` immediately, you can use
 the `postgres` superuser to connect to the default `postgres` database:
 
 ```console
 $ sudo -u postgres psql
 
-postgres=# CREATE EXTENSION pg_duckdb;
+postgres=# CREATE EXTENSION pg_ducklake;
 ```
 
 # Build on macOS
@@ -132,27 +135,36 @@ postgres=# CREATE EXTENSION pg_duckdb;
 # Install required build tools
 brew install cmake ninja pkg-config
 
-# Install additional dependencies for DuckDB
-brew install lz4
+# Install additional dependencies for DuckDB and DuckLake.
+# croaring backs DuckLake's deletion vectors; openssl and lz4 are link-time
+# dependencies of the bundled DuckDB.
+brew install lz4 openssl croaring
 ```
 
 ## Build and Install
 
 1.  **Build and Install:**
 
+    On macOS the linker needs the Homebrew library directory on its search
+    path so it can resolve `-lssl`, `-lcrypto`, `-llz4`, and `-lroaring`; pass
+    it via `LIBRARY_PATH`:
+
     ```bash
-    make -j$(sysctl -n hw.ncpu)
+    LIBRARY_PATH="$(brew --prefix)/lib" make -j$(sysctl -n hw.ncpu)
     sudo make install
     ```
 
 2.  **Configure PostgreSQL:**
+
+    `pg_ducklake` registers a background maintenance worker in `_PG_init`, so it
+    must be added to `shared_preload_libraries`:
 
 ```bash
 # Find PostgreSQL config directory
 postgres --help-config
 
 # Edit postgresql.conf (adjust path as needed)
-echo "shared_preload_libraries = 'pg_duckdb'" >> /opt/homebrew/var/postgresql@18/postgresql.conf
+echo "shared_preload_libraries = 'pg_ducklake'" >> /opt/homebrew/var/postgresql@18/postgresql.conf
 ```
 
 3. **Restart PostgreSQL:**
@@ -163,7 +175,7 @@ echo "shared_preload_libraries = 'pg_duckdb'" >> /opt/homebrew/var/postgresql@18
 
 4. **Create extension:**
    ```bash
-   psql -d postgres -c "CREATE EXTENSION pg_duckdb;"
+   psql -d postgres -c "CREATE EXTENSION pg_ducklake;"
    ```
 
 ## Troubleshooting macOS
@@ -185,4 +197,4 @@ export PG_CONFIG=/usr/bin/pg_config
 ```
 
 Q: `make clean` didn't remove all the build artifacts. How do I clean the entire project?
-A: `make clean` will clean the `pg_duckdb` build files, but not `libduckdb`, which only needs to be rebuilt on a DuckDB version change. To clean both `pg_duckdb` and `libduckdb`, use `make clean-all`.
+A: `make clean` removes the `pg_ducklake` build files, but not the bundled DuckDB build, which only needs to be rebuilt on a DuckDB version change. To clean everything (extension build, regression/isolation output, and the DuckDB build), use `make clean-all`.

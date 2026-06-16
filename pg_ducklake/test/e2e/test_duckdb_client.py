@@ -2,6 +2,8 @@
 # catalog via ATTACH 'ducklake:postgres:...' (the README's "access your data
 # with DuckDB" path). s3 read path: test_s3.py::test_duckdb_client_reads_s3_lake.
 
+import os
+
 import pytest
 
 from conftest import Lake
@@ -44,6 +46,13 @@ async def test_duckdb_reads_pg_writes(local_lake, pg):
 
 
 async def test_duckdb_writes_pg_reads(local_lake, pg):
+    if os.environ.get("E2E_PG_HOST"):
+        pytest.skip(
+            "external duckdb client writes parquet to the lake's local data "
+            "path, which lives inside the container and is not shared with the "
+            "host running this client; s3 storage (shared bucket) is the write "
+            "interop path under external-cluster mode"
+        )
     await pg.execute("CREATE TABLE t (id int, name text) USING ducklake")
     await pg.execute("INSERT INTO t VALUES (1, 'from_pg')")
 

@@ -23,34 +23,22 @@ jobs:
       - name: Check formatting (kernel + pg_ducklake, excludes vendor/)
         run: |
           find libpgduckdb pg_ducklake/src pg_ducklake/include \
+            examples/pg_vortex/src examples/pg_vortex/include \
             \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -not -path '*/vendor/*' -print0 \
             | xargs -0 uvx clang-format@22.1.5 --dry-run -Werror
 
   # Build each extension against PostgreSQL and run its installcheck.
-  # Modeled on pg_duckdb/.github/workflows/build_and_test.yaml (the original
-  # standalone pg_duckdb workflow, now dormant), adapted for this repo's
-  # layout: the libpgduckdb kernel at root, extensions at pg_duckdb/, pg_ducklake/,
-  # and examples/pg_vortex/.
   build-and-test:
     name: "Build and test (PG ${{ matrix.version }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
-    # ccache (below) caches C/C++; sccache caches rustc invocations -- the
-    # DuckDB vortex extension built for pg_vortex is Rust. SCCACHE_GHA_ENABLED
-    # routes sccache at the GitHub Actions cache (tokens set by sccache-action).
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
-      # Consumed by pg_ducklake/Makefile, which passes the toolchain
-      # into its duckdb configure (manifest mode builds ducklake's vcpkg.json
-      # deps -- CRoaring, needed by DuckLake >= v1.5 deletion vectors). Same
-      # setup as upstream ducklake CI (.github/workflows/Catalogs.yml there).
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       VCPKG_TARGET_TRIPLET: x64-linux
 
-    # libduckdb is always statically bundled into each extension's .so
-    # (see root Makefile); there's no `type` distinction anymore.
     strategy:
       fail-fast: false
       matrix:
@@ -65,12 +53,6 @@ jobs:
             libssl-dev libxml2-utils xsltproc pkg-config libc++-dev libc++abi-dev libglib2.0-dev \
             libtinfo6 cmake libstdc++-12-dev ninja-build libcurl4-openssl-dev liblz4-dev
 
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ubuntu-24.04-${{ matrix.version }}
-          create-symlink: true
-
       - name: sccache (caches the Rust vortex extension in pg_vortex)
         uses: mozilla-actions/sccache-action@v0.0.10
 
@@ -79,11 +61,7 @@ jobs:
         with:
           submodules: "recursive"
 
-      # Clones vcpkg to $GITHUB_WORKSPACE/vcpkg (must run after checkout, which
-      # wipes the workspace). Pinned to the same vcpkg commit duckdb v1.5.3 pins
-      # (2025.12.12 tag; see duckdb/Makefile setup-vcpkg) and that
-      # upstream ducklake CI uses.
-      - name: Setup vcpkg (CRoaring for pg_ducklake)
+      - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.1
         with:
           vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
@@ -131,9 +109,10 @@ jobs:
         with:
           path: duckdb/build/
           # Hash ALL extensions' EXTENSION_CONFIGS: each builds libduckdb into
-          # its own build/<type>-<tag>/ subdir. v2 busts pre-move caches whose
-          # CMakeCache.txt records the old third_party/duckdb absolute paths.
-          key: duckdb-build-v2-ubuntu-24.04-${{ steps.versions.outputs.duckdb_sha }}-${{ hashFiles('pg_duckdb/third_party/pg_duckdb_extensions.cmake', 'examples/pg_vortex/pg_vortex_extensions.cmake', 'pg_ducklake/pg_ducklake_extensions.cmake') }}
+          # its own build/<type>-<tag>/ subdir. v3 evicts caches whose
+          # CMakeCache.txt records a stale absolute compiler path (e.g.
+          # /usr/local/bin/cc) that does not exist on the runner.
+          key: duckdb-build-v3-ubuntu-24.04-${{ steps.versions.outputs.duckdb_sha }}-${{ hashFiles('pg_duckdb/third_party/pg_duckdb_extensions.cmake', 'examples/pg_vortex/pg_vortex_extensions.cmake', 'pg_ducklake/pg_ducklake_extensions.cmake') }}
 
       # Each extension builds its own libduckdb into
       # duckdb/build/<type>-<tag>/, so the build order
@@ -239,3 +218,133 @@ jobs:
       - name: Print pg_ducklake e2e PG log on failure
         if: failure() && steps.pgducklake_e2e.outcome == 'failure'
         run: cat /tmp/pytest-of-*/pytest-current/pgdata*/pg.log || true
+
+  # Coexistence: build + install COMMUNITY pg_duckdb (its own bundled DuckDB),
+  # install pg_ducklake alongside, and run the pg_ducklake regression + isolation
+  # suites with BOTH extensions preloaded and created (WITH_PG_DUCKDB=1). Proves
+  # pg_ducklake coexists with the real upstream pg_duckdb in one backend.
+  coexist-pg_duckdb:
+    name: "Coexist with community pg_duckdb (${{ matrix.version }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [REL_17_STABLE, REL_18_STABLE]
+
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
+      PG_VERSION: ${{ matrix.version }}
+      # Community pg_duckdb release to test coexistence against (pinned for
+      # reproducibility; bump deliberately).
+      PG_DUCKDB_REF: v1.1.0
+
+    steps:
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential libreadline-dev zlib1g-dev flex bison libxml2-dev libxslt-dev \
+            libssl-dev libxml2-utils xsltproc pkg-config libc++-dev libc++abi-dev libglib2.0-dev \
+            libtinfo6 cmake libstdc++-12-dev ninja-build libcurl4-openssl-dev liblz4-dev
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.1
+        with:
+          vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
+
+      - name: Checkout PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          git clone --branch ${{ env.PG_VERSION }} --single-branch --depth 1 \
+            https://github.com/postgres/postgres.git postgres
+
+      - name: Compute version SHAs
+        id: versions
+        run: |
+          echo "duckdb_sha=$(git -C duckdb rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "postgres_sha=$(git -C postgres rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache PostgreSQL build
+        id: cache-pg
+        uses: actions/cache@v4
+        with:
+          path: postgres/inst
+          # Same key as build-and-test so the PG build is shared.
+          key: pg-build-ubuntu-24.04-${{ env.PG_VERSION }}-${{ steps.versions.outputs.postgres_sha }}
+
+      - name: Build PostgreSQL
+        if: steps.cache-pg.outputs.cache-hit != 'true'
+        working-directory: postgres
+        run: |
+          ./configure --prefix=$PWD/inst --enable-cassert --enable-debug \
+            --with-openssl --with-icu --with-libxml --with-lz4
+          make -j$(nproc) install
+
+      - name: Add PG to PATH
+        run: echo "${PWD}/postgres/inst/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---- community pg_duckdb (independent extension, bundles its own duckdb) ----
+      - name: Checkout community pg_duckdb (${{ env.PG_DUCKDB_REF }})
+        run: |
+          git clone --recurse-submodules --shallow-submodules \
+            --branch "$PG_DUCKDB_REF" --depth 1 \
+            https://github.com/duckdb/pg_duckdb.git pg_duckdb_community
+
+      - name: Build and install community pg_duckdb
+        run: make -C pg_duckdb_community install -j$(nproc)
+
+      # ---- pg_ducklake ----
+      - name: Cache DuckDB build
+        uses: actions/cache@v4
+        with:
+          path: duckdb/build/
+          key: duckdb-build-v3-ubuntu-24.04-${{ steps.versions.outputs.duckdb_sha }}-${{ hashFiles('pg_ducklake/pg_ducklake_extensions.cmake') }}
+
+      - name: Build pg_ducklake
+        run: make pg_ducklake/all -j$(nproc)
+      - name: Install pg_ducklake
+        run: make pg_ducklake/install
+
+      # ---- coexistence: both preloaded + created, run pg_ducklake's suites ----
+      - name: pg_ducklake regression (with pg_duckdb)
+        id: coexist_regression
+        timeout-minutes: 30
+        run: make pg_ducklake/check-regression WITH_PG_DUCKDB=1
+
+      - name: pg_ducklake isolation (with pg_duckdb)
+        id: coexist_isolation
+        timeout-minutes: 30
+        run: make pg_ducklake/check-isolation WITH_PG_DUCKDB=1
+
+      - name: Print diffs on failure
+        if: failure()
+        run: |
+          cat pg_ducklake/test/regression/regression.diffs || true
+          cat pg_ducklake/test/regression/log/postmaster.log || true
+          cat pg_ducklake/test/isolation/output_iso/regression.diffs || true
+
+      - name: Upload coexistence artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coexist-pg_duckdb-${{ env.PG_VERSION }}
+          path: |
+            pg_ducklake/test/regression/regression.diffs
+            pg_ducklake/test/regression/results/
+            pg_ducklake/test/regression/log/
+            pg_ducklake/test/isolation/output_iso/

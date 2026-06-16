@@ -102,12 +102,13 @@ class PgCluster:
 
     def subprocess_env(self):
         # Drop AWS_* so "no DuckDB secret" deterministically means "no S3
-        # access"; drop PG* (except PG_CONFIG) so psql/pg_ctl see only our flags.
+        # access"; drop PG* (except PG_CONFIG and PGPASSWORD) so psql/pg_ctl see
+        # only our flags. PGPASSWORD is kept for the external-cluster mode.
         return {
             k: v
             for k, v in os.environ.items()
             if not k.startswith("AWS_")
-            and (not k.startswith("PG") or k == "PG_CONFIG")
+            and (not k.startswith("PG") or k in ("PG_CONFIG", "PGPASSWORD"))
         }
 
     def initdb(self):
@@ -196,8 +197,40 @@ class PgCluster:
             )
 
 
+class ExternalPgCluster(PgCluster):
+    """Targets an already-running PostgreSQL (e.g. the pg_ducklake docker
+    container) instead of initdb-ing a throwaway cluster. Selected when
+    E2E_PG_HOST is set; reads E2E_PG_HOST/E2E_PG_PORT and PGPASSWORD. psql/
+    pg_isready are taken from PATH (no PG_CONFIG needed on the runner)."""
+
+    def __init__(self):
+        self.host = os.environ.get("E2E_PG_HOST", PGHOST)
+        self.port = int(os.environ.get("E2E_PG_PORT", "5432"))
+        self.log_path = None
+
+    def bin(self, name):
+        return name  # from PATH
+
+    def initdb(self):
+        pass
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def assert_no_crash(self):
+        pass
+
+
 @pytest.fixture(scope="session")
 def cluster(tmp_path_factory):
+    if os.environ.get("E2E_PG_HOST"):
+        pg = ExternalPgCluster()
+        pg.wait_ready()
+        yield pg
+        return
     pg = PgCluster(tmp_path_factory.mktemp("pgdata"))
     pg.initdb()
     pg.start()
@@ -401,6 +434,7 @@ class Lake:
         return f"s3://{self.s3.bucket}/lake/"
 
     async def connect(self, configure=True, **kwargs):
+        kwargs.setdefault("password", os.environ.get("PGPASSWORD"))
         conn = await asyncpg.connect(
             host=self.cluster.host,
             port=self.cluster.port,
@@ -420,13 +454,13 @@ class Lake:
         # first use (cached in the duckdb extension dir afterwards).
         try:
             await conn.execute(
-                "SELECT ducklake.duckdb_raw_query('INSTALL httpfs')"
+                "SELECT ducklake.raw_query('INSTALL httpfs')"
             )
         except asyncpg.PostgresError as e:
             skip_or_fail(f"backend cannot INSTALL httpfs (offline?): {e}")
-        await conn.execute("SELECT ducklake.duckdb_raw_query('LOAD httpfs')")
+        await conn.execute("SELECT ducklake.raw_query('LOAD httpfs')")
         await conn.execute(
-            f"SELECT ducklake.duckdb_raw_query($e2e${self.s3.secret_sql()}$e2e$)"
+            f"SELECT ducklake.raw_query($e2e${self.s3.secret_sql()}$e2e$)"
         )
         await conn.execute(
             f"SET ducklake.default_table_path = '{self.table_path}'"
@@ -438,9 +472,9 @@ class Lake:
         describe. S3 configuration is prepended when applicable."""
         if self.s3:
             statements = (
-                "SELECT ducklake.duckdb_raw_query('INSTALL httpfs')",
-                "SELECT ducklake.duckdb_raw_query('LOAD httpfs')",
-                f"SELECT ducklake.duckdb_raw_query($e2e${self.s3.secret_sql()}$e2e$)",
+                "SELECT ducklake.raw_query('INSTALL httpfs')",
+                "SELECT ducklake.raw_query('LOAD httpfs')",
+                f"SELECT ducklake.raw_query($e2e${self.s3.secret_sql()}$e2e$)",
                 f"SET ducklake.default_table_path = '{self.table_path}'",
             ) + statements
         return self.cluster.psql(self.dbname, *statements)
@@ -464,9 +498,11 @@ class Lake:
         options = "METADATA_SCHEMA 'ducklake'"
         if read_only:
             options += ", READ_ONLY"
+        pw = os.environ.get("PGPASSWORD")
+        pw_opt = f" password={pw}" if pw else ""
         con.execute(
             f"ATTACH 'ducklake:postgres:host={self.cluster.host} "
-            f"port={self.cluster.port} dbname={self.dbname} user=postgres' "
+            f"port={self.cluster.port} dbname={self.dbname} user=postgres{pw_opt}' "
             f"AS lake ({options})"
         )
         return con

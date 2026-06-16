@@ -52,10 +52,10 @@ async def test_metadata_reports_s3_paths(s3lake, s3conn):
         )
         > 0
     )
-    # the duckdb_query escape hatch can inspect file paths; its duckdb_row
+    # the query escape hatch can inspect file paths; its ducklake.row
     # result shape needs the simple protocol, so go through psql
     out = s3lake.psql(
-        f"""SELECT * FROM ducklake.duckdb_query($q$
+        f"""SELECT * FROM ducklake.query($q$
               SELECT bool_and(starts_with(data_file, '{s3lake.table_path}'))
               FROM ducklake_list_files('pgducklake', 't', schema => 'public')
             $q$)"""

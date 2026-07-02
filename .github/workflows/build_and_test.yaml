@@ -69,7 +69,7 @@ jobs:
     strategy: &ext-matrix
       fail-fast: false
       matrix:
-        version: [REL_17_STABLE, REL_18_STABLE]
+        version: [REL_17_STABLE, REL_18_STABLE, REL_19_STABLE]
 
     steps:
       - &checkout
@@ -150,12 +150,7 @@ jobs:
     timeout-minutes: 90
     needs: changes
     if: ${{ needs.changes.outputs.pg_duckdb == 'true' }}
-    # pg_duckdb is the only extension vetted on PG19 so far; the others
-    # stay on the shared 17/18 matrix.
-    strategy:
-      fail-fast: false
-      matrix:
-        version: [REL_17_STABLE, REL_18_STABLE, REL_19_STABLE]
+    strategy: *ext-matrix
 
     steps:
       - *checkout

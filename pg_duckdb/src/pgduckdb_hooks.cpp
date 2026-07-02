@@ -416,6 +416,7 @@ ContainsDuckdbRowReturningFunction(const char *query_string) {
 	return strstr(query_string, "read_parquet") || strstr(query_string, "read_csv") ||
 	       strstr(query_string, "read_json") || strstr(query_string, "delta_scan") ||
 	       strstr(query_string, "iceberg_scan") || strstr(query_string, "read_vortex") ||
+	       strstr(query_string, "read_text") || strstr(query_string, "read_blob") ||
 #ifdef PG_DUCKDB_WITH_NANOARROW
 	       strstr(query_string, "read_arrow") ||
 #endif

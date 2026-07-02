@@ -148,6 +148,9 @@ BuildDuckdbOnlyFunctions() {
 	 */
 	const char *function_names[] = {"read_parquet",
 	                                "read_csv",
+	                                "read_vortex",
+	                                "read_text",
+	                                "read_blob",
 	                                "iceberg_scan",
 	                                "iceberg_metadata",
 	                                "iceberg_snapshots",

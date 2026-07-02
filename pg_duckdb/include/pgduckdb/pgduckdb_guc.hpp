@@ -10,6 +10,7 @@ extern bool duckdb_unsafe_allow_mixed_transactions;
 extern int duckdb_threads;
 extern int duckdb_maximum_memory;
 extern char *duckdb_disabled_filesystems;
+extern char *duckdb_allowed_directories;
 extern bool duckdb_enable_external_access;
 extern bool duckdb_allow_community_extensions;
 extern bool duckdb_allow_unsigned_extensions;

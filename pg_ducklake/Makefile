@@ -54,9 +54,13 @@ endif
 # resolves static archives in a single left-to-right pass.
 PG_DUCKLAKE_LINK_FLAGS += -lssl -lcrypto -lstdc++ -llz4
 ifneq ($(ROARING_LIB_DIR),)
-	PG_DUCKLAKE_LINK_FLAGS += -L$(ROARING_LIB_DIR)
+	# Link the vcpkg static archive by exact path: the pgxs -L/usr/lib prefix
+	# otherwise wins the search order and binds -lroaring to the ancient system
+	# libroaring.so (0.2.66), which lacks symbols like roaring_free.
+	PG_DUCKLAKE_LINK_FLAGS += $(ROARING_LIB_DIR)/libroaring.a
+else
+	PG_DUCKLAKE_LINK_FLAGS += -lroaring
 endif
-PG_DUCKLAKE_LINK_FLAGS += -lroaring
 ifneq ($(shell uname -s),Darwin)
 	PG_DUCKLAKE_LINK_FLAGS += -Wl,--exclude-libs,ALL
 endif

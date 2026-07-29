@@ -4,7 +4,10 @@
 
 #include "pgducklake/catalog_sync.hpp"
 #include "pgducklake/copy_from.hpp"
+#include "pgducklake/inline_col_stats.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
+
+#include <vector>
 
 extern "C" {
 #include "postgres.h"
@@ -16,6 +19,7 @@ extern "C" {
 #include "catalog/namespace.h"
 #include "commands/copy.h"
 #include "executor/executor.h"
+#include "executor/spi.h"
 #include "fmgr.h"
 #include "parser/parse_node.h"
 #include "utils/builtins.h"
@@ -113,6 +117,26 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 
 	ColumnConvInfo *conv = BuildColumnConvInfo(user_tupdesc, inlined_tupdesc);
 
+	/* Per-column min/max accumulator, widened into ducklake_table_column_stats after the batch so a
+	 * later reader never mis-prunes the inlined rows. Constructed under a scoped SPI connection (it
+	 * reads column metadata); its state is SPI-independent afterwards. Eligible columns stored
+	 * natively need their own output function to canonicalize each cell. */
+	if (SPI_connect() < 0) {
+		table_close(inlined_rel, RowExclusiveLock);
+		table_close(user_rel, RowExclusiveLock);
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("SPI_connect failed")));
+	}
+	InlineColStats col_stats(table_id, natts);
+	SPI_finish();
+
+	/* Bind the accumulator to each column's PG source type: cells fold as native Datums, compared in
+	 * PG value space -- no per-cell text/Value/cast round-trip. */
+	for (int i = 0; i < natts; i++) {
+		if (col_stats.ColumnEligible(i)) {
+			col_stats.SetupColumn(i, TupleDescAttr(user_tupdesc, i)->atttypid);
+		}
+	}
+
 	uint64_t begin_snapshot = GetNextSnapshotId();
 	uint64_t next_row_id = GetNextRowIdForTable(table_id, schema_version);
 
@@ -155,14 +179,17 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 		for (int i = 0; i < natts; i++) {
 			int dst = i + INLINED_SYSTEM_COLS;
 			if (copy_nulls[i]) {
+				col_stats.ObserveNull(i);
 				slot_values[dst] = (Datum)0;
 				slot_isnull[dst] = true;
 			} else if (conv[i].needs_text_conv) {
 				char *str = OutputFunctionCall(&conv[i].typoutput_finfo, copy_values[i]);
+				col_stats.ObserveDatum(i, copy_values[i]);
 				slot_values[dst] = CStringGetTextDatum(str);
 				slot_isnull[dst] = false;
 				pfree(str);
 			} else {
+				col_stats.ObserveDatum(i, copy_values[i]);
 				slot_values[dst] = copy_values[i];
 				slot_isnull[dst] = false;
 			}
@@ -208,6 +235,8 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 	table_close(user_rel, RowExclusiveLock);
 
 	if (rows_inserted > 0) {
+		std::vector<DirectInsertColumnStat> col_stats_out;
+		col_stats.Finalize(col_stats_out);
 		SkipSnapshotSyncGuard sync_guard;
 		/* Concurrent commits race on MAX(snapshot_id)+1; the loser hits 23505.
 		 * Translate to 40001 so client retry adapters retry transparently
@@ -215,7 +244,7 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 		MemoryContext old_ctx = CurrentMemoryContext;
 		PG_TRY();
 		{
-			CreateSnapshotForDirectInsert(begin_snapshot, table_id, rows_inserted);
+			CreateSnapshotForDirectInsert(begin_snapshot, table_id, rows_inserted, col_stats_out);
 		}
 		PG_CATCH();
 		{

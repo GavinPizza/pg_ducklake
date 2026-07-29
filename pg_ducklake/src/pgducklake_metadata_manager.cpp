@@ -11,6 +11,7 @@
 #include "pgddb/pgddb_types.hpp"
 #include "pgddb/pgddb_utils.hpp"
 
+#include <common/ducklake_types.hpp>
 #include <common/ducklake_util.hpp>
 #include <duckdb/common/allocator.hpp>
 #include <duckdb/common/enums/statement_type.hpp>
@@ -23,7 +24,9 @@
 #include <duckdb/main/client_context.hpp>
 #include <duckdb/main/materialized_query_result.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
+#include <storage/ducklake_metadata_info.hpp>
 #include <storage/ducklake_partition_data.hpp>
+#include <storage/ducklake_stats.hpp>
 #include <storage/ducklake_table_entry.hpp>
 
 extern "C" {
@@ -796,8 +799,71 @@ GetNextSnapshotId() {
 	return next_snapshot_id;
 }
 
+/* Widen a column's persisted bounds with this batch's, using DuckLake's own merge so the comparison
+ * semantics (value-typed for numerics/temporals/boolean, lexicographic otherwise) cannot drift from
+ * what the engine does everywhere else. The persisted catalog row is decoded with the engine's own
+ * decoder, DuckLakeColumnStats::FromGlobalStats -- the same call the read side uses -- so `current`
+ * is bit-for-bit what native DuckLake would have built from that row.
+ *
+ * A stats row can legitimately hold one bound and not the other: MergeStats invalidates min and max
+ * independently when a column is retyped (see its ReconcileStatToType calls). We leave the absent
+ * side absent and let MergeStats decide; it fills a missing bound only through its !AnyValid()
+ * branch, i.e. only when the persisted row carries no information at all.
+ *
+ * Why we never seed the absent side from this batch: a NULL bound is the safe state -- every query
+ * still returns correct results, we only give up pruning. A bound that is too narrow is silently
+ * wrong: it prunes away live rows, and DuckDB's compressed materialization uses a table-level min as
+ * an exact constant, so a too-high min also corrupts the values a plain unfiltered SELECT returns.
+ * Filling a missing bound truthfully needs every live row in the table, and one insert batch only
+ * knows its own.
+ *
+ * The price is real and worth stating: on a numeric or temporal column, a half-populated row
+ * disables zone-map pruning for that column ENTIRELY, not just on the missing side.
+ * CreateNumericStats builds on NumericStats::CreateEmpty, which pre-seeds min = MaximumValue(type)
+ * and max = MinimumValue(type) with both has_ flags set, so a one-sided row yields an inverted range;
+ * HasMinMax (duckdb/src/storage/statistics/numeric_stats.cpp:378-381) requires has_min && has_max &&
+ * Min <= Max, so every consumer -- CheckZonemap (:237) and compressed materialization
+ * (compressed_materialization.cpp:360) alike -- falls back to NO_PRUNING_POSSIBLE. VARCHAR differs:
+ * CreateStringStats' one-sided branches build on StringStats::CreateUnknown, whose 0x00..0xFF
+ * sentinels leave a valid range, so a surviving string bound still prunes on its own side. Either
+ * way results stay correct, which is the point. Recovering the missing bound needs ground truth (a
+ * rescan, or a fix at ALTER time), not a guess from whatever happened to be inserted next. */
+static void
+WidenColumnStats(const duckdb::LogicalType &type, const duckdb::DuckLakeGlobalColumnStatsInfo &persisted,
+                 const DirectInsertColumnStat &cs, std::string &out_min, bool &out_has_min, std::string &out_max,
+                 bool &out_has_max, bool &out_has_contains_null, bool &out_contains_null) {
+	auto current = duckdb::DuckLakeColumnStats::FromGlobalStats(type, persisted);
+
+	duckdb::DuckLakeColumnStats incoming(type);
+	incoming.min = cs.min_value;
+	incoming.has_min = cs.has_min;
+	incoming.max = cs.max_value;
+	incoming.has_max = cs.has_max;
+	/* Leaving this false would degrade the persisted contains_null to unknown on every direct
+	 * insert. Native's inline writer sets it unconditionally too. */
+	incoming.has_null_count = true;
+	incoming.null_count = cs.null_count;
+	/* Derived, not hardcoded true: stats that claim validity while carrying no bound drive MergeStats
+	 * into its !has_min / !has_max branches, which CLEAR the persisted bounds. */
+	incoming.any_valid = cs.has_min || cs.has_max;
+
+	/* MergeStats' types_differ is always false here -- both sides are built from cs.column_type -- so
+	 * its ReconcileStatToType path never runs on this call. */
+	current.MergeStats(incoming);
+
+	out_min = current.min;
+	out_has_min = current.has_min;
+	out_max = current.max;
+	out_has_max = current.has_max;
+	/* MergeStats folds null_count before its !AnyValid() early return, so an all-NULL batch still
+	 * updates null-ness. */
+	out_has_contains_null = current.has_null_count;
+	out_contains_null = current.null_count > 0;
+}
+
 void
-CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted) {
+CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted,
+                              const std::vector<DirectInsertColumnStat> &column_stats) {
 	int ret;
 
 	elog(DEBUG1, "CreateSnapshotForDirectInsert: creating snapshot %llu", (unsigned long long)snapshot_id);
@@ -924,22 +990,196 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 
 		elog(DEBUG1, "CreateSnapshotForDirectInsert: created new stats row for table %llu",
 		     (unsigned long long)table_id);
-	} else {
-		/* Degrade column stats to unknown: the fast path does not compute
-		 * min/max/null flags, and stale claims would let DuckLake readers
-		 * prune rows this insert just added. */
-		StringInfoData col_stats_degrade;
-		initStringInfo(&col_stats_degrade);
-		appendStringInfo(&col_stats_degrade,
-		                 "UPDATE ducklake.ducklake_table_column_stats "
-		                 "SET contains_null = NULL, contains_nan = NULL, "
-		                 "min_value = NULL, max_value = NULL, extra_stats = NULL "
-		                 "WHERE table_id = %llu",
-		                 (unsigned long long)table_id);
+	}
 
-		ret = SPI_execute(col_stats_degrade.data, false, 0);
-		if (ret != SPI_OK_UPDATE) {
-			elog(ERROR, "CreateSnapshotForDirectInsert: failed to degrade column stats: %d", ret);
+	/* Widen the persisted per-column min/max and contains_null to cover this batch's inserted tuples.
+	 * Both only ever extend -- a NULL (unknown) bound is replaced, a known bound is pushed outward,
+	 * and contains_null only goes false->true -- so a zone map that already describes flushed parquet
+	 * is never narrowed into a lie. min/max are compared and stored type-correctly (see
+	 * WidenStatBound); contains_nan/extra_stats are left untouched.
+	 *
+	 * We only ever UPDATE an existing stats row; we never CREATE one here. A missing row means the
+	 * column has no table-level stats yet -- which for a column added by ALTER TABLE ADD COLUMN means
+	 * its pre-existing rows were back-filled from initial_default, values this batch never observed.
+	 * Seeding a row from the batch alone would exclude those back-filled values and lie (and the
+	 * inlined scan then mis-reconstructs them). The genuine first-insert case already created NULL
+	 * rows for every column above, so this UPDATE-only rule still maintains stats there. */
+	/* Batched form of the per-column widen: one SELECT of every candidate column's current stats row,
+	 * then a single UPDATE ... FROM (VALUES ...) that widens them all at once -- collapsing the
+	 * former 2-SPI-round-trips-per-column into at most 2 total, and into 1 when no column's bounds
+	 * actually move (the steady state). Semantics are byte-for-byte those of the per-column path:
+	 *   - never-seed: only columns that ALREADY have a stats row (i.e. are returned by the SELECT)
+	 *     are widened; a column with no row is never added here (see the block comment above). The
+	 *     UPDATE ... FROM join can only touch existing rows, and we only emit VALUES for returned
+	 *     columns, so the guard holds two ways.
+	 *   - type-correct widening via DuckLakeColumnStats::MergeStats -- computed here in C++; SQL only
+	 *     carries the already-decided literals.
+	 *   - contains_null is maintained the same way, through the same MergeStats call;
+	 *     contains_nan / extra_stats are never referenced, so stay untouched. */
+	struct WidenCandidate {
+		uint64_t column_id;
+		const DirectInsertColumnStat *cs;
+		duckdb::LogicalType type;
+	};
+	std::vector<WidenCandidate> candidates;
+	for (const auto &cs : column_stats) {
+		if (!cs.has_min && !cs.has_max && cs.null_count == 0) {
+			continue;
+		}
+		duckdb::LogicalType type;
+		try {
+			type = duckdb::DuckLakeTypes::FromString(cs.column_type);
+		} catch (...) {
+			/* Belt and braces: every in-tree producer sets column_type from DuckLakeTypes::ToString of
+			 * a type DuckLakeTypes::FromString itself returned, so this cannot throw today. Kept because
+			 * CreateSnapshotForDirectInsert takes column_stats from its callers, and skipping a column
+			 * is the correct response for any producer that ever gets that wrong. */
+			continue;
+		}
+		candidates.push_back({cs.column_id, &cs, type});
+	}
+
+	if (!candidates.empty()) {
+		StringInfoData sel;
+		initStringInfo(&sel);
+		/* contains_nan / extra_stats are read but never written: they complete the
+		 * DuckLakeGlobalColumnStatsInfo that FromGlobalStats decodes, whose any_valid is
+		 * has_min || has_max || has_extra_stats. Same row, same round trip. */
+		appendStringInfo(&sel,
+		                 "SELECT column_id, min_value, max_value, contains_null, contains_nan, extra_stats "
+		                 "FROM ducklake.ducklake_table_column_stats "
+		                 "WHERE table_id = %llu AND column_id IN (",
+		                 (unsigned long long)table_id);
+		for (size_t i = 0; i < candidates.size(); i++) {
+			appendStringInfo(&sel, "%s%llu", i ? "," : "", (unsigned long long)candidates[i].column_id);
+		}
+		appendStringInfoChar(&sel, ')');
+		/* read_only = false: take a fresh snapshot so the NULL column_stats rows inserted earlier in
+		 * this same SPI connection (first-insert branch) are visible to the widen. */
+		ret = SPI_execute(sel.data, false, 0);
+		if (ret != SPI_OK_SELECT) {
+			elog(ERROR, "CreateSnapshotForDirectInsert: failed to read column stats: %d", ret);
+		}
+
+		/* No further SPI runs before the UPDATE, so SPI_tuptable stays valid across this read loop. */
+		uint64_t nrows = SPI_processed;
+		StringInfoData vals;
+		initStringInfo(&vals);
+		int rows_to_update = 0;
+		for (uint64_t r = 0; r < nrows; r++) {
+			bool isnull;
+			Datum cid_d = SPI_getbinval(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 1, &isnull);
+			if (isnull) {
+				continue;
+			}
+			uint64_t cid = (uint64_t)DatumGetInt64(cid_d);
+
+			const WidenCandidate *cand = nullptr;
+			for (const auto &c : candidates) {
+				if (c.column_id == cid) {
+					cand = &c;
+					break;
+				}
+			}
+			if (!cand) {
+				continue; /* defensive: a row for a column we did not ask about */
+			}
+			const DirectInsertColumnStat &cs = *cand->cs;
+
+			/* Decode the catalog row into the engine's own carrier, mirroring native's
+			 * TransformGlobalStatsRow: a SQL NULL means "no such stat", never a value. */
+			duckdb::DuckLakeGlobalColumnStatsInfo persisted;
+			persisted.column_id = duckdb::FieldIndex(cid);
+			char *m = SPI_getvalue(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 2);
+			if (m) {
+				persisted.has_min = true;
+				persisted.min_val = m;
+				pfree(m);
+			}
+			char *x = SPI_getvalue(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 3);
+			if (x) {
+				persisted.has_max = true;
+				persisted.max_val = x;
+				pfree(x);
+			}
+			Datum cnull_d = SPI_getbinval(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 4, &isnull);
+			if (!isnull) {
+				persisted.has_contains_null = true;
+				persisted.contains_null = DatumGetBool(cnull_d);
+			}
+			Datum cnan_d = SPI_getbinval(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 5, &isnull);
+			if (!isnull) {
+				persisted.has_contains_nan = true;
+				persisted.contains_nan = DatumGetBool(cnan_d);
+			}
+			char *es = SPI_getvalue(SPI_tuptable->vals[r], SPI_tuptable->tupdesc, 6);
+			if (es) {
+				persisted.has_extra_stats = true;
+				persisted.extra_stats = es;
+				pfree(es);
+			}
+
+			std::string new_min, new_max;
+			bool new_has_min = false, new_has_max = false;
+			bool new_has_contains_null = false, new_contains_null = false;
+			try {
+				WidenColumnStats(cand->type, persisted, cs, new_min, new_has_min, new_max, new_has_max,
+				                 new_has_contains_null, new_contains_null);
+			} catch (const std::exception &ex) {
+				/* Reachable, not defensive: MergeStats compares through the non-Try DefaultCastAs, which
+				 * throws when a persisted bound is no longer parseable as the column's current type -- e.g.
+				 * after a plain out-of-transaction ALTER COLUMN TYPE. Leaving the persisted bounds alone is
+				 * right (never narrow them), but do not do it silently. */
+				elog(DEBUG1, "CreateSnapshotForDirectInsert: skipping stats widen for table %llu column %llu: %s",
+				     (unsigned long long)table_id, (unsigned long long)cid, ex.what());
+				continue;
+			} catch (...) {
+				elog(DEBUG1, "CreateSnapshotForDirectInsert: skipping stats widen for table %llu column %llu",
+				     (unsigned long long)table_id, (unsigned long long)cid);
+				continue;
+			}
+
+			/* Emit nothing when the merge moved nothing. In steady state -- a batch entirely inside the
+			 * persisted bounds -- no column changes, rows_to_update stays 0 and the UPDATE is skipped
+			 * altogether, so the widen costs one SELECT, writes no dead tuples and takes no row locks
+			 * that concurrent inserters would have to wait on. */
+			bool changed = (new_has_min != persisted.has_min) || (new_has_min && new_min != persisted.min_val) ||
+			               (new_has_max != persisted.has_max) || (new_has_max && new_max != persisted.max_val) ||
+			               (new_has_contains_null != persisted.has_contains_null) ||
+			               (new_has_contains_null && new_contains_null != persisted.contains_null);
+			if (!changed) {
+				continue;
+			}
+
+			char *min_lit = new_has_min ? quote_literal_cstr(new_min.c_str()) : pstrdup("NULL");
+			char *max_lit = new_has_max ? quote_literal_cstr(new_max.c_str()) : pstrdup("NULL");
+			const char *cnull_lit = new_has_contains_null ? (new_contains_null ? "true" : "false") : "NULL";
+			/* Cast the first VALUES row so PG resolves v(column_id, new_min, new_max, new_contains_null)
+			 * column types even when later rows carry SQL NULL bounds. */
+			if (rows_to_update == 0) {
+				appendStringInfo(&vals, "(%llu::bigint, %s::text, %s::text, %s::boolean)", (unsigned long long)cid,
+				                 min_lit, max_lit, cnull_lit);
+			} else {
+				appendStringInfo(&vals, ", (%llu, %s, %s, %s)", (unsigned long long)cid, min_lit, max_lit, cnull_lit);
+			}
+			pfree(min_lit);
+			pfree(max_lit);
+			rows_to_update++;
+		}
+
+		if (rows_to_update > 0) {
+			StringInfoData wr;
+			initStringInfo(&wr);
+			appendStringInfo(&wr, R"(
+				UPDATE ducklake.ducklake_table_column_stats s
+				SET min_value = v.new_min, max_value = v.new_max, contains_null = v.new_contains_null
+				FROM (VALUES %s) AS v(column_id, new_min, new_max, new_contains_null)
+				WHERE s.table_id = %llu AND s.column_id = v.column_id)",
+			                 vals.data, (unsigned long long)table_id);
+			ret = SPI_execute(wr.data, false, 0);
+			if (ret != SPI_OK_UPDATE) {
+				elog(ERROR, "CreateSnapshotForDirectInsert: failed to widen column stats: %d", ret);
+			}
 		}
 	}
 

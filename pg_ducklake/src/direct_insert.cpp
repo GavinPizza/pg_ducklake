@@ -5,10 +5,13 @@
 #include "pgducklake/direct_insert.hpp"
 #include "pgducklake/duckdb_manager.hpp"
 #include "pgducklake/guc.hpp"
+#include "pgducklake/inline_col_stats.hpp"
 #include "pgducklake/pgducklake_metadata_manager.hpp"
 
 #include <cstring>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <duckdb.hpp>
 
@@ -194,8 +197,10 @@ static bool IsUnnestOfParam(Node *node, int *param_id_out, Oid *param_type_out);
 static bool ValidateArrayLengths(ParamListInfo bound_params, List *param_ids, int *expected_row_count_out);
 static PlannedStmt *CreateDirectInsertPlan(Query *parse, DirectInsertContext *context);
 static PlannedStmt *CreateValuesInsertPlan(Query *parse, ValuesInsertContext *context);
-static void DirectInsertIntoInlinedTable(DirectInsertScanState *state);
-static void DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state);
+static void DirectInsertIntoInlinedTable(DirectInsertScanState *state,
+                                         std::vector<DirectInsertColumnStat> &col_stats_out);
+static void DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state,
+                                               std::vector<DirectInsertColumnStat> &col_stats_out);
 
 /*
  * Map a DuckDB type string to the PG OID used in the inlined data table;
@@ -1217,14 +1222,16 @@ DirectInsert_ExecCustomScan(CustomScanState *node) {
 		state->next_row_id = pgducklake::GetNextRowIdForTable(state->table_id, state->schema_version);
 		state->rows_inserted = 0;
 
+		std::vector<DirectInsertColumnStat> col_stats;
 		if (state->mode == DIRECT_INSERT_UNNEST) {
-			DirectInsertIntoInlinedTable(state);
+			DirectInsertIntoInlinedTable(state, col_stats);
 		} else {
-			DirectInsertValuesIntoInlinedTable(state);
+			DirectInsertValuesIntoInlinedTable(state, col_stats);
 		}
 
 		pgducklake::SkipSnapshotSyncGuard sync_guard;
-		pgducklake::CreateSnapshotForDirectInsert(state->begin_snapshot, state->table_id, state->rows_inserted);
+		pgducklake::CreateSnapshotForDirectInsert(state->begin_snapshot, state->table_id, state->rows_inserted,
+		                                          col_stats);
 	}
 	PG_CATCH();
 	{
@@ -1277,7 +1284,7 @@ DirectInsert_ExplainCustomScan(CustomScanState *node, List *ancestors, ExplainSt
 }
 
 static void
-DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
+DirectInsertIntoInlinedTable(DirectInsertScanState *state, std::vector<DirectInsertColumnStat> &col_stats_out) {
 	int ret;
 
 	if ((ret = SPI_connect()) < 0) {
@@ -1381,6 +1388,16 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 		}
 	}
 
+	/* Per-column min/max accumulator: widened into the catalog after the batch is written. Cells are
+	 * folded as native PG Datums (element_types[i]) and compared in PG value space -- no per-cell
+	 * text/Value/cast round-trip. */
+	InlineColStats col_stats(state->table_id, num_params);
+	for (int i = 0; i < num_params; i++) {
+		if (col_stats.ColumnEligible(i)) {
+			col_stats.SetupColumn(i, element_types[i]);
+		}
+	}
+
 	uint64_t current_row_id = state->next_row_id;
 
 	for (int row = 0; row < arr_length; row++) {
@@ -1389,17 +1406,20 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 
 		for (int i = 0; i < num_params; i++) {
 			if (elem_nulls[i][row]) {
+				col_stats.ObserveNull(i);
 				values[i + 2] = (Datum)0;
 				nulls[i + 2] = 'n';
 			} else if (needs_text_conv[i]) {
 				// Scalar type (DATE, TIMESTAMP, UBIGINT, etc.) -> VARCHAR:
 				// use PG output function to produce a DuckDB-parseable text string.
 				char *str = OidOutputFunctionCall(typoutput[i], elem_values[i][row]);
+				col_stats.ObserveDatum(i, elem_values[i][row]);
 				values[i + 2] = CStringGetTextDatum(str);
 				nulls[i + 2] = ' ';
 				pfree(str);
 			} else {
 				// Types match (native), BYTEA zero-copy, or unexpected -- pass as-is.
+				col_stats.ObserveDatum(i, elem_values[i][row]);
 				values[i + 2] = elem_values[i][row];
 				nulls[i + 2] = ' ';
 			}
@@ -1412,6 +1432,8 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state) {
 
 		state->rows_inserted++;
 	}
+
+	col_stats.Finalize(col_stats_out);
 
 	SPI_finish();
 
@@ -1431,10 +1453,20 @@ struct ValuesColumnConvInfo {
 };
 
 static void
-DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
+DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state, std::vector<DirectInsertColumnStat> &col_stats_out) {
 	int num_rows = state->values_num_rows;
 	int num_cols = state->values_num_cols;
 	ExprContext *econtext = state->css.ss.ps.ps_ExprContext;
+
+	/* Per-column min/max accumulator (widened into the catalog after the batch). The VALUES path
+	 * writes via the table AM (no SPI), so build the accumulator -- which reads column metadata via
+	 * SPI in its constructor -- under a scoped SPI connection; its state is SPI-independent after. */
+	int sret;
+	if ((sret = SPI_connect()) < 0) {
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("SPI_connect failed: %d", sret)));
+	}
+	InlineColStats col_stats(state->table_id, num_cols);
+	SPI_finish();
 
 	char relname[NAMEDATALEN];
 	snprintf(relname, sizeof(relname), "ducklake_inlined_data_%llu_%llu", (unsigned long long)state->table_id,
@@ -1473,6 +1505,12 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 			conv[i].needs_text_conv = false;
 		} else {
 			conv[i].needs_text_conv = false;
+		}
+
+		/* Bind the accumulator to this column's PG source type: cells fold as native Datums,
+		 * compared in PG value space (no per-cell text/Value/cast round-trip). */
+		if (col_stats.ColumnEligible(i)) {
+			col_stats.SetupColumn(i, src_type);
 		}
 	}
 
@@ -1529,14 +1567,17 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 			Datum d = ExecEvalExprSwitchContext(state->values_estates[flat], econtext, &isnull);
 
 			if (isnull) {
+				col_stats.ObserveNull(col);
 				sv[dst] = (Datum)0;
 				sn[dst] = true;
 			} else if (conv[col].needs_text_conv) {
 				char *str = OutputFunctionCall(&conv[col].typoutput_finfo, d);
+				col_stats.ObserveDatum(col, d);
 				sv[dst] = CStringGetTextDatum(str);
 				sn[dst] = false;
 				pfree(str);
 			} else {
+				col_stats.ObserveDatum(col, d);
 				sv[dst] = d;
 				sn[dst] = false;
 			}
@@ -1576,6 +1617,8 @@ DirectInsertValuesIntoInlinedTable(DirectInsertScanState *state) {
 	table_close(inlined_rel, RowExclusiveLock);
 
 	state->rows_inserted = num_rows;
+
+	col_stats.Finalize(col_stats_out);
 
 	ereport(DEBUG1, (errmsg("DuckLake direct insert (VALUES): inserted %d rows into %s", num_rows, relname)));
 }

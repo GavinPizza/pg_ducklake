@@ -59,10 +59,11 @@ SELECT * FROM dim_t ORDER BY id;
 -- 3. global column stats must not claim ranges that exclude
 --    fast-path rows
 -- ============================================================
--- The fast path cannot maintain min/max/contains_null, so it must degrade
--- them to NULL (= unknown). Stale claims are trusted by DuckLake readers of
--- this catalog (global stats feed DuckDB optimizer statistics, which fold
--- provably-false filters) and are perpetuated by later stats merges.
+-- The fast path maintains min/max by widening them to cover the rows it
+-- writes, so the recorded range never excludes a committed row. Stale claims
+-- are trusted by DuckLake readers of this catalog (global stats feed DuckDB
+-- optimizer statistics, which fold provably-false filters) and are
+-- perpetuated by later stats merges.
 
 CREATE TABLE stats_t (id int) USING ducklake;
 INSERT INTO stats_t SELECT i FROM generate_series(1, 200) i;  -- normal path, real stats
@@ -72,10 +73,11 @@ SELECT count(*) FROM stats_t WHERE id = 150;
 
 SELECT ducklake.reset_direct_insert_stats();
 INSERT INTO stats_t VALUES (1000);  -- outside the recorded min/max
-INSERT INTO stats_t VALUES (NULL);  -- violates contains_null = false
+INSERT INTO stats_t VALUES (NULL);  -- would violate contains_null = false
 SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
 
--- stats must no longer claim [1,200] / no-nulls
+-- A stale contains_null = false is not a lost optimization: the optimizer
+-- folds IS NULL to false and the row disappears from the result.
 SELECT s.min_value, s.max_value, s.contains_null
 FROM ducklake.ducklake_table_column_stats s
 JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
@@ -85,7 +87,108 @@ SELECT count(*) FROM stats_t WHERE id = 1000;
 SELECT count(*) FROM stats_t WHERE id IS NULL;
 SELECT count(*) FROM stats_t;
 
+-- ============================================================
+-- 4. contains_null is maintained for every column, not just
+--    the ones whose type has a maintainable min/max
+-- ============================================================
+-- Seeded from parquet so contains_null starts known-false. An inline-only
+-- table would leave it unknown instead, which section 6 covers.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE nullstats (id int, v int, f double precision, w int, bs bytea) USING ducklake;
+INSERT INTO nullstats SELECT i, i, i::float8, i, '\x01'::bytea FROM generate_series(1, 200) i;
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+INSERT INTO nullstats VALUES (901, 7, 1.5, 7, '\x02');  -- normal path: creates the inlined data table
+
+-- f (DOUBLE) and bs (BLOB) are excluded from min/max by StatsEligible, so they
+-- pin that null-ness is not gated by that exclusion. BLOB additionally is the
+-- only fast-path-reachable type whose persisted row can carry extra_stats.
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO nullstats VALUES (902, NULL, NULL, 8, NULL), (903, NULL, NULL, 9, NULL);
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
+
+-- v's bounds must stay at [1,200]: an all-NULL batch moves no bound.
+SELECT s.column_id, s.contains_null, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'nullstats' ORDER BY s.column_id;
+
+SELECT count(*) FROM nullstats WHERE v IS NULL;
+SELECT count(*) FROM nullstats WHERE f IS NULL;
+
+-- A batch with no NULLs must not reset it: the flip is one-way.
+INSERT INTO nullstats VALUES (904, 8, 2.5, 10, '\x03');
+SELECT s.column_id, s.contains_null
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'nullstats' ORDER BY s.column_id;
+SELECT count(*) FROM nullstats WHERE v IS NULL;
+
+-- w's first NULL, so column 4 must flip here and nowhere earlier -- otherwise
+-- this asserts nothing about the COPY writer.
+COPY nullstats (id, v, f, w, bs) FROM STDIN WITH (FORMAT csv, NULL '');
+905,,3.5,,\x04
+\.
+SELECT s.column_id, s.contains_null
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'nullstats' ORDER BY s.column_id;
+SELECT count(*) FROM nullstats WHERE v IS NULL;
+SELECT count(*) FROM nullstats WHERE w IS NULL;
+SELECT count(*) FROM nullstats;
+
+-- ============================================================
+-- 5. the UNNEST writer maintains it too
+-- ============================================================
+-- Its own null branch, so a fix applied to the VALUES and COPY writers can miss
+-- it. Needs a dedicated table: an UNNEST naming a column subset does not reach
+-- the fast path at all.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE nullstats_un (id int, v int) USING ducklake;
+INSERT INTO nullstats_un SELECT i, i FROM generate_series(1, 200) i;
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+INSERT INTO nullstats_un VALUES (901, 7);
+
+PREPARE nullstats_un_ins (int[], int[]) AS
+  INSERT INTO nullstats_un (id, v) SELECT UNNEST($1), UNNEST($2);
+SELECT ducklake.reset_direct_insert_stats();
+EXECUTE nullstats_un_ins(ARRAY[902, 903], ARRAY[NULL, NULL]::int[]);
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
+
+SELECT s.column_id, s.contains_null, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'nullstats_un' ORDER BY s.column_id;
+SELECT count(*) FROM nullstats_un WHERE v IS NULL;
+SELECT count(*) FROM nullstats_un;
+DEALLOCATE nullstats_un_ins;
+
+-- ============================================================
+-- 6. a table that never flushed keeps contains_null unknown
+-- ============================================================
+-- The commonest fast-path shape, and the one where correctness rests on the
+-- value staying unknown rather than being maintained: MergeStats' has_null_count
+-- degrade is sticky, so no widen can ever write it. Seeding false here instead
+-- would fold IS NULL to false and lose rows.
+CALL ducklake.set_option('data_inlining_row_limit', 1000);
+CREATE TABLE nullstats_inl (id int, v int) USING ducklake;
+INSERT INTO nullstats_inl VALUES (1, 1);  -- normal path: creates the inlined data table
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO nullstats_inl VALUES (2, NULL), (3, 3);
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
+
+SELECT s.column_id, s.contains_null IS NULL AS unknown
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'nullstats_inl' ORDER BY s.column_id;
+SELECT count(*) FROM nullstats_inl WHERE v IS NULL;
+
+SELECT * FROM ducklake.flush_inlined_data('nullstats_inl'::regclass);
+SELECT count(*) FROM nullstats_inl WHERE v IS NULL;
+
 -- Cleanup
 DROP TABLE dim_t;
 DROP TABLE stats_t;
+DROP TABLE nullstats;
+DROP TABLE nullstats_un;
+DROP TABLE nullstats_inl;
 CALL ducklake.set_option('data_inlining_row_limit', 0);

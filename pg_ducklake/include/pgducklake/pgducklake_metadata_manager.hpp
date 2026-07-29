@@ -2,6 +2,9 @@
 
 #include "pgddb/pg/declarations.hpp"
 
+#include <string>
+#include <vector>
+
 #include <common/ducklake_encryption.hpp>
 #include <common/ducklake_options.hpp>
 #include <common/ducklake_snapshot.hpp>
@@ -82,6 +85,23 @@ bool GetTableInliningInfo(Oid table_oid, uint64_t *table_id_out, uint64_t *schem
 
 uint64_t GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version);
 uint64_t GetNextSnapshotId();
-void CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted);
+
+/* Per-column min/max + null contribution of a single direct-insert batch. min_value/max_value hold
+ * the DuckLake-canonical text encoding (duckdb::Value::ToString), so they round-trip through the read
+ * path's Value(text)->cast(column_type). column_type is the DuckLake type string
+ * (duckdb::DuckLakeTypes::FromString input) used to compare type-correctly when widening. */
+struct DirectInsertColumnStat {
+	uint64_t column_id = 0;
+	std::string column_type;
+	bool has_min = false;
+	bool has_max = false;
+	std::string min_value;
+	std::string max_value;
+	/* May be set with no bound at all: an all-NULL batch still has to flip contains_null. */
+	uint64_t null_count = 0;
+};
+
+void CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted,
+                                   const std::vector<DirectInsertColumnStat> &column_stats);
 
 } // namespace pgducklake

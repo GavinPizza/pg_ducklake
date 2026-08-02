@@ -279,6 +279,12 @@ PostgresTableReader::MarkPlanParallelAware(Plan *plan) {
 /* GlobalProcessLock must be held before calling this. */
 TupleTableSlot *
 PostgresTableReader::GetNextTuple() {
+	/*
+	 * Above the guard, not below it: the guard's sigsetjmp lives in its own frame, so a longjmp
+	 * from the scan skips every frame deeper than that one. Here the guard's throw unwinds this
+	 * frame normally and restore_stack_base runs. Same reason as Init/Cleanup.
+	 */
+	PostgresScopedStackReset scoped_stack_reset;
 	return PostgresMemberGuard(PostgresTableReader::GetNextTupleUnsafe);
 }
 
@@ -297,7 +303,6 @@ PostgresTableReader::GetNextTupleUnsafe() {
 
 TupleTableSlot *
 PostgresTableReader::ExecNextTupleUnsafe() {
-	PostgresScopedStackReset scoped_stack_reset;
 	table_scan_query_desc->estate->es_query_dsa = parallel_executor_info ? parallel_executor_info->area : NULL;
 	TupleTableSlot *thread_scan_slot = ExecProcNode(table_scan_planstate);
 	table_scan_query_desc->estate->es_query_dsa = NULL;
@@ -311,24 +316,31 @@ CopyMinimalTuple(MinimalTuple src_minimal_tuple, std::vector<uint8_t> &dst_buffe
 	memcpy(dst_buffer.data(), src_minimal_tuple, tuple_size);
 }
 
-/*
- * Only valid when the scan runs with parallel workers; caller must hold GlobalProcessLock.
- * Returns false when the scan is complete.
- */
-bool
-PostgresTableReader::GetNextMinimalWorkerTuple(std::vector<uint8_t> &minimal_tuple_buffer) {
-	MinimalTuple worker_minmal_tuple = GetNextWorkerTuple();
-	if (HeapTupleIsValid(worker_minmal_tuple)) {
-		CopyMinimalTuple(worker_minmal_tuple, minimal_tuple_buffer);
-		return true;
-	}
+/* Only valid when the scan runs with parallel workers; caller must hold GlobalProcessLock. */
+int
+PostgresTableReader::GetNextMinimalWorkerTuples(std::vector<uint8_t> *minimal_tuple_buffers, int max) {
+	return PostgresMemberGuard(PostgresTableReader::GetNextMinimalWorkerTuplesUnsafe, minimal_tuple_buffers, max);
+}
 
-	minimal_tuple_buffer.resize(0);
-	return false;
+int
+PostgresTableReader::GetNextMinimalWorkerTuplesUnsafe(std::vector<uint8_t> *minimal_tuple_buffers, int max) {
+	/* One guard (from GetNextMinimalWorkerTuples) covers the whole batch, not one per tuple. */
+	int count = 0;
+	for (; count < max; count++) {
+		MinimalTuple worker_minmal_tuple = GetNextWorkerTuple();
+		if (!HeapTupleIsValid(worker_minmal_tuple)) {
+			minimal_tuple_buffers[count].resize(0);
+			break;
+		}
+		CopyMinimalTuple(worker_minmal_tuple, minimal_tuple_buffers[count]);
+	}
+	return count;
 }
 
 int
 PostgresTableReader::GetNextInProcessTuples(TupleTableSlot **slots, int max) {
+	/* Above the guard, for the reason in GetNextTuple. */
+	PostgresScopedStackReset scoped_stack_reset;
 	return PostgresMemberGuard(PostgresTableReader::GetNextInProcessTuplesUnsafe, slots, max);
 }
 

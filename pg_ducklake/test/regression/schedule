@@ -55,3 +55,4 @@ test: access_control
 test: quoted_names
 test: create_view_shapes
 test: parallel_mode_metadata
+test: scan_error_unwind

@@ -1,6 +1,7 @@
 #include "pgddb/scan/order_pushdown_optimizer.hpp"
 
 #include "pgddb/logger.hpp"
+#include "pgddb/pgddb_utils.hpp"
 #include "pgddb/scan/postgres_scan.hpp"
 
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -47,7 +48,12 @@ IndexSupportsOrder(Relation rel, const duckdb::vector<AttrNumber> &order_attrs,
 	if (order_attrs.empty()) {
 		return false;
 	}
-	List *index_list = RelationGetIndexList(rel);
+	/*
+	 * Guarded throughout: this runs as an OptimizerExtension callback under the
+	 * ClientContextLock held by ClientContext::Prepare. A longjmp past that frame leaves
+	 * the context mutex locked, deadlocking the backend on its next statement.
+	 */
+	List *index_list = PostgresFunctionGuard(RelationGetIndexList, rel);
 	if (index_list == NIL) {
 		return false;
 	}
@@ -55,14 +61,14 @@ IndexSupportsOrder(Relation rel, const duckdb::vector<AttrNumber> &order_attrs,
 	ListCell *lc;
 	foreach (lc, index_list) {
 		Oid index_oid = lfirst_oid(lc);
-		Relation index_rel = index_open(index_oid, AccessShareLock);
+		Relation index_rel = PostgresFunctionGuard(index_open, index_oid, AccessShareLock);
 		// Cheap structural rejects first: a valid btree covering all order keys, not partial.
 		// (A partial index can never satisfy a whole-table ORDER BY.)
 		if (!index_rel->rd_index || !index_rel->rd_index->indisvalid || index_rel->rd_rel->relam != BTREE_AM_OID ||
 		    static_cast<duckdb::idx_t>(index_rel->rd_index->indnkeyatts) < order_attrs.size() ||
 		    static_cast<duckdb::idx_t>(index_rel->rd_index->indkey.dim1) < order_attrs.size() ||
-		    RelationGetIndexPredicate(index_rel) != NIL) {
-			index_close(index_rel, AccessShareLock);
+		    PostgresFunctionGuard(RelationGetIndexPredicate, index_rel) != NIL) {
+			PostgresFunctionGuard(index_close, index_rel, AccessShareLock);
 			continue;
 		}
 		bool attr_match = true;
@@ -109,7 +115,7 @@ IndexSupportsOrder(Relation rel, const duckdb::vector<AttrNumber> &order_attrs,
 		if (attr_match && (matches_forward || matches_backward)) {
 			supported = true;
 		}
-		index_close(index_rel, AccessShareLock);
+		PostgresFunctionGuard(index_close, index_rel, AccessShareLock);
 		if (supported) {
 			break;
 		}

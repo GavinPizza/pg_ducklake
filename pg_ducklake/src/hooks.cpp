@@ -394,7 +394,9 @@ DucklakePlannerHook(Query *parse, const char *query_string, int cursor_options, 
 
 	/* Any ducklake-AM table or ducklake-only function routes the whole
 	 * query to DuckDB via libpgddb's CustomScan. */
-	if (QueryReferencesRegisteredTableAm((Node *)parse, NULL) || QueryReferencesDucklakeOnlyFunc((Node *)parse, NULL) ||
+	bool refs_ducklake_only_func = QueryReferencesDucklakeOnlyFunc((Node *)parse, NULL);
+	pgducklake::SetForceScanTransaction(refs_ducklake_only_func);
+	if (QueryReferencesRegisteredTableAm((Node *)parse, NULL) || refs_ducklake_only_func ||
 	    pgducklake::QueryReferencesDucklakeForeignTable(parse)) {
 		return pgddb::PlanNode(parse, cursor_options, /*throw_error=*/true);
 	}
@@ -455,8 +457,11 @@ RewriteDuckdbRowViewStmt(ViewStmt *stmt, PlannedStmt *pstmt, const char *query_s
 	if (!OidIsValid(duckdb_row_oid))
 		return;
 
+	/* Analyze a copy: parse analysis rewrites the raw tree in place (JoinExpr
+	 * larg/rarg, SubLink->subselect), which would corrupt stmt->query for
+	 * DefineView's own analysis when we don't rewrite the view ourselves. */
 	RawStmt *rawstmt = makeNode(RawStmt);
-	rawstmt->stmt = stmt->query;
+	rawstmt->stmt = (Node *)copyObjectImpl(stmt->query);
 	rawstmt->stmt_location = pstmt->stmt_location;
 	rawstmt->stmt_len = pstmt->stmt_len;
 #if PG_VERSION_NUM >= 150000

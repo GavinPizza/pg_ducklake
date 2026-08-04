@@ -17,6 +17,24 @@ Don't underestimate these -- a good bug report or feature idea can shape the pro
 
 Bug fixes, new features, tests -- we're happy to review them. For anything non-trivial, please open an issue first so we can discuss the approach.
 
+## Pull requests
+
+Keep the pull request description brief and written for human reviewers. Focus
+on why the change is needed and any context, tradeoffs, or decisions that are
+not obvious from the diff. Do not summarize the code. Omit routine testing
+sections when CI already provides the relevant result; mention testing only when
+manual or non-CI validation adds useful review context.
+
+If your PR description is AI generated, end the description with this unchecked
+review checklist:
+
+```markdown
+- [ ] This PR has been reviewed by human.
+- [ ] This PR description has been reviewed by human.
+```
+
+Only a human reviewer should check these items.
+
 ## Reporting a bug
 
 Open an [issue](https://github.com/relytcloud/pg_ducklake/issues) with:

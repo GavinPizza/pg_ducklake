@@ -1,13 +1,12 @@
 ---
 name: setup-dev
-description: "Dev environment setup: build tools, PostgreSQL, submodules, worktrees. Always import on EnterWorktree/ExitWorktree."
-user-invocable: true
+description: "Dev environment setup for build tools, PostgreSQL, submodules, and worktrees. Use when setting up or entering a development worktree."
 ---
 
 # Setup Dev Environment
 
 Interactive playbook -- follow steps in order, detect current state, skip what is
-already done, and present options to the user via `AskUserQuestion`.
+already done, and ask the user when a choice is required.
 
 ## Principles
 
@@ -45,7 +44,7 @@ command -v ccache && ccache --version
 
 ### If missing, ask user
 
-Present options via `AskUserQuestion`:
+Present these options using the agent's available interaction mechanism:
 
 | Option | macOS | Linux (apt) |
 |--------|-------|-------------|

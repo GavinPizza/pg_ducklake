@@ -39,30 +39,8 @@ namespace pgducklake {
 struct ColumnConvInfo {
 	bool needs_text_conv;     /* true if user type -> VARCHAR via output func */
 	FmgrInfo typoutput_finfo; /* cached output function (avoids per-row syscache lookup) */
+	InlinedTypmodCoercion *typmod_coercion;
 };
-
-static char *
-OutputFunctionCallIso(FmgrInfo *flinfo, Datum value) {
-	char *result = NULL;
-	int saved_style = DateStyle;
-	int saved_order = DateOrder;
-	PG_TRY();
-	{
-		DateStyle = USE_ISO_DATES;
-		DateOrder = DATEORDER_YMD;
-		result = OutputFunctionCall(flinfo, value);
-		DateStyle = saved_style;
-		DateOrder = saved_order;
-	}
-	PG_CATCH();
-	{
-		DateStyle = saved_style;
-		DateOrder = saved_order;
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-	return result;
-}
 
 static ColumnConvInfo *
 BuildColumnConvInfo(TupleDesc user_tupdesc, TupleDesc inlined_tupdesc) {
@@ -80,18 +58,31 @@ BuildColumnConvInfo(TupleDesc user_tupdesc, TupleDesc inlined_tupdesc) {
 		Oid user_type = user_att->atttypid;
 		Oid inl_type = inl_att->atttypid;
 
+		conv[i].typmod_coercion = MakeInlinedTypmodCoercion(inl_type, inl_att->atttypmod);
+
 		if (user_type == inl_type) {
 			conv[i].needs_text_conv = false;
 		} else if (inl_type == VARCHAROID || inl_type == TEXTOID) {
-			/* Inlined stores as VARCHAR (date, timestamp, ubigint, etc.): use PG output function. */
+			/* Nested types also inline as VARCHAR, but hold DuckDB's text format:
+			 * array_out writes "{1,2}" where DuckDB expects "[1, 2]".  COPY has
+			 * no path to decline to. */
+			if (type_is_array(user_type) || get_typtype(user_type) == TYPTYPE_COMPOSITE) {
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				                errmsg("COPY FROM STDIN does not support column \"%s\" of type %s",
+				                       NameStr(user_att->attname), format_type_be(user_type))));
+			}
 			Oid typoutput;
 			bool typisvarlena;
 			getTypeOutputInfo(user_type, &typoutput, &typisvarlena);
 			fmgr_info(typoutput, &conv[i].typoutput_finfo);
 			conv[i].needs_text_conv = true;
-		} else {
+		} else if (inl_type == BYTEAOID) {
 			/* text and bytea are both varlena with identical in-memory format: pass through. */
 			conv[i].needs_text_conv = false;
+		} else {
+			ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH),
+			                errmsg("cannot store column \"%s\" of type %s in inlined column of type %s",
+			                       NameStr(user_att->attname), format_type_be(user_type), format_type_be(inl_type))));
 		}
 	}
 
@@ -170,22 +161,6 @@ CheckNativeCopySemantics(Relation rel, CopyStmt *stmt) {
 	}
 }
 
-static Relation
-OpenInlinedDataTable(uint64_t table_id, uint64_t schema_version, LOCKMODE lockmode) {
-	char relname[NAMEDATALEN];
-	snprintf(relname, sizeof(relname), "ducklake_inlined_data_%llu_%llu", (unsigned long long)table_id,
-	         (unsigned long long)schema_version);
-
-	Oid ducklake_nsp = get_namespace_oid("ducklake", false);
-	Oid relid = get_relname_relid(relname, ducklake_nsp);
-	if (!OidIsValid(relid)) {
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("inlined data table \"%s\" does not exist", relname),
-		                errhint("Call ducklake.ensure_inlined_data_table() first.")));
-	}
-
-	return table_open(relid, lockmode);
-}
-
 uint64_t
 DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 	Relation user_rel = table_openrv(stmt->relation, RowExclusiveLock);
@@ -205,7 +180,7 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 		                errhint("Call ducklake.ensure_inlined_data_table('%s'::regclass) first.", relname)));
 	}
 
-	Relation inlined_rel = OpenInlinedDataTable(table_id, schema_version, RowExclusiveLock);
+	Relation inlined_rel = OpenInlinedDataTable(table_id, schema_version, RowExclusiveLock, false);
 
 	TupleDesc user_tupdesc = RelationGetDescr(user_rel);
 	TupleDesc inlined_tupdesc = RelationGetDescr(inlined_rel);
@@ -292,16 +267,24 @@ DucklakeCopyFromStdin(CopyStmt *stmt, const char *query_string) {
 				ObserveInlineColStatsNull(col_stats, stats_col);
 				slot_values[dst] = (Datum)0;
 				slot_isnull[dst] = true;
-			} else if (conv[i].needs_text_conv) {
-				ObserveInlineColStatsDatum(col_stats, stats_col, copy_values[i]);
-				char *str = OutputFunctionCallIso(&conv[i].typoutput_finfo, copy_values[i]);
-				slot_values[dst] = CStringGetTextDatum(str);
-				slot_isnull[dst] = false;
-				pfree(str);
 			} else {
-				ObserveInlineColStatsDatum(col_stats, stats_col, copy_values[i]);
-				slot_values[dst] = copy_values[i];
-				slot_isnull[dst] = false;
+				Datum d = copy_values[i];
+				if (conv[i].typmod_coercion != NULL) {
+					d = ApplyInlinedTypmodCoercion(conv[i].typmod_coercion, d);
+				}
+				/* Post-coercion: a bound taken from the source value can exclude
+				 * what is stored. */
+				ObserveInlineColStatsDatum(col_stats, stats_col, d);
+
+				if (conv[i].needs_text_conv) {
+					char *str = OutputFunctionCallIso(&conv[i].typoutput_finfo, d);
+					slot_values[dst] = CStringGetTextDatum(str);
+					slot_isnull[dst] = false;
+					pfree(str);
+				} else {
+					slot_values[dst] = d;
+					slot_isnull[dst] = false;
+				}
 			}
 			stats_col++;
 		}

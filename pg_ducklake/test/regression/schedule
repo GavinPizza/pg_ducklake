@@ -21,6 +21,7 @@ test: options
 test: data_inlining_row_limit
 test: create_with_options
 test: direct_insert_stats
+test: direct_insert_metadata
 test: inlined_data_schema_change
 test: alter_partition_inlining
 test: inlined_flush_lost_update
@@ -31,11 +32,7 @@ test: variant
 test: readme_examples
 test: ddl
 test: vacuum
-# FIXME: maintenance (ducklake.rewrite_data_files) fails with "Scanning a
-# DuckLake table after the transaction has ended" -- a DuckLake transaction
-# lifecycle issue unrelated to the DuckDBManager singleton extraction.
-# Disabled until diagnosed separately.
-# test: maintenance
+test: maintenance
 test: commit_message
 test: partition
 test: partition_transform_flush
@@ -43,6 +40,7 @@ test: sorted_table
 test: hybrid_scan
 test: order_by_pushdown
 test: time_travel
+test: time_travel_creation
 test: snapshots
 test: data_change_feed
 test: list_files
@@ -55,4 +53,5 @@ test: import_foreign_schema
 test: secrets
 test: access_control
 test: quoted_names
+test: create_view_shapes
 test: parallel_mode_metadata

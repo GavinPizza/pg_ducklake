@@ -840,6 +840,10 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 		}
 	}
 
+	/* next_file_id + 1 mirrors upstream's inlined-only commits: DuckLake keys
+	 * its table-stats cache on (next_file_id, schema_version, table_id), so a
+	 * data change that does not advance it leaves stale cached stats (and a
+	 * later normal-path commit would reuse row ids from the stale next_row_id). */
 	StringInfoData snapshot_insert;
 	initStringInfo(&snapshot_insert);
 	appendStringInfo(&snapshot_insert,
@@ -848,7 +852,7 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 	                 "next_file_id) "
 	                 "VALUES (%llu, NOW(), %llu, %llu, %llu)",
 	                 (unsigned long long)snapshot_id, (unsigned long long)schema_version,
-	                 (unsigned long long)next_catalog_id, (unsigned long long)next_file_id);
+	                 (unsigned long long)next_catalog_id, (unsigned long long)(next_file_id + 1));
 
 	elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", snapshot_insert.data);
 	ret = SPI_execute(snapshot_insert.data, false, 0);
@@ -856,13 +860,15 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 		elog(ERROR, "CreateSnapshotForDirectInsert: failed to insert snapshot: %d", ret);
 	}
 
+	/* Must be spelled 'inlined_insert:<table_id>': DuckLake's ParseChangesMade
+	 * rejects unknown change types, aborting any concurrent commit retry. */
 	StringInfoData changes_insert;
 	initStringInfo(&changes_insert);
 	appendStringInfo(&changes_insert,
 	                 "INSERT INTO ducklake.ducklake_snapshot_changes "
 	                 "(snapshot_id, changes_made, author, commit_message, commit_extra_info) "
-	                 "VALUES (%llu, 'inlined_data_insert', NULL, NULL, NULL)",
-	                 (unsigned long long)snapshot_id);
+	                 "VALUES (%llu, 'inlined_insert:%llu', NULL, NULL, NULL)",
+	                 (unsigned long long)snapshot_id, (unsigned long long)table_id);
 
 	elog(DEBUG1, "CreateSnapshotForDirectInsert: executing %s", changes_insert.data);
 	ret = SPI_execute(changes_insert.data, false, 0);
@@ -918,6 +924,23 @@ CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t r
 
 		elog(DEBUG1, "CreateSnapshotForDirectInsert: created new stats row for table %llu",
 		     (unsigned long long)table_id);
+	} else {
+		/* Degrade column stats to unknown: the fast path does not compute
+		 * min/max/null flags, and stale claims would let DuckLake readers
+		 * prune rows this insert just added. */
+		StringInfoData col_stats_degrade;
+		initStringInfo(&col_stats_degrade);
+		appendStringInfo(&col_stats_degrade,
+		                 "UPDATE ducklake.ducklake_table_column_stats "
+		                 "SET contains_null = NULL, contains_nan = NULL, "
+		                 "min_value = NULL, max_value = NULL, extra_stats = NULL "
+		                 "WHERE table_id = %llu",
+		                 (unsigned long long)table_id);
+
+		ret = SPI_execute(col_stats_degrade.data, false, 0);
+		if (ret != SPI_OK_UPDATE) {
+			elog(ERROR, "CreateSnapshotForDirectInsert: failed to degrade column stats: %d", ret);
+		}
 	}
 
 	SPI_finish();

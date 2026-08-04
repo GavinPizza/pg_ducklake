@@ -30,6 +30,10 @@ protected:
 	// GetConnection so a runtime SET / catalog change reaches the next statement;
 	// OnPostInit runs once per instance and would miss it.
 	void RefreshConnectionState(duckdb::ClientContext &context) override;
+	// Also begin a DuckDB transaction while a ducklake-only function statement is
+	// planned/executed, so its bind and execute share one transaction (DuckLake
+	// compaction binds a weak_ptr to the bind-time transaction it reads at execute).
+	bool ShouldBeginTransaction() override;
 
 private:
 	void DropSecrets(duckdb::ClientContext &context);
@@ -71,5 +75,9 @@ void SetAllowSubtransaction(bool allow);
 /* Pin this process's DuckDB instance to one thread, ignoring ducklake.threads.
  * Called by the maintenance worker; must run before the instance initializes. */
 void ForceSingleThreadedDuckDB();
+
+/* Set per-statement in the planner hook: force a DuckDB transaction for queries
+ * that call a ducklake-only function, so bind and execute share one. */
+void SetForceScanTransaction(bool force);
 
 } // namespace pgducklake

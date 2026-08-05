@@ -18,6 +18,7 @@ extern "C" {
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
@@ -46,10 +47,10 @@ struct ColStatEntry {
 	int16 typlen = 0;
 	bool typbyval = false;
 
-	/* value_cmp path: running min/max kept as copied Datums in the accumulator context. */
+	/* value_cmp path; the copies live in the accumulator context. */
 	Datum min_datum = 0;
 	Datum max_datum = 0;
-	/* lexicographic (non-value_cmp) path: running min/max kept as canonical text. */
+	/* lexicographic path; already canonicalized. */
 	std::string min_str;
 	std::string max_str;
 	uint64_t null_count = 0;
@@ -95,24 +96,6 @@ StatsEligible(const duckdb::LogicalType &type) {
 		return false;
 	}
 }
-
-/* Restoring from a destructor keeps a throw in the canonicalization path from leaking the forced
- * setting into the rest of the session. A PG elog(ERROR) longjmp still bypasses it, and DateStyle
- * is assigned directly rather than through the GUC machinery, so transaction abort would not undo
- * it either. */
-struct IsoDateStyleGuard {
-	const int saved_style = DateStyle;
-	const int saved_order = DateOrder;
-
-	IsoDateStyleGuard() {
-		DateStyle = USE_ISO_DATES;
-		DateOrder = DATEORDER_YMD;
-	}
-	~IsoDateStyleGuard() {
-		DateStyle = saved_style;
-		DateOrder = saved_order;
-	}
-};
 
 } // namespace
 
@@ -334,9 +317,11 @@ InlineColStats::Finalize(std::vector<DirectInsertColumnStat> &out) {
 		return;
 	}
 
-	/* Temporal output funcs are DateStyle-dependent, and the canonicalization below needs the text
-	 * to parse back through DuckDB's cast. */
-	IsoDateStyleGuard date_style_guard;
+	/* Output funcs are DateStyle-dependent and the bounds have to cast back through DuckDB. Via the
+	 * GUC stack so an error in the loop still restores it, and GUC_ACTION_SAVE because guc.c rejects
+	 * SET while libpgduckdb has the backend in parallel mode. */
+	int save_nestlevel = NewGUCNestLevel();
+	::set_config_option("DateStyle", "ISO, YMD", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
 
 	for (auto &e : impl->entries) {
 		if (!e.type_known) {
@@ -413,6 +398,8 @@ InlineColStats::Finalize(std::vector<DirectInsertColumnStat> &out) {
 		s.contains_nan = e.saw_nan;
 		out.push_back(std::move(s));
 	}
+
+	AtEOXact_GUC(false, save_nestlevel);
 }
 
 } // namespace pgducklake

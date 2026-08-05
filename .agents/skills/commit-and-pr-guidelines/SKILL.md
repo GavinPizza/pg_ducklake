@@ -1,11 +1,12 @@
 ---
-name: commit-message-format
-description: "Commit message conventions (Conventional Commits). Consult before every git commit."
+name: commit-and-pr-guidelines
+description: "Commit message conventions and pull request description guidelines. Consult before every git commit or when creating or updating a pull request."
 ---
 
-# Commit Message Format
+# Commit and Pull Request Guidelines
 
-How to craft commit messages for the pg_ducklake repository.
+How to craft commit messages and pull request descriptions for the pg_ducklake
+repository.
 
 ## Format: Conventional Commits
 
@@ -133,6 +134,26 @@ git commit -m "$(cat <<'EOF'
 <optional body>
 EOF
 )"
+```
+
+## Pull Request Descriptions
+
+Write pull request descriptions for human reviewers, not as exhaustive change
+logs. Keep them brief and focus on why the change is needed, along with context,
+tradeoffs, or design decisions that are not obvious from the diff.
+
+Do not summarize code that reviewers can read in the diff. Omit routine testing
+sections when CI already provides the relevant result; mention testing only when
+manual or non-CI validation adds useful review context. Before creating or
+updating a pull request, inspect its complete commit range and diff against the
+target branch rather than describing only the latest commit.
+
+End every pull request description with these unchecked items. Never check them
+on behalf of a human:
+
+```markdown
+- [ ] This PR has been reviewed by human.
+- [ ] This PR description has been reviewed by human.
 ```
 
 ## Submodule Changes

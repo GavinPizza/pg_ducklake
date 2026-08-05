@@ -1,7 +1,6 @@
 ---
 name: version-management
 description: "Versioning, branch, and release policy (semantic versioning, branch-per-minor, tag-per-patch). MUST consult when: deciding a version number, cutting a release, creating a version tag, opening a release/patch branch, or backporting a bug fix."
-user-invocable: true
 ---
 
 # Version Management

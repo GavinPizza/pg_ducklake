@@ -14,7 +14,9 @@ public:
 	~PostgresTableReader();
 	void Init(const char *table_scan_query, bool count_tuples_only);
 	void Cleanup();
-	bool GetNextMinimalWorkerTuple(std::vector<uint8_t> &minimal_tuple_buffer);
+	// Parallel workers: each buffer owns a copy of the worker's minimal tuple; result < max means EOF. Caller holds
+	// GlobalProcessLock.
+	int GetNextMinimalWorkerTuples(std::vector<uint8_t> *minimal_tuple_buffers, int max);
 	// In-process (no workers): each slot owns its copy (freed on next store); result < max means EOF. Caller holds
 	// GlobalProcessLock.
 	int GetNextInProcessTuples(TupleTableSlot **slots, int max);
@@ -36,6 +38,7 @@ private:
 
 	TupleTableSlot *GetNextTuple();
 	int GetNextInProcessTuplesUnsafe(TupleTableSlot **slots, int max);
+	int GetNextMinimalWorkerTuplesUnsafe(std::vector<uint8_t> *minimal_tuple_buffers, int max);
 	TupleTableSlot *GetNextTupleUnsafe();
 	TupleTableSlot *ExecNextTupleUnsafe();
 	MinimalTuple GetNextWorkerTuple();

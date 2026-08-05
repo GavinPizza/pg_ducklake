@@ -1,0 +1,59 @@
+-- A Postgres error raised while DuckDB reads a heap table through
+-- PostgresTableReader must unwind as a C++ exception, not a longjmp. The
+-- PostgresScopedStackReset sits above the guard so the guard's throw unwinds
+-- it; owned below the guard instead, a longjmp skips the destructor and PG's
+-- stack base keeps pointing at the scan's stack.
+--
+-- The error text is identical either way, so it proves nothing here. The
+-- max_stack_depth probes around the failed scan are the assertion. They run at
+-- 100kB because the abandoned base lands a variable distance away per run and
+-- is not always far enough off to trip the default limit.
+
+CREATE TABLE scan_err_heap(a int);
+INSERT INTO scan_err_heap VALUES (5), (2), (0);
+
+-- An RLS policy is a portable way to get an expression evaluated inside the
+-- scan itself; this one divides by zero on the last row.
+ALTER TABLE scan_err_heap ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_err_heap FORCE ROW LEVEL SECURITY;
+CREATE POLICY scan_err_policy ON scan_err_heap USING (10 / a > 0);
+
+CREATE TABLE scan_err_lake(x int) USING ducklake;
+INSERT INTO scan_err_lake VALUES (1);
+
+-- Superusers bypass RLS, so the scan runs as an unprivileged reader.
+CREATE USER scan_err_user IN ROLE ducklake_reader;
+GRANT ALL ON ALL TABLES IN SCHEMA ducklake TO scan_err_user;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA ducklake TO scan_err_user;
+GRANT SELECT ON scan_err_heap, scan_err_lake TO scan_err_user;
+
+\set VERBOSITY terse
+
+-- Baseline for the same two probes repeated after the failed scan.
+SET max_stack_depth = '100kB';
+SELECT 1 AS shallow;
+DO $$ BEGIN EXECUTE format('SELECT %s1%s', repeat('abs(', 2000), repeat(')', 2000)); END $$;
+RESET max_stack_depth;
+
+SET ROLE scan_err_user;
+-- Referencing the DuckLake table routes the whole query through DuckDB, which
+-- reads scan_err_heap back out of Postgres.
+SELECT a FROM scan_err_heap, scan_err_lake;
+-- count(*) reaches the same frame via GetNextCount/GetNextTuple rather than the
+-- batched GetNextInProcessTuples path, so a different caller guards it.
+SELECT count(*) FROM scan_err_heap, scan_err_lake;
+RESET ROLE;
+
+-- Must match the baseline above.
+SET max_stack_depth = '100kB';
+SELECT 1 AS shallow;
+DO $$ BEGIN EXECUTE format('SELECT %s1%s', repeat('abs(', 2000), repeat(')', 2000)); END $$;
+RESET max_stack_depth;
+
+\set VERBOSITY default
+
+DROP TABLE scan_err_lake;
+DROP TABLE scan_err_heap;
+REVOKE ALL ON ALL TABLES IN SCHEMA ducklake FROM scan_err_user;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA ducklake FROM scan_err_user;
+DROP USER scan_err_user;

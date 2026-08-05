@@ -1,0 +1,15 @@
+Parsed test spec with 2 sessions
+
+starting permutation: b_begin b_reindex s_query s_after b_commit
+step b_begin: BEGIN;
+step b_reindex: REINDEX INDEX iso_opt_heap_idx;
+step s_query: SELECT h.id FROM (SELECT id FROM iso_opt_heap ORDER BY id) h JOIN iso_opt_lake ON h.id = iso_opt_lake.x; <waiting ...>
+step s_query: <... completed>
+ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Executor Error: (PGDuckDB/index_open) canceling statement due to lock timeout
+step s_after: SELECT count(*) FROM iso_opt_lake;
+count
+-----
+    3
+(1 row)
+
+step b_commit: COMMIT;

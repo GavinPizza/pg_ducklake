@@ -606,13 +606,9 @@ PostgresScanTableFunction::PostgresScanFunction(duckdb::ClientContext &, duckdb:
 			size_t valid_slots = 0;
 			{
 				std::lock_guard<std::recursive_mutex> lock(GlobalProcessLock::GetLock());
-				for (size_t i = 0; i < LOCAL_STATE_SLOT_BATCH_SIZE; i++) {
-					if (!table_reader.GetNextMinimalWorkerTuple(local_state.minimal_tuple_buffer[i])) {
-						local_state.exhausted_scan = true;
-						break;
-					}
-					++valid_slots;
-				}
+				valid_slots = table_reader.GetNextMinimalWorkerTuples(local_state.minimal_tuple_buffer,
+				                                                      LOCAL_STATE_SLOT_BATCH_SIZE);
+				local_state.exhausted_scan = valid_slots < LOCAL_STATE_SLOT_BATCH_SIZE;
 			}
 			for (size_t i = 0; i < valid_slots; i++) {
 				MinimalTuple minimal_tuple = reinterpret_cast<MinimalTuple>(local_state.minimal_tuple_buffer[i].data());

@@ -86,10 +86,10 @@ bool GetTableInliningInfo(Oid table_oid, uint64_t *table_id_out, uint64_t *schem
 uint64_t GetNextRowIdForTable(uint64_t table_id, uint64_t schema_version);
 uint64_t GetNextSnapshotId();
 
-/* Per-column min/max + null contribution of a single direct-insert batch. min_value/max_value hold
- * the DuckLake-canonical text encoding (duckdb::Value::ToString), so they round-trip through the read
- * path's Value(text)->cast(column_type). column_type is the DuckLake type string
- * (duckdb::DuckLakeTypes::FromString input) used to compare type-correctly when widening. */
+/* One direct-insert batch's contribution to a column's stats. min_value/max_value must carry the
+ * DuckLake-canonical encoding (duckdb::Value::ToString) and column_type the DuckLake type string:
+ * the read path casts them back with Value(text)->cast(column_type), and any other spelling
+ * round-trips to the wrong value. */
 struct DirectInsertColumnStat {
 	uint64_t column_id = 0;
 	std::string column_type;
@@ -97,8 +97,16 @@ struct DirectInsertColumnStat {
 	bool has_max = false;
 	std::string min_value;
 	std::string max_value;
-	/* May be set with no bound at all: an all-NULL batch still has to flip contains_null. */
+	/* An all-NULL batch carries no bound but still has to flip contains_null. */
 	uint64_t null_count = 0;
+	/* Claimed only for a batch that determined NaN-ness: MergeStats reads a missing has_contains_nan
+	 * as "forget what you knew" and would clear the persisted value. */
+	bool has_contains_nan = false;
+	bool contains_nan = false;
+	/* False hands the row to the degrade path in CreateSnapshotForDirectInsert -- this batch wrote
+	 * values the persisted bounds do not describe. A column the accumulator never saw emits nothing
+	 * at all, which additionally leaves its null-ness unmaintained. */
+	bool bounds_maintained = false;
 };
 
 void CreateSnapshotForDirectInsert(uint64_t snapshot_id, uint64_t table_id, int64_t rows_inserted,

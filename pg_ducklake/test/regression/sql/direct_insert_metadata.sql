@@ -99,9 +99,12 @@ INSERT INTO nullstats SELECT i, i, i::float8, i, '\x01'::bytea FROM generate_ser
 CALL ducklake.set_option('data_inlining_row_limit', 100);
 INSERT INTO nullstats VALUES (901, 7, 1.5, 7, '\x02');  -- normal path: creates the inlined data table
 
--- f (DOUBLE) and bs (BLOB) are excluded from min/max by StatsEligible, so they
--- pin that null-ness is not gated by that exclusion. BLOB additionally is the
--- only fast-path-reachable type whose persisted row can carry extra_stats.
+-- bs (BLOB) has no maintainable min/max, so it pins that null-ness is not gated
+-- by that exclusion. Its bounds stay stale, which is safe because ToStats()
+-- returns nullptr for BLOB and nothing on the read side consults them.
+-- extra_stats is likewise safe to never touch: it is only ever constructed for
+-- GEOMETRY and VARIANT, and SupportsInlining rejects both, so no reachable type
+-- can carry it.
 SELECT ducklake.reset_direct_insert_stats();
 INSERT INTO nullstats VALUES (902, NULL, NULL, 8, NULL), (903, NULL, NULL, 9, NULL);
 SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
@@ -184,6 +187,230 @@ SELECT count(*) FROM nullstats_inl WHERE v IS NULL;
 
 SELECT * FROM ducklake.flush_inlined_data('nullstats_inl'::regclass);
 SELECT count(*) FROM nullstats_inl WHERE v IS NULL;
+
+-- ============================================================
+-- 7. FLOAT/DOUBLE: bounds are maintained, NaN is tracked
+--    separately instead of being folded into them
+-- ============================================================
+-- The vulnerable state is contains_nan = false, which is precisely what a
+-- parquet write persists, and the condition under which ToStats() trusts a
+-- floating-point min/max. A stale bound is then a live zone map that prunes
+-- away the rows this writer just committed.
+--
+-- recycle_ddb() stands in for a new session throughout this section. The
+-- inlined-data-table registration is cached per backend, so a scan issued by
+-- the session that called ensure_inlined_data_table() does not see the inlined
+-- rows at all and would assert nothing about pruning.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE fstats (v double precision, w real) USING ducklake;
+INSERT INTO fstats SELECT i, i FROM generate_series(1, 200) i;
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+SELECT count(*) FROM ducklake.ensure_inlined_data_table('fstats'::regclass);
+
+SELECT s.column_id, s.contains_nan, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'fstats' ORDER BY s.column_id;
+
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO fstats VALUES (1000, 1000);  -- outside the recorded bounds
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
+
+-- Widened, and stored in DuckDB's canonical float encoding ("1000.0", not the
+-- "1000" PG's float8out emits) so the read path's Value(text)->cast round-trips.
+SELECT s.column_id, s.contains_nan, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'fstats' ORDER BY s.column_id;
+
+CALL ducklake.recycle_ddb();
+SELECT count(*) AS v_eq_1000 FROM fstats WHERE v = 1000;
+SELECT count(*) AS w_eq_1000 FROM fstats WHERE w = 1000;
+SELECT count(*) AS v_gt_500 FROM fstats WHERE v > 500;
+SELECT count(*) AS total FROM fstats;
+
+-- Infinity is an ordinary bound: PG prints "Infinity", DuckDB's canonical form
+-- is "inf", and the stored bytes must be the latter or the read-side cast fails.
+INSERT INTO fstats VALUES ('Infinity', '-Infinity');
+SELECT s.column_id, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'fstats' ORDER BY s.column_id;
+CALL ducklake.recycle_ddb();
+SELECT count(*) AS v_inf FROM fstats WHERE v = 'Infinity'::float8;
+SELECT count(*) AS w_neg_inf FROM fstats WHERE w = '-Infinity'::real;
+
+-- NaN never enters min/max -- PG's float8 btree proc sorts it above every other
+-- value, so folding it in would make it the max and describe a bound nothing can
+-- compare against. It sets contains_nan instead, which is what makes ToStats()
+-- decline to build a statistic at all.
+INSERT INTO fstats VALUES ('NaN', 5);
+SELECT s.column_id, s.contains_nan, s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'fstats' ORDER BY s.column_id;
+
+-- A later batch without a NaN must not clear it: the flip is one-way.
+INSERT INTO fstats VALUES (7, 7);
+SELECT s.column_id, s.contains_nan
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'fstats' ORDER BY s.column_id;
+
+CALL ducklake.recycle_ddb();
+SELECT count(*) AS total FROM fstats;
+DROP TABLE fstats;
+
+-- ============================================================
+-- 8. the property, not the type list: no column of any
+--    fast-path-reachable type may keep a stale live bound
+-- ============================================================
+-- One column per PG type the direct-insert writer accepts, every stats row
+-- seeded from parquet, then one direct insert outside every seeded bound. A
+-- type added to DuckLake's ToStats() later, or one this writer never
+-- considered, fails here instead of silently losing rows. An assertion over a
+-- fixed list of eligible types would not.
+--
+-- Not reachable, so deliberately absent: TIMESTAMPTZ, LIST/STRUCT/MAP, VARIANT
+-- and GEOMETRY all make DuckDBTypeToInlinedOid decline the whole insert.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE allty (
+  c_bool boolean, c_i2 smallint, c_i4 integer, c_i8 bigint,
+  c_f4 real, c_f8 double precision, c_num numeric(10,2),
+  c_txt text, c_vc varchar(20), c_bpchar char(5), c_uuid uuid,
+  c_date date, c_time time, c_ts timestamp,
+  c_bytea bytea, c_json json, c_interval interval
+) USING ducklake;
+INSERT INTO allty SELECT
+  (i % 2 = 0), i::smallint, i, i::bigint, i::real, i::float8, i::numeric(10,2),
+  'x'||lpad(i::text, 4, '0'), 'y'||lpad(i::text, 4, '0'), 'z'||lpad(i::text, 3, '0'),
+  ('00000000-0000-0000-0000-'||lpad(i::text, 12, '0'))::uuid,
+  ('2020-01-01'::date + i * INTERVAL '1 day')::date,
+  ('00:00:00'::time + i * INTERVAL '1 second'),
+  ('2020-01-01'::timestamp + i * INTERVAL '1 second'),
+  (lpad(i::text, 4, '0'))::bytea, ('{"a":'||i||'}')::json, (i * INTERVAL '1 second')
+FROM generate_series(1, 200) i;
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+SELECT count(*) FROM ducklake.ensure_inlined_data_table('allty'::regclass);
+
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO allty VALUES (true, 9999, 9999, 9999, 9999, 9999, 9999.99,
+  'zzzz', 'zzzz', 'zzzz', 'ffffffff-0000-0000-0000-000000000000'::uuid,
+  '2099-12-31'::date, '23:59:59'::time, '2099-12-31 23:59:59'::timestamp,
+  ('9999')::bytea, '{"zz":1}'::json, '9999 seconds'::interval);
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
+
+CALL ducklake.recycle_ddb();
+-- Every one of these must return 1. c_bool is absent because both its values
+-- are already in the seeded range, so it has no outside. c_bpchar compares
+-- against the blank-padded form char(5) actually stores.
+SELECT count(*) AS total FROM allty;
+SELECT count(*) AS c_i2 FROM allty WHERE c_i2 = 9999;
+SELECT count(*) AS c_i4 FROM allty WHERE c_i4 = 9999;
+SELECT count(*) AS c_i8 FROM allty WHERE c_i8 = 9999;
+SELECT count(*) AS c_f4 FROM allty WHERE c_f4 = 9999;
+SELECT count(*) AS c_f8 FROM allty WHERE c_f8 = 9999;
+SELECT count(*) AS c_num FROM allty WHERE c_num = 9999.99;
+SELECT count(*) AS c_txt FROM allty WHERE c_txt = 'zzzz';
+SELECT count(*) AS c_vc FROM allty WHERE c_vc = 'zzzz';
+SELECT count(*) AS c_bpchar FROM allty WHERE c_bpchar = 'zzzz ';
+SELECT count(*) AS c_uuid FROM allty WHERE c_uuid = 'ffffffff-0000-0000-0000-000000000000';
+SELECT count(*) AS c_date FROM allty WHERE c_date = '2099-12-31';
+SELECT count(*) AS c_time FROM allty WHERE c_time = '23:59:59';
+SELECT count(*) AS c_ts FROM allty WHERE c_ts = '2099-12-31 23:59:59';
+SELECT count(*) AS c_bytea FROM allty WHERE c_bytea = ('9999')::bytea;
+SELECT count(*) AS c_json FROM allty WHERE c_json::text = '{"zz":1}';
+SELECT count(*) AS c_interval FROM allty WHERE c_interval = '9999 seconds'::interval;
+DROP TABLE allty;
+
+-- ============================================================
+-- 9. default deny: a column this writer did not maintain has
+--    its statistic degraded, not left stale
+-- ============================================================
+-- Nested children are the case that cannot be fixed by extending the
+-- accumulator: DuckLake persists a stats row per child field id, the read path
+-- resolves those through field_references and prunes on them, and the
+-- accumulator's own metadata query cannot see them. So they are degraded to
+-- unknown -- pruning off, answers correct -- by the fallback that keys on "not
+-- maintained" rather than on a type list.
+--
+-- COPY FROM STDIN is the only writer that reaches a table with a LIST column
+-- (the direct-insert path declines it outright), so the child stats row is
+-- asserted from the catalog rather than through a scan.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE childstats (id int, arr integer[]) USING ducklake;
+INSERT INTO childstats SELECT i, ARRAY[i, i + 1] FROM generate_series(1, 200) i;
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+SELECT count(*) FROM ducklake.ensure_inlined_data_table('childstats'::regclass);
+
+-- The element column carries a live [1,201] bound nothing here maintains.
+SELECT c.column_id, c.column_name, c.parent_column, s.min_value, s.max_value, s.contains_null
+FROM ducklake.ducklake_column c
+JOIN ducklake.ducklake_table_column_stats s USING (table_id, column_id)
+JOIN ducklake.ducklake_table t ON t.table_id = c.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'childstats' AND c.end_snapshot IS NULL ORDER BY c.column_id;
+
+COPY childstats (id, arr) FROM STDIN WITH (FORMAT csv);
+9999,"{9999,10000}"
+\.
+
+-- id widens; element degrades to unknown; the LIST row itself is inert
+-- (ToStats() returns nullptr for it) so it is left alone.
+SELECT c.column_id, c.column_name, c.parent_column, s.min_value, s.max_value, s.contains_null
+FROM ducklake.ducklake_column c
+JOIN ducklake.ducklake_table_column_stats s USING (table_id, column_id)
+JOIN ducklake.ducklake_table t ON t.table_id = c.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'childstats' AND c.end_snapshot IS NULL ORDER BY c.column_id;
+
+-- Degrading is one-way and sticky, so it costs nothing after the first time:
+-- a batch inside every maintained bound must not rewrite the row at all.
+SELECT s.ctid::text AS elem_ctid
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'childstats' AND s.column_id = 3 \gset
+
+COPY childstats (id, arr) FROM STDIN WITH (FORMAT csv);
+50,"{50,51}"
+51,"{51,52}"
+\.
+SELECT s.ctid::text = :'elem_ctid' AS untouched
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'childstats' AND s.column_id = 3;
+DROP TABLE childstats;
+
+-- ------------------------------------------------------------------
+-- A bound the widen cannot even compare against is unmaintained too.
+--
+-- After an out-of-transaction ALTER COLUMN TYPE, a persisted DATE bound outside
+-- TIMESTAMP range makes MergeStats' non-Try cast throw -- and makes the read
+-- path throw the same way, at plan time, for any query touching the column.
+-- Leaving it is the stale-and-live case; degrading it is what the fallback is
+-- for, and it is the only thing here that can restore those queries.
+-- ------------------------------------------------------------------
+CALL ducklake.set_option('data_inlining_row_limit', 1000);
+CREATE TABLE dstale (d DATE) USING ducklake;
+SET ducklake.enable_direct_insert = false;
+INSERT INTO dstale VALUES ('2024-01-01'), ('5874897-12-31');
+SELECT count(*) > 0 AS flushed FROM ducklake.flush_inlined_data('dstale'::regclass);
+SET ducklake.enable_direct_insert = true;
+ALTER TABLE dstale ALTER COLUMN d TYPE TIMESTAMP;
+
+SELECT s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'dstale';
+
+INSERT INTO dstale VALUES ('2026-06-01 00:00:00');
+SELECT s.min_value, s.max_value
+FROM ducklake.ducklake_table_column_stats s
+JOIN ducklake.ducklake_table t ON t.table_id = s.table_id AND t.end_snapshot IS NULL
+WHERE t.table_name = 'dstale';
+
+CALL ducklake.recycle_ddb();
+SELECT count(*) AS total FROM dstale;
+SELECT count(*) AS before_2100 FROM dstale WHERE d < '2100-01-01';
+DROP TABLE dstale;
 
 -- Cleanup
 DROP TABLE dim_t;

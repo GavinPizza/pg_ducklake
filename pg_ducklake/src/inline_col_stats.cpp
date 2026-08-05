@@ -1,5 +1,6 @@
 #include "pgducklake/inline_col_stats.hpp"
 
+#include <cmath>
 #include <string>
 
 #include <duckdb.hpp>
@@ -10,6 +11,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "catalog/pg_type.h"
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
@@ -30,10 +32,11 @@ struct ColStatEntry {
 	duckdb::LogicalType type = duckdb::LogicalType::SQLNULL;
 	bool type_known = false;
 	bool eligible = false;
-	bool value_cmp = false;       /* RequiresValueComparison(type) */
-	bool finalize_direct = false; /* PG output text is already the DuckDB-canonical encoding */
-	bool ready = false;           /* SetupColumn bound a usable PG comparison */
+	bool value_cmp = false; /* RequiresValueComparison(type) */
+	bool float_cmp = false; /* FLOAT/DOUBLE: NaN is excluded from min/max and tracked instead */
+	bool ready = false;     /* SetupColumn bound a usable PG comparison */
 	bool has = false;
+	bool saw_nan = false;
 
 	/* PG source-type machinery bound by SetupColumn. */
 	Oid src_type = InvalidOid;
@@ -52,61 +55,20 @@ struct ColStatEntry {
 	uint64_t null_count = 0;
 };
 
-/* True for value_cmp types whose PG output text is already byte-for-byte the DuckDB-canonical
- * encoding, so Finalize can store the raw OutputFunctionCall text and skip the
- * Value(text)->cast(type)->ToString round-trip.
- *
- * Restricted to the integer family (signed and unsigned, incl. HUGEINT/UHUGEINT). Proof of
- * equality: an integer-typed DuckLake column only ever holds integral values, and the PG source
- * type is either an int2/int4/int8 (int*out) or -- for the wider types stored as VARCHAR --
- * numeric (numeric_out of an integral value). All of those emit a plain base-10 string: an
- * optional leading '-' then digits, no leading zeros, no thousands separators, no decimal point,
- * never scientific notation. DuckDB's ToString for every integer type emits exactly the same plain
- * base-10 string. So Value(pg_text).Cast(int_type).ToString() == pg_text for all values.
- *
- * Deliberately excluded (kept on the full round-trip):
- *   - BOOLEAN: PG emits 't'/'f', DuckDB canonical is 'true'/'false'.
- *   - DECIMAL: scale/zero/sign formatting equivalence between numeric_out and DuckDB decimal
- *     ToString is not proven here.
- *   - DATE/TIME/TIMESTAMP*: PG ISO output and DuckDB ToString agree in the common era but can
- *     diverge for BC / out-of-range years (e.g. PG '... BC', 5+ digit years). Not proven, so not
- *     guessed. */
-bool
-CanonicalEqualsOutput(const duckdb::LogicalType &type) {
-	switch (type.id()) {
-	case duckdb::LogicalTypeId::TINYINT:
-	case duckdb::LogicalTypeId::SMALLINT:
-	case duckdb::LogicalTypeId::INTEGER:
-	case duckdb::LogicalTypeId::BIGINT:
-	case duckdb::LogicalTypeId::HUGEINT:
-	case duckdb::LogicalTypeId::UTINYINT:
-	case duckdb::LogicalTypeId::USMALLINT:
-	case duckdb::LogicalTypeId::UINTEGER:
-	case duckdb::LogicalTypeId::UBIGINT:
-	case duckdb::LogicalTypeId::UHUGEINT:
-		return true;
-	default:
-		return false;
-	}
-}
-
-/* Types for which native DuckLake persists a table-level min/max we can safely maintain from
- * inlined tuples. Mirrors DuckLakeColumnStats::ToStats() minus FLOAT/DOUBLE (NaN handling) and
- * GEOMETRY/VARIANT/BLOB (extra_stats / no stats; never reach the inline path anyway).
+/* Types whose table-level min/max this accumulator maintains. Membership is an optimization, not
+ * the safety property: anything left out is degraded to unknown by the fallback in
+ * CreateSnapshotForDirectInsert, so forgetting a type costs pruning, never correctness. Add to it
+ * freely, and do not add a read-side liveness argument for the types left out.
  *
  * Gates min/max only -- ObserveNull is deliberately not gated by it.
  *
- * Excluding FLOAT/DOUBLE means their persisted bounds go stale rather than being widened, which is
- * safe only while those bounds are never turned into read-side statistics: ToStats() returns nullptr
- * for FLOAT/DOUBLE unless has_contains_nan && !contains_nan, and contains_nan is NULL on every table
- * this path can reach. That is an invariant held elsewhere, not here -- see the
- * "FIXME: we can gather nan statistics for FLOAT/DOUBLE" in
- * third_party/ducklake/src/storage/ducklake_inline_data.cpp. If that FIXME lands, a stale FLOAT
- * bound becomes a live mis-pruning bug and these two types must be added here (or excluded on the
- * read side) at the same time. */
+ * FLOAT/DOUBLE keep NaN out of the bounds and record it in contains_nan, which is what ToStats()
+ * consults before trusting a floating-point bound at all. */
 bool
 StatsEligible(const duckdb::LogicalType &type) {
 	switch (type.id()) {
+	case duckdb::LogicalTypeId::FLOAT:
+	case duckdb::LogicalTypeId::DOUBLE:
 	case duckdb::LogicalTypeId::BOOLEAN:
 	case duckdb::LogicalTypeId::TINYINT:
 	case duckdb::LogicalTypeId::SMALLINT:
@@ -134,10 +96,10 @@ StatsEligible(const duckdb::LogicalType &type) {
 	}
 }
 
-/* Forces ISO/YMD temporal output for its scope. Restoring from a destructor keeps a throw out of
- * the canonicalization path from leaking the forced setting into the rest of the session. A PG
- * elog(ERROR) longjmp still bypasses it, and DateStyle is assigned directly rather than through the
- * GUC machinery, so transaction abort would not undo it either. */
+/* Restoring from a destructor keeps a throw in the canonicalization path from leaking the forced
+ * setting into the rest of the session. A PG elog(ERROR) longjmp still bypasses it, and DateStyle
+ * is assigned directly rather than through the GUC machinery, so transaction abort would not undo
+ * it either. */
 struct IsoDateStyleGuard {
 	const int saved_style = DateStyle;
 	const int saved_order = DateOrder;
@@ -157,11 +119,10 @@ struct IsoDateStyleGuard {
 struct InlineColStats::Impl {
 	std::vector<ColStatEntry> entries;
 	bool active = false;
-	/* Long-lived home for copied min/max Datums and cached output FmgrInfos: outlives the per-tuple
-	 * / per-batch contexts the callers reset mid-loop. Parented on the transaction rather than
-	 * TopMemoryContext because a PG elog(ERROR) longjmps past ~Impl -- under TopMemoryContext the
-	 * context would then survive to backend exit, one leak per failed insert. This makes abort free
-	 * it. Requires that no caller outlive the (sub)transaction current at construction. */
+	/* Has to outlive the per-tuple/per-batch contexts the callers reset mid-loop. Parented on the
+	 * transaction rather than TopMemoryContext because a PG elog(ERROR) longjmps past ~Impl, which
+	 * under TopMemoryContext would leak the context once per failed insert. Requires that no caller
+	 * outlive the (sub)transaction current at construction. */
 	MemoryContext ctx = nullptr;
 
 	Impl() {
@@ -183,7 +144,13 @@ InlineColStats::InlineColStats(uint64_t table_id, int num_cols) : impl(new Impl(
 		ORDER BY column_order)",
 	                 (unsigned long long)table_id);
 	int ret = SPI_execute(q.data, true, 0);
+	/* Bailing leaves every column unobserved, so the fallback degrades the whole table's stats
+	 * permanently. Correct, but traceable beats a table that silently loses all pruning. */
 	if (ret != SPI_OK_SELECT || (int)SPI_processed < num_cols) {
+		elog(DEBUG1,
+		     "InlineColStats: no column metadata for table %llu (rc %d, %d rows for %d columns); "
+		     "column stats will be degraded",
+		     (unsigned long long)table_id, ret, (int)SPI_processed, num_cols);
 		return;
 	}
 	impl->entries.resize(num_cols);
@@ -191,6 +158,8 @@ InlineColStats::InlineColStats(uint64_t table_id, int num_cols) : impl(new Impl(
 		bool isnull;
 		Datum id_d = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
 		if (isnull) {
+			elog(DEBUG1, "InlineColStats: NULL column_id for table %llu; column stats will be degraded",
+			     (unsigned long long)table_id);
 			impl->entries.clear();
 			return;
 		}
@@ -201,13 +170,15 @@ InlineColStats::InlineColStats(uint64_t table_id, int num_cols) : impl(new Impl(
 		}
 		try {
 			duckdb::LogicalType t = duckdb::DuckLakeTypes::FromString(type_str);
-			/* A null-only stat still goes through the typed merge. */
+			/* Recorded even for an ineligible type: a null-only stat still goes through the typed
+			 * merge. */
 			impl->entries[i].type = t;
 			impl->entries[i].type_known = true;
 			if (StatsEligible(t)) {
 				impl->entries[i].eligible = true;
 				impl->entries[i].value_cmp = duckdb::RequiresValueComparison(t);
-				impl->entries[i].finalize_direct = CanonicalEqualsOutput(t);
+				impl->entries[i].float_cmp =
+				    t.id() == duckdb::LogicalTypeId::FLOAT || t.id() == duckdb::LogicalTypeId::DOUBLE;
 			}
 		} catch (...) {
 			/* Unsupported type string -> no stats of any kind for this column. */
@@ -238,6 +209,14 @@ InlineColStats::SetupColumn(int col, Oid pg_source_type) {
 	}
 	e.src_type = pg_source_type;
 
+	/* NaN has to be caught before the comparison proc sees it -- float8_cmp_internal orders NaN
+	 * above every other value, so one NaN would become the persisted max. That test is
+	 * per-representation, so a non-float source type goes to the fallback instead. */
+	if (e.float_cmp && pg_source_type != FLOAT4OID && pg_source_type != FLOAT8OID) {
+		e.eligible = false;
+		return;
+	}
+
 	Oid out_func;
 	bool out_varlena;
 	getTypeOutputInfo(pg_source_type, &out_func, &out_varlena);
@@ -247,9 +226,9 @@ InlineColStats::SetupColumn(int col, Oid pg_source_type) {
 	MemoryContextSwitchTo(old);
 
 	if (e.value_cmp) {
-		/* Numeric/temporal/boolean: compare in PG value space via the source type's btree
-		 * comparison proc. Its ordering matches DuckDB's value ordering for every eligible
-		 * value_cmp type. The FmgrInfo is owned by the (process-lifetime) type cache. */
+		/* The btree comparison proc's ordering matches DuckDB's value ordering for every eligible
+		 * value_cmp type, so comparing in PG value space cannot disagree with the read side. The
+		 * FmgrInfo belongs to the process-lifetime type cache, so it is not copied. */
 		TypeCacheEntry *tce = lookup_type_cache(pg_source_type, TYPECACHE_CMP_PROC_FINFO);
 		if (!tce || !OidIsValid(tce->cmp_proc_finfo.fn_oid)) {
 			/* No usable comparison -> maintain nothing rather than persist an unverifiable bound. */
@@ -274,6 +253,16 @@ InlineColStats::ObserveDatum(int col, Datum value) {
 		return;
 	}
 
+	if (e.float_cmp) {
+		/* Recording the NaN is what lets the bounds ignore it: the read side builds no
+		 * floating-point statistic at all once contains_nan is true. */
+		bool is_nan = e.src_type == FLOAT4OID ? std::isnan(DatumGetFloat4(value)) : std::isnan(DatumGetFloat8(value));
+		if (is_nan) {
+			e.saw_nan = true;
+			return;
+		}
+	}
+
 	if (e.value_cmp) {
 		if (!e.has) {
 			/* datumCopy flattens an inline-compressed or short varlena but does NOT detoast an external
@@ -288,8 +277,8 @@ InlineColStats::ObserveDatum(int col, Datum value) {
 			e.has = true;
 			return;
 		}
-		/* Compare in the caller's (per-tuple) context so comparison temporaries are reclaimed by the
-		 * caller's periodic reset; copy a new bound into the accumulator context only when it wins. */
+		/* Compared in the caller's per-tuple context so its periodic reset reclaims the comparison
+		 * temporaries; only a winning bound is copied into the accumulator context. */
 		if (DatumGetInt32(FunctionCall2Coll(e.cmp_finfo, e.cmp_collation, value, e.min_datum)) < 0) {
 			MemoryContext old = MemoryContextSwitchTo(impl->ctx);
 			Datum copy = datumCopy(value, e.typbyval, e.typlen);
@@ -311,8 +300,8 @@ InlineColStats::ObserveDatum(int col, Datum value) {
 		return;
 	}
 
-	/* Lexicographic (VARCHAR/UUID): the PG output text equals DuckDB's canonical VARCHAR encoding
-	 * for these types, so byte-order string compare here matches DuckLakeColumnStats::MergeStats. */
+	/* VARCHAR/UUID: PG's output text is DuckDB's canonical VARCHAR encoding for these, so a
+	 * byte-order compare here agrees with DuckLakeColumnStats::MergeStats. */
 	char *s = OutputFunctionCall(&e.out_finfo, value);
 	std::string cs(s);
 	pfree(s);
@@ -345,69 +334,68 @@ InlineColStats::Finalize(std::vector<DirectInsertColumnStat> &out) {
 		return;
 	}
 
-	/* Temporal output funcs are DateStyle-dependent; force ISO so the text parses back through
-	 * DuckDB's cast during canonicalization (and matches what the inline write stored). */
+	/* Temporal output funcs are DateStyle-dependent, and the canonicalization below needs the text
+	 * to parse back through DuckDB's cast. */
 	IsoDateStyleGuard date_style_guard;
 
 	for (auto &e : impl->entries) {
 		if (!e.type_known) {
 			continue;
 		}
-		bool have_bounds = e.eligible && e.ready && e.has;
+		/* Not conditioned on e.has: a batch of only NULLs or only NaNs still maintained the column,
+		 * it just had no bound to contribute. What matters downstream is whether the persisted
+		 * bounds still describe every row, not whether they moved. */
+		bool bounds_maintained = e.eligible && e.ready;
+		bool have_bounds = bounds_maintained && e.has;
 
 		std::string min_canon;
 		std::string max_canon;
 		if (have_bounds && e.value_cmp) {
 			char *min_txt = OutputFunctionCall(&e.out_finfo, e.min_datum);
 			char *max_txt = OutputFunctionCall(&e.out_finfo, e.max_datum);
-			if (e.finalize_direct) {
-				/* Integer family: PG output text is already byte-identical to DuckDB's canonical
-				 * encoding (see CanonicalEqualsOutput), so store it directly -- no Value/cast/ToString. */
-				min_canon = min_txt;
-				max_canon = max_txt;
-				pfree(min_txt);
-				pfree(max_txt);
-			} else {
-				/* Boolean / decimal / temporal: canonicalize the two surviving bounds through the same
-				 * Value(text)->cast(type)->ToString path the read side round-trips, so the stored bytes
-				 * are exactly what DuckLake would write (e.g. boolean "t"/"f" -> "true"/"false"). */
-				bool ok = true;
-				try {
-					duckdb::Value vmin;
-					duckdb::Value vmax;
-					std::string err;
-					if (!duckdb::Value(std::string(min_txt)).DefaultTryCastAs(e.type, vmin, &err) || vmin.IsNull()) {
-						ok = false;
-					} else {
-						min_canon = vmin.ToString();
-					}
-					if (ok &&
-					    (!duckdb::Value(std::string(max_txt)).DefaultTryCastAs(e.type, vmax, &err) || vmax.IsNull())) {
-						ok = false;
-					} else if (ok) {
-						max_canon = vmax.ToString();
-					}
-				} catch (...) {
-					/* Should be unreachable for inlineable data; skip rather than persist an
-					 * unverifiable bound (leaves the existing catalog bound untouched). */
+			/* Through the same Value(text)->cast(type)->ToString the read side round-trips, so the
+			 * stored bytes are what DuckLake itself would have written ("t" -> "true", 1000 -> 1000.0).
+			 *
+			 * No shortcut for types whose PG text already looks canonical: this is also the only
+			 * validation a bound gets, and the read path casts through the non-Try DefaultCastAs, so an
+			 * unparseable literal stored here throws out of GetColumnStats rather than degrading. PG
+			 * numeric backs the wider integer types and admits NaN and Infinity, which is how one would
+			 * arise. */
+			bool ok = true;
+			try {
+				duckdb::Value vmin;
+				duckdb::Value vmax;
+				std::string err;
+				if (!duckdb::Value(std::string(min_txt)).DefaultTryCastAs(e.type, vmin, &err) || vmin.IsNull()) {
 					ok = false;
+				} else {
+					min_canon = vmin.ToString();
 				}
-				pfree(min_txt);
-				pfree(max_txt);
-				if (!ok) {
-					/* Drop the bounds, not the column: an observed NULL is still worth persisting. */
-					have_bounds = false;
+				if (ok &&
+				    (!duckdb::Value(std::string(max_txt)).DefaultTryCastAs(e.type, vmax, &err) || vmax.IsNull())) {
+					ok = false;
+				} else if (ok) {
+					max_canon = vmax.ToString();
 				}
+			} catch (...) {
+				/* Unreachable for inlineable data, but an unverifiable bound is worse than none. */
+				ok = false;
+			}
+			pfree(min_txt);
+			pfree(max_txt);
+			if (!ok) {
+				/* The column stays -- an observed NULL is still worth persisting -- but its values
+				 * are now undescribed, so the fallback takes the bounds over. */
+				have_bounds = false;
+				bounds_maintained = false;
 			}
 		} else if (have_bounds) {
 			min_canon = e.min_str;
 			max_canon = e.max_str;
 		}
 
-		if (!have_bounds && e.null_count == 0) {
-			continue;
-		}
-
+		/* Emitted even when it carries nothing. The fallback has to tell "observed, contributed no
+		 * bound" apart from "never seen", and only the latter leaves null-ness unmaintained too. */
 		DirectInsertColumnStat s;
 		s.column_id = e.column_id;
 		s.column_type = duckdb::DuckLakeTypes::ToString(e.type);
@@ -418,6 +406,11 @@ InlineColStats::Finalize(std::vector<DirectInsertColumnStat> &out) {
 			s.max_value = std::move(max_canon);
 		}
 		s.null_count = e.null_count;
+		s.bounds_maintained = bounds_maintained;
+		/* Claiming this for a column whose NaN-ness the batch did not determine would let MergeStats
+		 * clear the persisted contains_nan. */
+		s.has_contains_nan = bounds_maintained && e.float_cmp;
+		s.contains_nan = e.saw_nan;
 		out.push_back(std::move(s));
 	}
 }

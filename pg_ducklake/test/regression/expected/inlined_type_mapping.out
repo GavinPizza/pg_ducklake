@@ -225,6 +225,18 @@ SELECT a, d, ts, n FROM itm_dt ORDER BY a;
  2 | 01-02-2024 | Tue Jan 02 03:04:05 2024 | 1.235
 (3 rows)
 
+-- UNNEST converts through output functions too.
+CREATE TABLE itm_dt_unnest (d date) USING ducklake;
+PREPARE itm_du (date[]) AS INSERT INTO itm_dt_unnest SELECT UNNEST($1);
+EXECUTE itm_du(ARRAY['2024-01-02', '2024-01-03']::date[]);
+DEALLOCATE itm_du;
+SELECT d FROM itm_dt_unnest ORDER BY d;
+     d      
+------------
+ 01-02-2024
+ 01-03-2024
+(2 rows)
+
 -- A failed insert must not leave the session in ISO.
 INSERT INTO itm_dt VALUES (3, '2024-01-02', '2024-01-02 03:04:05', 12345678901234567890123.456789);
 ERROR:  numeric field overflow
@@ -332,6 +344,7 @@ DROP TABLE itm_tz_values;
 DROP TABLE itm_tz_copy;
 DROP TABLE itm_tz_parquet;
 DROP TABLE itm_dt;
+DROP TABLE itm_dt_unnest;
 DROP TABLE itm_parquet;
 DROP TABLE itm_values;
 DROP TABLE itm_unnest;

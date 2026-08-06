@@ -130,6 +130,13 @@ COPY itm_dt FROM STDIN;
 -- Readable at all, and the two writers agree, only if both stored ISO.
 SELECT a, d, ts, n FROM itm_dt ORDER BY a;
 
+-- UNNEST converts through output functions too.
+CREATE TABLE itm_dt_unnest (d date) USING ducklake;
+PREPARE itm_du (date[]) AS INSERT INTO itm_dt_unnest SELECT UNNEST($1);
+EXECUTE itm_du(ARRAY['2024-01-02', '2024-01-03']::date[]);
+DEALLOCATE itm_du;
+SELECT d FROM itm_dt_unnest ORDER BY d;
+
 -- A failed insert must not leave the session in ISO.
 INSERT INTO itm_dt VALUES (3, '2024-01-02', '2024-01-02 03:04:05', 12345678901234567890123.456789);
 SHOW DateStyle;
@@ -197,6 +204,7 @@ DROP TABLE itm_tz_values;
 DROP TABLE itm_tz_copy;
 DROP TABLE itm_tz_parquet;
 DROP TABLE itm_dt;
+DROP TABLE itm_dt_unnest;
 DROP TABLE itm_parquet;
 DROP TABLE itm_values;
 DROP TABLE itm_unnest;

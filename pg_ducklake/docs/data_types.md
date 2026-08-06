@@ -32,9 +32,9 @@ in inlined data tables (the in-catalog row store controlled by
 | | `interval` | INTERVAL | Native | INTERVAL |
 | | `varchar` | VARCHAR | Not native | BYTEA |
 | | `blob` | BLOB | Not native | BYTEA |
-| | `json` | JSON | Native | JSON |
+| | `json` | JSON | Not native | BYTEA |
 | | `uuid` | UUID | Native | UUID |
-| Nested | `list` | LIST | Not native | VARCHAR[] |
+| Nested | `list` | LIST | Not native | VARCHAR |
 | | `struct` | STRUCT | Not native | VARCHAR |
 | | `map` | MAP | Not native | VARCHAR |
 | Semi-structured | `variant` | VARIANT | No inline | -- |
@@ -77,6 +77,13 @@ in inlined data tables (the in-catalog row store controlled by
   (fixed in PG15+).  Workaround: keep the sub-day time component of interval
   values below ~35 minutes when using data inlining on PG14, or disable
   inlining (`data_inlining_row_limit = 0`) and use the Parquet path.
+
+- **Nested types with `COPY FROM STDIN`**: nested columns inline as VARCHAR
+  holding DuckDB's text format (`[1, 2]`), which PostgreSQL's output functions
+  do not produce (`array_out` writes `{1,2}`).  `INSERT` falls back to the
+  standard path, but `COPY FROM STDIN` has no fallback and rejects the
+  statement: `ERROR: COPY FROM STDIN does not support column "c" of type
+  integer[]`.  Load nested columns with `INSERT`, or disable inlining.
 
 ## References
 

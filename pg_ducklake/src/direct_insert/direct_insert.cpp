@@ -1490,6 +1490,8 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state, NativeInlineWriteBatc
 	ArrayIterator *iterators = (ArrayIterator *)palloc0(sizeof(ArrayIterator) * num_params);
 	FmgrInfo *typoutput = (FmgrInfo *)palloc0(sizeof(FmgrInfo) * num_params);
 	bool *needs_text_conv = (bool *)palloc0(sizeof(bool) * num_params);
+	InlinedTypmodCoercion **typmod_coercion =
+	    (InlinedTypmodCoercion **)palloc0(sizeof(InlinedTypmodCoercion *) * num_params);
 
 	ListCell *lc;
 	int param_idx = 0;
@@ -1525,21 +1527,20 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state, NativeInlineWriteBatc
 		SetupInlineColStatsColumn(col_stats, i, element_types[i]);
 	}
 
-	char relname[NAMEDATALEN];
-	snprintf(relname, sizeof(relname), "ducklake_inlined_data_%llu_%llu", (unsigned long long)state->table_id,
-	         (unsigned long long)state->schema_version);
-	Oid ducklake_nsp = get_namespace_oid("ducklake", false);
-	Oid relid = get_relname_relid(relname, ducklake_nsp);
-	if (!OidIsValid(relid)) {
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("inlined data table \"%s\" does not exist", relname)));
-	}
-	Relation inlined_rel = table_open(relid, RowExclusiveLock);
+	Relation inlined_rel = OpenInlinedDataTable(state->table_id, state->schema_version, RowExclusiveLock, false);
 	BindNativeInlineWriteRelation(batch, inlined_rel);
 	TupleDesc inlined_tupdesc = RelationGetDescr(inlined_rel);
 	if (inlined_tupdesc->natts != num_params + INLINED_SYSTEM_COLS) {
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH),
 		                errmsg("inlined data table column count mismatch: expected %d, got %d",
 		                       num_params + INLINED_SYSTEM_COLS, inlined_tupdesc->natts)));
+	}
+
+	/* Until the native writer landed, this path inserted through SPI, which
+	 * applied the target typmod on the caller's behalf. */
+	for (int i = 0; i < num_params; i++) {
+		Form_pg_attribute inl_att = TupleDescAttr(inlined_tupdesc, i + INLINED_SYSTEM_COLS);
+		typmod_coercion[i] = MakeInlinedTypmodCoercion(inl_att->atttypid, inl_att->atttypmod);
 	}
 
 	int batch_size = Min(arr_length, MAX_BUFFERED_TUPLES);
@@ -1577,17 +1578,23 @@ DirectInsertIntoInlinedTable(DirectInsertScanState *state, NativeInlineWriteBatc
 				ObserveInlineColStatsNull(col_stats, i);
 				values[dst] = (Datum)0;
 				nulls[dst] = true;
-			} else if (needs_text_conv[i]) {
-				ObserveInlineColStatsDatum(col_stats, i, element);
-				MemoryContext old_context = MemoryContextSwitchTo(batch_context);
-				char *str = OutputFunctionCallIso(&typoutput[i], element);
-				values[dst] = CStringGetTextDatum(str);
-				pfree(str);
-				MemoryContextSwitchTo(old_context);
-				nulls[dst] = false;
 			} else {
+				if (typmod_coercion[i] != NULL) {
+					element = ApplyInlinedTypmodCoercion(typmod_coercion[i], element);
+				}
+				/* Post-coercion: a bound taken from the source value can exclude
+				 * what is stored. */
 				ObserveInlineColStatsDatum(col_stats, i, element);
-				values[dst] = element;
+
+				if (needs_text_conv[i]) {
+					MemoryContext old_context = MemoryContextSwitchTo(batch_context);
+					char *str = OutputFunctionCallIso(&typoutput[i], element);
+					values[dst] = CStringGetTextDatum(str);
+					pfree(str);
+					MemoryContextSwitchTo(old_context);
+				} else {
+					values[dst] = element;
+				}
 				nulls[dst] = false;
 			}
 		}

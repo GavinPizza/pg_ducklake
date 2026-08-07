@@ -111,9 +111,11 @@ CREATE TABLE copy_nested (id int, values int[]) USING ducklake;
 INSERT INTO copy_nested SELECT i, ARRAY[i, i + 1] FROM generate_series(1, 200) AS i;
 CALL ducklake.set_option('data_inlining_row_limit', 100);
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_nested'::regclass);
+-- Nested columns inline as VARCHAR in DuckDB's text format ([1, 2]); array_out
+-- writes {1,2}, which the reader cannot cast back.  COPY has no path to decline
+-- to, so it refuses.  No data block follows on purpose: the refusal happens
+-- before COPY mode is entered, so a payload here would run as SQL.
 COPY copy_nested FROM STDIN WITH (FORMAT csv);
-1000,"{1000,2000}"
-\.
 SELECT c.parent_column IS NOT NULL AS descendant,
        s.min_value IS NULL AND s.max_value IS NULL AND
        s.contains_null IS NULL AND s.contains_nan IS NULL AND
@@ -129,7 +131,8 @@ FROM ducklake.ducklake_inlined_data_tables it
 JOIN ducklake.ducklake_table t USING (table_id)
 WHERE t.table_name = 'copy_nested' AND t.end_snapshot IS NULL
 ORDER BY it.schema_version DESC LIMIT 1 \gset
-SELECT id, values FROM ducklake.:nested_inl WHERE id = 1000;
+-- The refusal is total: no partial row reached the inlined heap.
+SELECT count(*) AS nested_rows_written FROM ducklake.:nested_inl WHERE id = 1000;
 DROP TABLE copy_nested;
 
 CALL ducklake.set_option('data_inlining_row_limit', 0);

@@ -703,9 +703,11 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 		char *schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-		char *in_metadata = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 3);
 
-		bool is_ducklake_table = in_metadata != nullptr && in_metadata[0] == 't';
+		bool isnull;
+		Datum in_metadata_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 3, &isnull);
+
+		bool is_ducklake_table = !isnull && DatumGetBool(in_metadata_datum);
 		if (!is_ducklake_table && !DropTargetLivesInDuckDBCatalog(schema_name, table_name))
 			continue;
 

@@ -78,6 +78,8 @@ DROP TABLE copy_defaults;
 -- skipped COPY data. Older psql rejects it instead, hence copy_from_1.out.
 COPY copy_stdin FROM STDIN WITH (FREEZE true);
 ERROR:  COPY FROM STDIN with FREEZE is not supported for DuckLake tables
+\.
+invalid command \.
 SELECT count(*) FROM copy_stdin;
  count 
 -------
@@ -86,6 +88,8 @@ SELECT count(*) FROM copy_stdin;
 
 COPY copy_stdin FROM STDIN WITH (ON_ERROR ignore);
 ERROR:  COPY FROM STDIN with ON_ERROR is not supported for DuckLake tables
+\.
+invalid command \.
 SELECT count(*) FROM copy_stdin;
  count 
 -------

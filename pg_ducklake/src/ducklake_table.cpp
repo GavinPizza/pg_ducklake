@@ -16,6 +16,10 @@
 #include "pgddb/pgddb_table_am.hpp"
 
 #include <common/ducklake_types.hpp>
+#include <duckdb/catalog/catalog.hpp>
+#include <duckdb/catalog/catalog_entry.hpp>
+#include <duckdb/catalog/catalog_entry/schema_catalog_entry.hpp>
+#include <duckdb/catalog/entry_lookup_info.hpp>
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
@@ -633,6 +637,35 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	PG_RETURN_NULL();
 }
 
+/*
+ * ducklake_table rows are only written at PRE_COMMIT, so a table created
+ * earlier in this transaction is invisible to the metadata lookup. DuckDB's
+ * catalog does see it, but throws rather than returning null unless a DuckDB
+ * transaction is open.
+ */
+static bool
+DropTargetLivesInDuckDBCatalog(const char *schema_name, const char *table_name) {
+	if (!pgducklake::DuckDBManager::IsInitialized())
+		return false;
+
+	auto *connection = pgducklake::DuckDBManager::Get().GetConnectionUnsafe();
+	if (!connection || !connection->context->transaction.HasActiveTransaction())
+		return false;
+
+	auto &context = *connection->context;
+	std::string schema_str(schema_name);
+	std::string table_str(table_name);
+
+	duckdb::EntryLookupInfo lookup(duckdb::CatalogType::TABLE_ENTRY, table_str, duckdb::QueryErrorContext());
+	auto entry = duckdb::Catalog::GetEntry(context, PGDUCKLAKE_DUCKDB_CATALOG, schema_str, lookup,
+	                                       duckdb::OnEntryNotFound::RETURN_NULL);
+
+	/* DuckDB matches names case-insensitively, the metadata lookup does not --
+	 * without this, dropping heap table "FOO" or "PUBLIC".foo destroys DuckLake
+	 * table public.foo. */
+	return entry && entry->name == table_str && entry->ParentSchema().name == schema_str;
+}
+
 DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 	if (pgducklake::syncing_from_metadata)
 		PG_RETURN_NULL();
@@ -645,16 +678,19 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 	/* Can't use pg_class here: the tables are already dropped. */
 	int ret = SPI_exec(R"(
-		SELECT cmds.schema_name, cmds.object_name
+		SELECT cmds.schema_name, cmds.object_name,
+		       EXISTS (
+		         SELECT 1
+		         FROM ducklake.ducklake_table AS tbl
+		         JOIN ducklake.ducklake_schema AS schema
+		           ON tbl.schema_id = schema.schema_id
+		         WHERE tbl.table_name = cmds.object_name
+		           AND schema.schema_name = cmds.schema_name
+		           AND tbl.end_snapshot IS NULL
+		           AND schema.end_snapshot IS NULL
+		       ) AS in_metadata
 		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
-		JOIN ducklake.ducklake_table AS tbl
-		  ON cmds.object_name = tbl.table_name
-		JOIN ducklake.ducklake_schema AS schema
-		  ON cmds.schema_name = schema.schema_name
-		  AND tbl.schema_id = schema.schema_id
 		WHERE cmds.object_type = 'table'
-		  AND tbl.end_snapshot IS NULL
-		  AND schema.end_snapshot IS NULL
 		)",
 	                   0);
 
@@ -667,6 +703,13 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 		char *schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
+
+		bool isnull;
+		Datum in_metadata_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 3, &isnull);
+
+		bool is_ducklake_table = !isnull && DatumGetBool(in_metadata_datum);
+		if (!is_ducklake_table && !DropTargetLivesInDuckDBCatalog(schema_name, table_name))
+			continue;
 
 		std::string drop_ddl =
 		    duckdb::StringUtil::Format("DROP TABLE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG ".%s.%s",

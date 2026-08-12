@@ -1,7 +1,7 @@
 -- Inlined-data column types and typmods across all three writers: VALUES,
--- UNNEST and COPY FROM STDIN.  All three build virtual tuples and apply no
--- coercion of their own, so none can serve as a reference for the others; the
--- non-inlined parquet table below is the reference instead.
+-- UNNEST and COPY FROM STDIN.  All three share the same conversion and reader
+-- code, so a defect common to them would pass an inline-vs-inline comparison;
+-- the non-inlined parquet table below is the independent reference.
 
 CALL ducklake.set_option('data_inlining_row_limit', 1000);
 
@@ -198,8 +198,160 @@ FROM (SELECT a, t FROM itm_tz_copy WHERE a < 3 EXCEPT ALL SELECT a, t FROM itm_t
 RESET TimeZone;
 
 -- ------------------------------------------------------------------
+-- char(n): bpchar is a varchar source type, so the inline writers copy its
+-- varlena verbatim -- PostgreSQL's blank padding included -- while the
+-- standard DuckDB write path strips it (bpchartruelen).  The same char(5)
+-- value therefore reads back padded out of an inlined table and trimmed out
+-- of parquet.  That divergence predates this allowlist and is tracked
+-- separately: the cases below record what happens today rather than assert
+-- what should.
+-- ------------------------------------------------------------------
+CALL ducklake.set_option('data_inlining_row_limit', 1000);
+
+CREATE TABLE itm_char_values (a int, c char(5)) USING ducklake;
+CREATE TABLE itm_char_copy (a int, c char(5)) USING ducklake;
+
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO itm_char_values VALUES (1, 'ab'), (2, 'abcde'), (3, NULL);
+
+COPY itm_char_copy FROM STDIN;
+1	ab
+2	abcde
+3	\N
+\.
+
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats()
+WHERE count > 0 ORDER BY pattern, reason;
+
+-- Both inline writers keep the padding: length 5 for every stored value.
+SELECT a, '[' || c || ']' AS braced, length(c) AS len FROM itm_char_values ORDER BY a;
+SELECT a, '[' || c || ']' AS braced, length(c) AS len FROM itm_char_copy ORDER BY a;
+
+-- The padding is in the heap, not added by the reader.
+SELECT idt.table_name AS char_inl
+FROM ducklake.ducklake_inlined_data_tables idt
+JOIN ducklake.ducklake_table t ON t.table_id = idt.table_id
+WHERE t.table_name = 'itm_char_values' AND t.end_snapshot IS NULL
+ORDER BY idt.schema_version DESC LIMIT 1 \gset
+SELECT a, '[' || convert_from(c, 'UTF8') || ']' AS stored
+FROM ducklake.:char_inl ORDER BY a;
+
+-- UNNEST cannot reach a char(n) column at all: the length coercion the target
+-- typmod adds is not a shape the fast path matches, and the fallback has no
+-- parameterized UNNEST.  Pre-existing, and not specific to bpchar -- any
+-- declared typmod does it, numeric(12,3) included.
+CREATE TABLE itm_char_unnest (c char(5)) USING ducklake;
+PREPARE itm_cu (char(5)[]) AS INSERT INTO itm_char_unnest SELECT UNNEST($1);
+EXECUTE itm_cu(ARRAY['ab', 'abcde']::char(5)[]);
+DEALLOCATE itm_cu;
+SELECT count(*) AS char_unnest_rows FROM itm_char_unnest;
+
+-- Non-inlined reference: the same values through the standard write path.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE itm_char_parquet (a int, c char(5)) USING ducklake;
+INSERT INTO itm_char_parquet VALUES (1, 'ab'), (2, 'abcde'), (3, NULL);
+
+-- Must be 0, or this is comparing inlined against inlined.
+SELECT count(*) AS char_reference_inlined_tables
+FROM ducklake.ducklake_inlined_data_tables idt
+JOIN ducklake.ducklake_table t ON t.table_id = idt.table_id
+WHERE t.table_name = 'itm_char_parquet' AND t.end_snapshot IS NULL;
+
+-- Trimmed, where both inlined tables above are padded.
+SELECT a, '[' || c || ']' AS braced, length(c) AS len FROM itm_char_parquet ORDER BY a;
+
+-- bpchar with no length modifier has no typmod and nothing to pad, so it
+-- rides all three writers and agrees with parquet.
+CALL ducklake.set_option('data_inlining_row_limit', 1000);
+CREATE TABLE itm_bpchar (c bpchar) USING ducklake;
+
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO itm_bpchar VALUES ('ab'), ('abcde');
+
+PREPARE itm_bu (bpchar[]) AS INSERT INTO itm_bpchar SELECT UNNEST($1);
+EXECUTE itm_bu(ARRAY['cd', 'cdefg']::bpchar[]);
+DEALLOCATE itm_bu;
+
+COPY itm_bpchar FROM STDIN;
+ef
+efghi
+\.
+
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats()
+WHERE count > 0 ORDER BY pattern, reason;
+
+SELECT '[' || c || ']' AS braced, length(c) AS len FROM itm_bpchar ORDER BY c;
+
+-- ------------------------------------------------------------------
+-- json: the allowlist keys it apart from varchar -- both parse to
+-- LogicalTypeId::VARCHAR -- so it needs its own case, and a json column is
+-- the only thing that reaches the entry.
+-- ------------------------------------------------------------------
+CREATE TABLE itm_json_values (a int, j json) USING ducklake;
+CREATE TABLE itm_json_copy (a int, j json) USING ducklake;
+
+SELECT ducklake.reset_direct_insert_stats();
+INSERT INTO itm_json_values VALUES (1, '{"a": 1}'), (2, '[1, 2, 3]'), (3, NULL);
+
+COPY itm_json_copy FROM STDIN;
+1	{"a": 1}
+2	[1, 2, 3]
+3	\N
+\.
+
+SELECT pattern, reason, count FROM ducklake.direct_insert_stats()
+WHERE count > 0 ORDER BY pattern, reason;
+
+SELECT a, j FROM itm_json_values ORDER BY a;
+SELECT a, j FROM itm_json_copy ORDER BY a;
+
+-- Stored as json, not as text that happens to look like it.
+SELECT a, j->>'a' AS a_field FROM itm_json_values WHERE a = 1;
+
+-- Inlined as bytea, like varchar.
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_schema = 'ducklake' AND table_name = (
+  SELECT idt.table_name
+  FROM ducklake.ducklake_inlined_data_tables idt
+  JOIN ducklake.ducklake_table t ON t.table_id = idt.table_id
+  WHERE t.table_name = 'itm_json_values' AND t.end_snapshot IS NULL
+  ORDER BY idt.schema_version DESC LIMIT 1)
+AND column_name NOT IN ('row_id', 'begin_snapshot', 'end_snapshot')
+ORDER BY ordinal_position;
+
+-- Non-inlined reference, for the same reason as the numeric one above.
+CALL ducklake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE itm_json_parquet (a int, j json) USING ducklake;
+INSERT INTO itm_json_parquet VALUES (1, '{"a": 1}'), (2, '[1, 2, 3]'), (3, NULL);
+
+-- Must be 0, or this is comparing inlined against inlined.
+SELECT count(*) AS json_reference_inlined_tables
+FROM ducklake.ducklake_inlined_data_tables idt
+JOIN ducklake.ducklake_table t ON t.table_id = idt.table_id
+WHERE t.table_name = 'itm_json_parquet' AND t.end_snapshot IS NULL;
+
+SELECT a, j FROM itm_json_parquet ORDER BY a;
+
+-- Both counts must be 0.  json has no equality operator in PostgreSQL, so
+-- compare the text the reader produced.
+SELECT count(*) AS json_values_vs_parquet_diffs
+FROM (SELECT a, j::text FROM itm_json_values
+      EXCEPT ALL SELECT a, j::text FROM itm_json_parquet) d;
+SELECT count(*) AS json_copy_vs_parquet_diffs
+FROM (SELECT a, j::text FROM itm_json_copy
+      EXCEPT ALL SELECT a, j::text FROM itm_json_parquet) d;
+
+-- ------------------------------------------------------------------
 -- Cleanup
 -- ------------------------------------------------------------------
+DROP TABLE itm_json_values;
+DROP TABLE itm_json_copy;
+DROP TABLE itm_json_parquet;
+DROP TABLE itm_char_values;
+DROP TABLE itm_char_copy;
+DROP TABLE itm_char_unnest;
+DROP TABLE itm_char_parquet;
+DROP TABLE itm_bpchar;
 DROP TABLE itm_tz_values;
 DROP TABLE itm_tz_copy;
 DROP TABLE itm_tz_parquet;

@@ -1,0 +1,16 @@
+-- Upstream: test/sql/reserved_names/reserved_names.test
+CALL ducklake.set_option('data_inlining_row_limit', 100);
+CREATE TABLE upstream_reserved_name (
+    id integer,
+    _ducklake_internal_snapshot_id integer
+) USING ducklake;
+ERROR:  (PGDuckDB/ducklake_create_table_trigger_cpp) Binder Error: Column name "_ducklake_internal_snapshot_id" is reserved by DuckLake for internal use when data inlining is enabled. If you must use this column name, disable inlining by calling ducklake_set_option('data_inlining_row_limit', 0).
+SELECT to_regclass('upstream_reserved_name') IS NULL AS creation_rejected;
+ creation_rejected 
+-------------------
+ t
+(1 row)
+
+DROP TABLE IF EXISTS upstream_reserved_name;
+NOTICE:  table "upstream_reserved_name" does not exist, skipping
+CALL ducklake.set_option('data_inlining_row_limit', 0);

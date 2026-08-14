@@ -6,10 +6,10 @@
 -- No PostgreSQL DDL can create the column, so the catalog rows are forged the
 -- way metadata_sync.sql forges its own and the snapshot trigger builds the PG
 -- side.  This lives in its own file rather than in inlined_type_mapping because
--- a forged table is not resolvable by DuckDB in a session that has already
--- built its catalog: ensure_inlined_data_table fails with "Table with name
--- itm_u8 does not exist", the DROP then fails too, and the stranded relation
--- surfaces in unrelated IMPORT FOREIGN SCHEMA tests much later in the schedule.
+-- DuckDB cannot resolve a forged table in a session that has already built its
+-- catalog: ensure_inlined_data_table raises "Table with name ... does not
+-- exist", the DROP fails behind it, and the stranded relation then surfaces in
+-- unrelated IMPORT FOREIGN SCHEMA tests much later in the schedule.
 
 CALL ducklake.set_option('data_inlining_row_limit', 1000);
 
@@ -58,16 +58,16 @@ FROM pg_attribute WHERE attrelid = ('ducklake.' || :'u8_inl')::regclass
   AND attnum > 0 ORDER BY attnum;
 
 SELECT ducklake.reset_direct_insert_stats();
--- Both ends of uint8's range, which smallint holds and int8 would not.
 INSERT INTO u8_ext VALUES (1, 0), (2, 200), (3, 255);
--- matched_values is the assertion that the fast path took it: a decline would
--- store the same values through the fallback and cover none of the widening.
+-- Guards against a silent decline to the fallback, which would store the same
+-- values and cover no widening.  It does not prove the widening ran: the
+-- pre-fix build reports ok here too, because the counter is bumped before the
+-- store raises.  The heap read below is what fails without the fix.
 SELECT pattern, reason, count FROM ducklake.direct_insert_stats() WHERE count > 0;
 
--- Read the raw inlined heap, NOT "SELECT ... FROM u8_ext".  A reverse-synced
--- table reads back zero rows through the facade -- a sync defect unrelated to
--- the widening -- so selecting from the table would make this pass while
--- covering nothing.
+-- Read the raw heap rather than selecting from u8_ext: a reverse-synced table
+-- reads back zero rows through the facade, a sync defect unrelated to the
+-- widening, so the obvious spelling would pass while covering nothing.
 SELECT row_id, id, u, pg_typeof(u) AS stored_type
 FROM ducklake.:u8_inl ORDER BY row_id;
 

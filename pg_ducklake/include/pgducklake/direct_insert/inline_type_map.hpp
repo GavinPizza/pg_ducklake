@@ -35,18 +35,9 @@ enum InlineWriterKind {
 };
 
 /*
- * The allowlist every inline writer consults: true only for a DuckLake type
- * this build knows how to store, arriving as source_type and landing in an
- * inlined attribute that matches what DuckDB creates for it.  type_id and
- * is_json are DuckLakeTypeIdentity's parse of ducklake_column.column_type.
- *
- * Callers that can decline must treat false as "not our statement", not as an
- * error.
- */
-/*
- * Which of the two the caller has decides the error it raises: an unsupported
- * type is the user's to act on and INSERT still takes it, while a mismatch
- * means the facade and the inlined heap disagree about a type both support.
+ * Which result the caller gets decides the error it raises: an unsupported type
+ * is the user's to act on and INSERT still takes it, while a mismatch means the
+ * facade and the inlined heap disagree about a type both support.
  */
 enum InlineConversionResult {
 	INLINE_CONV_OK = 0,
@@ -58,6 +49,9 @@ enum InlineConversionResult {
 	INLINE_CONV_FAST_PATH_DECLINED,
 };
 
+/* type_id and is_json are DuckLakeTypeIdentity's parse of
+ * ducklake_column.column_type.  Callers that can decline must treat anything
+ * but INLINE_CONV_OK as "not our statement" rather than as an error. */
 InlineConversionResult DuckLakeTypeInlineConversion(InlineWriterKind writer, int type_id, bool is_json, Oid source_type,
                                                     Oid inline_type, int32_t inline_typmod,
                                                     InlineConversion *conversion_out);

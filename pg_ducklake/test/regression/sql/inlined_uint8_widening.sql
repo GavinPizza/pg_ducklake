@@ -5,11 +5,15 @@
 --
 -- No PostgreSQL DDL can create the column, so the catalog rows are forged the
 -- way metadata_sync.sql forges its own and the snapshot trigger builds the PG
--- side.  This lives in its own file rather than in inlined_type_mapping because
--- DuckDB cannot resolve a forged table in a session that has already built its
--- catalog: ensure_inlined_data_table raises "Table with name ... does not
--- exist", the DROP fails behind it, and the stranded relation then surfaces in
--- unrelated IMPORT FOREIGN SCHEMA tests much later in the schedule.
+-- side.
+--
+-- Keep this in a file of its own.  The same forge written into
+-- inlined_type_mapping fails there -- ensure_inlined_data_table raises "Table
+-- with name ... does not exist", the DROP fails behind it, and the stranded
+-- relation surfaces in unrelated IMPORT FOREIGN SCHEMA tests much later in the
+-- schedule -- while the identical call succeeds mid-file in copy_from.sql.
+-- What differs between those two is not understood, so do not fold this back
+-- into another file on the assumption that it will behave.
 
 CALL ducklake.set_option('data_inlining_row_limit', 1000);
 

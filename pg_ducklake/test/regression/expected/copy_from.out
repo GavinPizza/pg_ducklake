@@ -343,6 +343,67 @@ SELECT id, c FROM copy_nodefault_unsupported ORDER BY id;
 (2 rows)
 
 DROP TABLE copy_nodefault_unsupported;
+-- The nested cases above declare the column as int[], so a shape test on the
+-- facade OID would refuse them too.  Only an externally synchronized LIST
+-- separates the two: DuckLakeTypeToPgType has no LIST branch, so it reaches
+-- PostgreSQL as text over a VARCHAR heap column, and the refusal below can come
+-- from nothing but the DuckLake type.  The catalog rows are forged the way
+-- metadata_sync.sql forges them -- no PostgreSQL DDL can create this shape.
+SELECT snapshot_id AS syn_snap, next_catalog_id AS syn_cat, next_file_id AS syn_file,
+       schema_version AS syn_sv
+FROM ducklake.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1 \gset
+SELECT schema_id AS syn_sid FROM ducklake.ducklake_schema
+WHERE schema_name = 'public' AND end_snapshot IS NULL \gset
+BEGIN;
+INSERT INTO ducklake.ducklake_table
+  (table_id, table_uuid, begin_snapshot, end_snapshot, schema_id,
+   table_name, path, path_is_relative)
+VALUES (:syn_cat, gen_random_uuid(), :syn_snap + 1, NULL,
+        :syn_sid, 'copy_synced_nested', NULL, true);
+-- A LIST is two rows: the column, and the 'element' child that describes it.
+INSERT INTO ducklake.ducklake_column
+  (column_id, begin_snapshot, end_snapshot, table_id, column_order,
+   column_name, column_type, initial_default, default_value,
+   nulls_allowed, parent_column)
+VALUES
+  (:syn_cat + 1, :syn_snap + 1, NULL, :syn_cat, 1, 'id', 'int32',
+   NULL, NULL, true, NULL),
+  (:syn_cat + 2, :syn_snap + 1, NULL, :syn_cat, 2, 'tags', 'list',
+   NULL, NULL, true, NULL),
+  (:syn_cat + 3, :syn_snap + 1, NULL, :syn_cat, 3, 'element', 'int32',
+   NULL, NULL, true, :syn_cat + 2);
+INSERT INTO ducklake.ducklake_snapshot
+  (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
+VALUES (:syn_snap + 1, now(), :syn_sv, :syn_cat + 4, :syn_file);
+COMMIT;
+-- text, not integer[]: this is what the old facade-OID guard saw and let past.
+SELECT attname, format_type(atttypid, atttypmod) AS facade_type
+FROM pg_attribute WHERE attrelid = 'copy_synced_nested'::regclass AND attnum > 0
+ORDER BY attnum;
+ attname | facade_type 
+---------+-------------
+ id      | integer
+ tags    | text
+(2 rows)
+
+SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_synced_nested'::regclass);
+ count 
+-------
+     1
+(1 row)
+
+-- No data block follows on purpose: the refusal happens before COPY mode is
+-- entered, so a payload here would run as SQL.
+COPY copy_synced_nested FROM STDIN;
+ERROR:  COPY FROM STDIN does not support column "tags" of type text
+HINT:  Load this column with INSERT, which falls back to the standard path.
+SELECT count(*) AS synced_rows_after_refusal FROM copy_synced_nested;
+ synced_rows_after_refusal 
+---------------------------
+                         0
+(1 row)
+
+DROP TABLE copy_synced_nested;
 CALL ducklake.set_option('data_inlining_row_limit', 0);
 -- Note: error case (COPY FROM STDIN without inlined data table) is not
 -- tested here because a failed COPY FROM STDIN leaks its data as SQL,

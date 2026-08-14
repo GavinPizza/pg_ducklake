@@ -42,9 +42,13 @@ VALUES
    NULL, NULL, true, NULL),
   (:u8_cat + 2, :u8_snap + 1, NULL, :u8_cat, 2, 'u', 'uint8',
    NULL, NULL, true, NULL);
+-- schema_version + 1, not the current one: a real client's CREATE TABLE bumps
+-- it, and DuckDB caches the whole loaded catalog under the version it was read
+-- at.  Reusing the current version hides the new table from any session that
+-- has already scanned a DuckLake table at that version.
 INSERT INTO ducklake.ducklake_snapshot
   (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
-VALUES (:u8_snap + 1, now(), :u8_sv, :u8_cat + 3, :u8_file);
+VALUES (:u8_snap + 1, now(), :u8_sv + 1, :u8_cat + 3, :u8_file);
 COMMIT;
 
 -- smallint on the facade, integer in the heap: the mismatch that used to raise.

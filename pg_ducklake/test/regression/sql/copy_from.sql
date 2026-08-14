@@ -248,9 +248,13 @@ VALUES
    NULL, NULL, true, NULL),
   (:syn_cat + 3, :syn_snap + 1, NULL, :syn_cat, 3, 'element', 'int32',
    NULL, NULL, true, :syn_cat + 2);
+-- schema_version + 1, not the current one: a real client's CREATE TABLE bumps
+-- it, and DuckDB caches the whole loaded catalog under the version it was read
+-- at.  Reusing the current version hides the new table from any session that
+-- has already scanned a DuckLake table at that version.
 INSERT INTO ducklake.ducklake_snapshot
   (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
-VALUES (:syn_snap + 1, now(), :syn_sv, :syn_cat + 4, :syn_file);
+VALUES (:syn_snap + 1, now(), :syn_sv + 1, :syn_cat + 4, :syn_file);
 COMMIT;
 -- text, not integer[]: this is what the old facade-OID guard saw and let past.
 SELECT attname, format_type(atttypid, atttypmod) AS facade_type

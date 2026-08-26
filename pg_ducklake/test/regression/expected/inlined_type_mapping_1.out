@@ -145,6 +145,8 @@ SELECT a, b FROM itm_list ORDER BY a;
 COPY itm_list FROM STDIN;
 ERROR:  COPY FROM STDIN does not support column "b" of type integer[]
 HINT:  Load this column with INSERT, which falls back to the standard path.
+\.
+invalid command \.
 SELECT a, b FROM itm_list ORDER BY a;
  a |   b   
 ---+-------

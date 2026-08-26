@@ -117,9 +117,10 @@ CALL ducklake.set_option('data_inlining_row_limit', 100);
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_nested'::regclass);
 -- Nested columns inline as VARCHAR in DuckDB's text format ([1, 2]); array_out
 -- writes {1,2}, which the reader cannot cast back.  COPY has no path to decline
--- to, so it refuses.  No data block follows on purpose: the refusal happens
--- before COPY mode is entered, so a payload here would run as SQL.
+-- to, so it refuses.  Terminated with \. even though it fails: psql still enters
+-- COPY mode on some builds, and an unterminated block eats the rest of the file.
 COPY copy_nested FROM STDIN WITH (FORMAT csv);
+\.
 SELECT c.parent_column IS NOT NULL AS descendant,
        s.min_value IS NULL AND s.max_value IS NULL AND
        s.contains_null IS NULL AND s.contains_nan IS NULL AND
@@ -149,9 +150,9 @@ COPY copy_partial_nested (id) FROM STDIN WITH (FORMAT csv);
 2
 \.
 SELECT id, tags FROM copy_partial_nested ORDER BY id;
--- Selecting it is still refused.  No data block follows on purpose: the refusal
--- happens before COPY mode is entered, so a payload here would run as SQL.
+-- Selecting it is still refused.  Terminated with \. for the same reason as above.
 COPY copy_partial_nested (id, tags) FROM STDIN WITH (FORMAT csv);
+\.
 SELECT count(*) AS rows_after_refusal FROM copy_partial_nested;
 DROP TABLE copy_partial_nested;
 

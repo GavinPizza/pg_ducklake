@@ -1,0 +1,57 @@
+-- Upstream: test/sql/time_travel/basic_time_travel.test
+-- Exercise version- and timestamp-based history using dynamic snapshot IDs.
+SELECT max(r['snapshot_id']::bigint) AS vbase FROM ducklake.snapshots() AS r \gset
+CREATE TABLE upstream_time_travel (i integer, j integer) USING ducklake;
+SELECT max(r['snapshot_id']::bigint) AS vcreate FROM ducklake.snapshots() AS r \gset
+CALL ducklake.set_option('data_inlining_row_limit', 100, 'upstream_time_travel'::regclass);
+INSERT INTO upstream_time_travel VALUES (1, 2), (NULL, 3);
+SELECT max(r['snapshot_id']::bigint) AS vinsert FROM ducklake.snapshots() AS r \gset
+SELECT r['i']::integer, r['j']::integer
+FROM ducklake.time_travel('upstream_time_travel'::regclass, :vcreate) AS r;
+ r | r 
+---+---
+(0 rows)
+
+SELECT r['i']::integer, r['j']::integer
+FROM ducklake.time_travel('upstream_time_travel'::regclass, :vinsert) AS r
+ORDER BY 1 NULLS LAST;
+ r | r 
+---+---
+ 1 | 2
+   | 3
+(2 rows)
+
+SELECT count(*) FROM ducklake.time_travel('upstream_time_travel'::regclass, now());
+ count 
+-------
+     2
+(1 row)
+
+\set VERBOSITY sqlstate
+SELECT count(*) FROM ducklake.time_travel('upstream_time_travel'::regclass, :vbase);
+ERROR:  XX000
+SELECT * FROM ducklake.time_travel('upstream_time_travel'::regclass, :vinsert + 1000000);
+ERROR:  XX000
+\set VERBOSITY default
+SELECT r['snapshot_time']::text AS insert_time
+FROM ducklake.snapshots() AS r
+WHERE r['snapshot_id']::bigint = :vinsert \gset
+SELECT count(*)
+FROM ducklake.time_travel('upstream_time_travel'::regclass, :'insert_time'::timestamptz);
+ count 
+-------
+     2
+(1 row)
+
+DROP TABLE upstream_time_travel;
+SELECT r['i']::integer, r['j']::integer
+FROM ducklake.time_travel('public', 'upstream_time_travel', :vinsert) AS r
+ORDER BY 1 NULLS LAST;
+ r | r 
+---+---
+ 1 | 2
+   | 3
+(2 rows)
+
+DELETE FROM ducklake.ducklake_metadata
+WHERE key = 'data_inlining_row_limit' AND scope = 'table';

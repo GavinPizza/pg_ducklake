@@ -1,0 +1,64 @@
+-- Upstream: test/sql/alter/rename_table_dbt_workload.test
+CREATE TABLE upstream_dbt_table USING ducklake AS SELECT g AS i FROM generate_series(1, 42) AS g;
+BEGIN;
+CREATE TABLE upstream_dbt_table_tmp USING ducklake AS SELECT g AS i FROM generate_series(1, 84) AS g;
+ALTER TABLE upstream_dbt_table RENAME TO upstream_dbt_table_backup;
+ALTER TABLE upstream_dbt_table_tmp RENAME TO upstream_dbt_table;
+SELECT count(*) FROM upstream_dbt_table;
+ count 
+-------
+    84
+(1 row)
+
+SELECT count(*) FROM upstream_dbt_table_backup;
+ count 
+-------
+    42
+(1 row)
+
+SELECT to_regclass('upstream_dbt_table_tmp') IS NULL AS temporary_name_gone;
+ temporary_name_gone 
+---------------------
+ t
+(1 row)
+
+SELECT relname FROM pg_class
+WHERE relnamespace = 'public'::regnamespace
+  AND relname IN ('upstream_dbt_table', 'upstream_dbt_table_backup', 'upstream_dbt_table_tmp')
+ORDER BY relname;
+          relname          
+---------------------------
+ upstream_dbt_table
+ upstream_dbt_table_backup
+(2 rows)
+
+COMMIT;
+SELECT count(*) FROM upstream_dbt_table;
+ count 
+-------
+    84
+(1 row)
+
+SELECT count(*) FROM upstream_dbt_table_backup;
+ count 
+-------
+    42
+(1 row)
+
+SELECT to_regclass('upstream_dbt_table_tmp') IS NULL AS temporary_name_gone;
+ temporary_name_gone 
+---------------------
+ t
+(1 row)
+
+SELECT relname FROM pg_class
+WHERE relnamespace = 'public'::regnamespace
+  AND relname IN ('upstream_dbt_table', 'upstream_dbt_table_backup', 'upstream_dbt_table_tmp')
+ORDER BY relname;
+          relname          
+---------------------------
+ upstream_dbt_table
+ upstream_dbt_table_backup
+(2 rows)
+
+DROP TABLE upstream_dbt_table, upstream_dbt_table_backup;

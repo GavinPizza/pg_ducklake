@@ -104,6 +104,9 @@ DuckDBManager::OnPostInit(duckdb::ClientContext &context) {
 	// kernel's DuckDBManager::Initialize, before this runs.
 	database->LoadStaticExtension<duckdb::DucklakeExtension>();
 	database->LoadStaticExtension<PostgresScannerExtension>();
+	// postgres_scanner's thread-local cache can pin every pooled connection to
+	// DuckDB worker threads, starving later binder work on the backend thread.
+	DuckDBQueryOrThrow(context, "SET pg_pool_enable_thread_local_cache = false");
 	pgducklake::ResetDirectInsertCaches();
 	pgducklake::RegisterDucklakeFunctions(*context.db);
 
@@ -134,6 +137,11 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
 		} catch (const std::exception &e) {
 			elog(WARNING, "failed to sync ducklake table path to DuckDB: %s", DuckDBErrorMessage(e).c_str());
 		}
+	}
+
+	if (azure_transport_option_type && azure_transport_option_type[0] != '\0' && database->ExtensionIsLoaded("azure")) {
+		DuckDBQueryOrThrow(context, "SET azure_transport_option_type = " +
+		                                duckdb::KeywordHelper::WriteQuoted(azure_transport_option_type));
 	}
 
 	// Re-emit S3/Azure secrets from the catalog when a SERVER/USER MAPPING changed.
@@ -315,10 +323,12 @@ DuckLakeXactCallback_Cpp(XactEvent event) {
 	case XACT_EVENT_PRE_COMMIT:
 	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		context.transaction.Commit();
+		ResetDirectInsertCaches();
 		break;
 	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_ABORT:
 		context.transaction.Rollback(nullptr);
+		ResetDirectInsertCaches();
 		break;
 	case XACT_EVENT_PREPARE:
 	case XACT_EVENT_PRE_PREPARE:

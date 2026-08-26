@@ -1,0 +1,61 @@
+-- Upstream: test/sql/catalog/drop_table.test
+CREATE TABLE upstream_catalog_drop (i integer) USING ducklake;
+BEGIN;
+DROP TABLE upstream_catalog_drop;
+SELECT to_regclass('upstream_catalog_drop') IS NULL AS hidden_in_transaction;
+ hidden_in_transaction 
+-----------------------
+ t
+(1 row)
+
+ROLLBACK;
+SELECT * FROM upstream_catalog_drop;
+ i 
+---
+(0 rows)
+
+DROP TABLE upstream_catalog_drop;
+SELECT to_regclass('upstream_catalog_drop') IS NULL AS dropped;
+ dropped 
+---------
+ t
+(1 row)
+
+DROP TABLE upstream_catalog_drop;
+ERROR:  table "upstream_catalog_drop" does not exist
+DROP TABLE IF EXISTS upstream_catalog_drop;
+NOTICE:  table "upstream_catalog_drop" does not exist, skipping
+BEGIN;
+CREATE TABLE upstream_catalog_drop_local (i integer) USING ducklake;
+SELECT * FROM upstream_catalog_drop_local;
+ i 
+---
+(0 rows)
+
+DROP TABLE upstream_catalog_drop_local;
+SELECT to_regclass('upstream_catalog_drop_local') IS NULL AS local_dropped;
+ local_dropped 
+---------------
+ t
+(1 row)
+
+COMMIT;
+CREATE TABLE upstream_catalog_drop (i integer) USING ducklake;
+BEGIN;
+DROP TABLE upstream_catalog_drop;
+CREATE TABLE upstream_catalog_drop (i text, j text) USING ducklake;
+INSERT INTO upstream_catalog_drop VALUES ('hello', 'world');
+SELECT * FROM upstream_catalog_drop;
+   i   |   j   
+-------+-------
+ hello | world
+(1 row)
+
+COMMIT;
+SELECT * FROM upstream_catalog_drop;
+   i   |   j   
+-------+-------
+ hello | world
+(1 row)
+
+DROP TABLE upstream_catalog_drop;

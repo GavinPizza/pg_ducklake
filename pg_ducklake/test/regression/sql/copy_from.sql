@@ -59,9 +59,13 @@ SELECT * FROM copy_defaults ORDER BY id;
 DROP TABLE copy_defaults;
 
 -- Unsupported COPY semantics must fail before COPY enters streaming mode.
+-- \. is required: without it newer psql consumes the rest of the file as
+-- skipped COPY data. Older psql rejects it instead, hence copy_from_1.out.
 COPY copy_stdin FROM STDIN WITH (FREEZE true);
+\.
 SELECT count(*) FROM copy_stdin;
 COPY copy_stdin FROM STDIN WITH (ON_ERROR ignore);
+\.
 SELECT count(*) FROM copy_stdin;
 
 DROP TABLE copy_stdin;

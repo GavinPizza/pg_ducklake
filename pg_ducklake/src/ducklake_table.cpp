@@ -7,6 +7,7 @@
 #include "pgducklake/constants.hpp"
 #include "pgducklake/create_options.hpp"
 #include "pgducklake/duckdb_manager.hpp"
+#include "pgducklake/ducklake_table.hpp"
 #include "pgducklake/ducklake_types.hpp"
 #include "pgducklake/guc.hpp"
 
@@ -16,6 +17,10 @@
 #include "pgddb/pgddb_table_am.hpp"
 
 #include <common/ducklake_types.hpp>
+#include <duckdb/catalog/catalog.hpp>
+#include <duckdb/catalog/catalog_entry.hpp>
+#include <duckdb/catalog/catalog_entry/schema_catalog_entry.hpp>
+#include <duckdb/catalog/entry_lookup_info.hpp>
 #include <duckdb/common/string_util.hpp>
 #include <duckdb/parser/keyword_helper.hpp>
 
@@ -39,6 +44,7 @@ extern "C" {
 #include "executor/tuptable.h"
 #include "fmgr.h"
 #include "nodes/value.h"
+#include "tcop/deparse_utility.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
@@ -620,8 +626,12 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	}
 
 	if (IsA(parsetree, CreateTableAsStmt) && !pgducklake::ctas_skip_data) {
-		auto ctas_stmt = castNode(CreateTableAsStmt, parsetree);
-		auto ctas_query = (Query *)ctas_stmt->query;
+		/* ExecCreateTableAs sends its Query through PostgreSQL's destructive
+		 * planner before ddl_command_end fires. The utility hook preserves the
+		 * unplanned query specifically for this trigger. */
+		Query *ctas_query = pgducklake::TakePendingCtasQuery();
+		if (!ctas_query)
+			elog(ERROR, "missing preserved Query for DuckLake CTAS");
 		const char *ctas_query_string = pgddb_get_querydef(ctas_query);
 		std::string insert_string = std::string("INSERT INTO ") + pgddb_relation_name(relid) + " " + ctas_query_string;
 
@@ -631,6 +641,35 @@ DECLARE_PG_FUNCTION(ducklake_create_table_trigger) {
 	}
 
 	PG_RETURN_NULL();
+}
+
+/*
+ * ducklake_table rows are only written at PRE_COMMIT, so a table created
+ * earlier in this transaction is invisible to the metadata lookup. DuckDB's
+ * catalog does see it, but throws rather than returning null unless a DuckDB
+ * transaction is open.
+ */
+static bool
+DropTargetLivesInDuckDBCatalog(const char *schema_name, const char *table_name) {
+	if (!pgducklake::DuckDBManager::IsInitialized())
+		return false;
+
+	auto *connection = pgducklake::DuckDBManager::Get().GetConnectionUnsafe();
+	if (!connection || !connection->context->transaction.HasActiveTransaction())
+		return false;
+
+	auto &context = *connection->context;
+	std::string schema_str(schema_name);
+	std::string table_str(table_name);
+
+	duckdb::EntryLookupInfo lookup(duckdb::CatalogType::TABLE_ENTRY, table_str, duckdb::QueryErrorContext());
+	auto entry = duckdb::Catalog::GetEntry(context, PGDUCKLAKE_DUCKDB_CATALOG, schema_str, lookup,
+	                                       duckdb::OnEntryNotFound::RETURN_NULL);
+
+	/* DuckDB matches names case-insensitively, the metadata lookup does not --
+	 * without this, dropping heap table "FOO" or "PUBLIC".foo destroys DuckLake
+	 * table public.foo. */
+	return entry && entry->name == table_str && entry->ParentSchema().name == schema_str;
 }
 
 DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
@@ -645,16 +684,19 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 	/* Can't use pg_class here: the tables are already dropped. */
 	int ret = SPI_exec(R"(
-		SELECT cmds.schema_name, cmds.object_name
+		SELECT cmds.schema_name, cmds.object_name,
+		       EXISTS (
+		         SELECT 1
+		         FROM ducklake.ducklake_table AS tbl
+		         JOIN ducklake.ducklake_schema AS schema
+		           ON tbl.schema_id = schema.schema_id
+		         WHERE tbl.table_name = cmds.object_name
+		           AND schema.schema_name = cmds.schema_name
+		           AND tbl.end_snapshot IS NULL
+		           AND schema.end_snapshot IS NULL
+		       ) AS in_metadata
 		FROM pg_catalog.pg_event_trigger_dropped_objects() cmds
-		JOIN ducklake.ducklake_table AS tbl
-		  ON cmds.object_name = tbl.table_name
-		JOIN ducklake.ducklake_schema AS schema
-		  ON cmds.schema_name = schema.schema_name
-		  AND tbl.schema_id = schema.schema_id
 		WHERE cmds.object_type = 'table'
-		  AND tbl.end_snapshot IS NULL
-		  AND schema.end_snapshot IS NULL
 		)",
 	                   0);
 
@@ -667,6 +709,13 @@ DECLARE_PG_FUNCTION(ducklake_drop_table_trigger) {
 
 		char *schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 		char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
+
+		bool isnull;
+		Datum in_metadata_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 3, &isnull);
+
+		bool is_ducklake_table = !isnull && DatumGetBool(in_metadata_datum);
+		if (!is_ducklake_table && !DropTargetLivesInDuckDBCatalog(schema_name, table_name))
+			continue;
 
 		std::string drop_ddl =
 		    duckdb::StringUtil::Format("DROP TABLE IF EXISTS " PGDUCKLAKE_DUCKDB_CATALOG ".%s.%s",
@@ -695,6 +744,51 @@ EnsureDuckLakeTable(Oid relid) {
 		                errmsg("table \"%s\" is not a DuckLake table", get_rel_name(relid))));
 }
 
+static const char *
+AlterColumnName(const AlterTableCmd *cmd) {
+	if (cmd->subtype == AT_AddColumn)
+		return castNode(ColumnDef, cmd->def)->colname;
+	if (cmd->subtype == AT_DropColumn)
+		return cmd->name;
+	return NULL;
+}
+
+static bool
+SkippedMissingOkAlter(const AlterTableCmd *cmd, const CollectedCommand *collected) {
+	if (!cmd->missing_ok || (cmd->subtype != AT_AddColumn && cmd->subtype != AT_DropColumn) || !collected ||
+	    collected->type != SCT_AlterTable)
+		return false;
+
+	const char *column_name = AlterColumnName(cmd);
+	ListCell *lc;
+	foreach (lc, collected->d.alterTable.subcmds) {
+		CollectedATSubcmd *subcmd = (CollectedATSubcmd *)lfirst(lc);
+		if (!IsA(subcmd->parsetree, AlterTableCmd))
+			continue;
+		AlterTableCmd *executed = castNode(AlterTableCmd, subcmd->parsetree);
+		const char *executed_name = AlterColumnName(executed);
+		if (executed->subtype == cmd->subtype && column_name && executed_name &&
+		    strcmp(column_name, executed_name) == 0)
+			return !OidIsValid(subcmd->address.objectId);
+	}
+	return false;
+}
+
+/* PostgreSQL collects missing_ok ALTER subcommands even when their object
+ * address is invalid because execution skipped them. Remove only those
+ * subcommands before deparsing the DDL sent to DuckDB. */
+static AlterTableStmt *
+FilterSkippedMissingOkAlters(AlterTableStmt *stmt, const CollectedCommand *collected) {
+	AlterTableStmt *filtered = (AlterTableStmt *)copyObjectImpl(stmt);
+	List *cmds = NIL;
+	foreach_node(AlterTableCmd, cmd, filtered->cmds) {
+		if (!SkippedMissingOkAlter(cmd, collected))
+			cmds = lappend(cmds, cmd);
+	}
+	filtered->cmds = cmds;
+	return filtered;
+}
+
 DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 	if (pgducklake::syncing_from_metadata)
 		PG_RETURN_NULL();
@@ -710,12 +804,13 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 	SetConfigOption("duckdb.force_execution", "false", PGC_USERSET, PGC_S_SESSION);
 
 	int ret = SPI_exec(R"(
-		SELECT DISTINCT objid AS relid
+		SELECT DISTINCT ON (objid) objid AS relid, command
 		FROM pg_catalog.pg_event_trigger_ddl_commands() cmds
 		JOIN pg_catalog.pg_class
 		  ON cmds.objid = pg_class.oid
 		WHERE cmds.object_type IN ('table', 'table column')
 		  AND pg_class.relam = (SELECT oid FROM pg_am WHERE amname = 'ducklake')
+		ORDER BY objid
 		)",
 	                   0);
 
@@ -751,11 +846,17 @@ DECLARE_PG_FUNCTION(ducklake_alter_table_trigger) {
 
 	Oid relid = DatumGetObjectId(relid_datum);
 
+	Datum command_datum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 2, &isnull);
+	CollectedCommand *collected = isnull ? NULL : (CollectedCommand *)DatumGetPointer(command_datum);
+
 	std::string ddl_str;
 	if (IsA(parsetree, RenameStmt)) {
 		ddl_str = pgducklake::Ruleutils().get_rename_relationdef(relid, (RenameStmt *)parsetree);
 	} else if (IsA(parsetree, AlterTableStmt)) {
-		ddl_str = pgducklake::Ruleutils().get_alter_tabledef(relid, (AlterTableStmt *)parsetree);
+		AlterTableStmt *filtered = FilterSkippedMissingOkAlters((AlterTableStmt *)parsetree, collected);
+		if (filtered->cmds == NIL)
+			PG_RETURN_NULL();
+		ddl_str = pgducklake::Ruleutils().get_alter_tabledef(relid, filtered);
 	} else {
 		elog(ERROR, "Unexpected parsetree type in ALTER TABLE trigger: %d", nodeTag(parsetree));
 	}
@@ -846,6 +947,32 @@ DECLARE_PG_FUNCTION(ducklake_comment_trigger) {
 } // extern "C"
 
 namespace pgducklake {
+
+namespace {
+
+std::vector<Query *> pending_ctas_queries;
+
+} // namespace
+
+void
+PushPendingCtasQuery(Query *query) {
+	pending_ctas_queries.push_back(query);
+}
+
+Query *
+TakePendingCtasQuery() {
+	if (pending_ctas_queries.empty())
+		return nullptr;
+	Query *query = pending_ctas_queries.back();
+	pending_ctas_queries.pop_back();
+	return query;
+}
+
+void
+RemovePendingCtasQuery(Query *query) {
+	if (!pending_ctas_queries.empty() && pending_ctas_queries.back() == query)
+		pending_ctas_queries.pop_back();
+}
 
 namespace {
 

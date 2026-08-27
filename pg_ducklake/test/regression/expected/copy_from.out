@@ -301,8 +301,8 @@ ERROR:  (PGDuckDB/ducklake_create_table_trigger_cpp) Not implemented Error: Defa
 -- "char" stands in for it.  It reaches DuckLake's varchar by a route the
 -- allowlist does not describe -- the Datum is not a varlena -- so it is
 -- unsupported for the same reason, and it takes a default.  No data block
--- follows on purpose: the refusal happens before COPY mode is entered, so a
--- payload here would run as SQL.
+-- follows, but the block is still terminated: psql enters COPY mode on some
+-- builds even when the statement fails.
 CREATE TABLE copy_default_unsupported (id int, c "char" DEFAULT 'x') USING ducklake;
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_default_unsupported'::regclass);
  count 
@@ -397,8 +397,8 @@ SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_synced_nested'::re
      1
 (1 row)
 
--- No data block follows on purpose: the refusal happens before COPY mode is
--- entered, so a payload here would run as SQL.
+-- No data block follows, but the block is still terminated: psql enters COPY
+-- mode on some builds even when the statement fails.
 COPY copy_synced_nested FROM STDIN;
 ERROR:  COPY FROM STDIN does not support column "tags" of type text
 HINT:  Load this column with INSERT, which falls back to the standard path.

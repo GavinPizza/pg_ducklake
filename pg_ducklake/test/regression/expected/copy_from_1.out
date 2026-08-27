@@ -309,8 +309,8 @@ ERROR:  (PGDuckDB/ducklake_create_table_trigger_cpp) Not implemented Error: Defa
 -- "char" stands in for it.  It reaches DuckLake's varchar by a route the
 -- allowlist does not describe -- the Datum is not a varlena -- so it is
 -- unsupported for the same reason, and it takes a default.  No data block
--- follows on purpose: the refusal happens before COPY mode is entered, so a
--- payload here would run as SQL.
+-- follows, but the block is still terminated: psql enters COPY mode on some
+-- builds even when the statement fails.
 CREATE TABLE copy_default_unsupported (id int, c "char" DEFAULT 'x') USING ducklake;
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_default_unsupported'::regclass);
  count 
@@ -320,6 +320,8 @@ SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_default_unsupporte
 
 COPY copy_default_unsupported (id) FROM STDIN WITH (FORMAT csv);
 ERROR:  cannot store column "c" of type "char" in inlined column of type bytea
+\.
+invalid command \.
 SELECT count(*) AS rows_after_refusal FROM copy_default_unsupported;
  rows_after_refusal 
 --------------------
@@ -405,11 +407,13 @@ SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_synced_nested'::re
      1
 (1 row)
 
--- No data block follows on purpose: the refusal happens before COPY mode is
--- entered, so a payload here would run as SQL.
+-- No data block follows, but the block is still terminated: psql enters COPY
+-- mode on some builds even when the statement fails.
 COPY copy_synced_nested FROM STDIN;
 ERROR:  COPY FROM STDIN does not support column "tags" of type text
 HINT:  Load this column with INSERT, which falls back to the standard path.
+\.
+invalid command \.
 SELECT count(*) AS synced_rows_after_refusal FROM copy_synced_nested;
  synced_rows_after_refusal 
 ---------------------------

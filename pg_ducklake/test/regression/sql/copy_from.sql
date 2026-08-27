@@ -203,11 +203,12 @@ CREATE TABLE copy_default_nested (id int, tags int[] DEFAULT '{1,2}') USING duck
 -- "char" stands in for it.  It reaches DuckLake's varchar by a route the
 -- allowlist does not describe -- the Datum is not a varlena -- so it is
 -- unsupported for the same reason, and it takes a default.  No data block
--- follows on purpose: the refusal happens before COPY mode is entered, so a
--- payload here would run as SQL.
+-- follows, but the block is still terminated: psql enters COPY mode on some
+-- builds even when the statement fails.
 CREATE TABLE copy_default_unsupported (id int, c "char" DEFAULT 'x') USING ducklake;
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_default_unsupported'::regclass);
 COPY copy_default_unsupported (id) FROM STDIN WITH (FORMAT csv);
+\.
 SELECT count(*) AS rows_after_refusal FROM copy_default_unsupported;
 -- The standard path stores the same default without complaint.
 INSERT INTO copy_default_unsupported (id) VALUES (1);
@@ -266,9 +267,10 @@ SELECT attname, format_type(atttypid, atttypmod) AS facade_type
 FROM pg_attribute WHERE attrelid = 'copy_synced_nested'::regclass AND attnum > 0
 ORDER BY attnum;
 SELECT count(*) FROM ducklake.ensure_inlined_data_table('copy_synced_nested'::regclass);
--- No data block follows on purpose: the refusal happens before COPY mode is
--- entered, so a payload here would run as SQL.
+-- No data block follows, but the block is still terminated: psql enters COPY
+-- mode on some builds even when the statement fails.
 COPY copy_synced_nested FROM STDIN;
+\.
 SELECT count(*) AS synced_rows_after_refusal FROM copy_synced_nested;
 DROP TABLE copy_synced_nested;
 
